@@ -74,7 +74,11 @@ cvar_t	teamplay = {"teamplay","0",false,true};
 cvar_t	samelevel = {"samelevel","0"};
 
 #ifndef __WII__
-cvar_t	cl_maxfps = {"cl_maxfps", "30", true}; // dr_mabuse1981: maxfps setting
+#ifdef PLATFORM_ANDROID
+cvar_t cl_maxfps = {"cl_maxfps", "60", true};
+#else
+cvar_t cl_maxfps = {"cl_maxfps", "30", true};
+#endif // dr_mabuse1981: maxfps setting
 #endif // __WII__ creates a timing issue within Dolphin emu - and vsync is always on anyhow
 
 #ifdef __PSP__
@@ -529,13 +533,17 @@ qboolean Host_FilterTime (float time)
 {
 	realtime += (double)time;
 #ifndef __WII__
-   if (cl_maxfps.value < 1) Cvar_SetValue("cl_maxfps", 30);
-   if (!cls.timedemo && realtime - oldrealtime < 1.0/(double)cl_maxfps.value
 #ifdef PLATFORM_ANDROID
-       - fmin(0.001, 0.1/(double)cl_maxfps.value)
+    // 0 = unlimited. Nonzero cl_maxfps is *only* a render pacing limit;
+    // world delta always comes from elapsed wall clock time.
+    if (!cls.timedemo && cl_maxfps.value > 0 &&
+        realtime-oldrealtime < 1.0/(double)cl_maxfps.value - 0.0005)
+        return false;
+#else
+    if (cl_maxfps.value < 1) Cvar_SetValue("cl_maxfps",30);
+    if (!cls.timedemo && realtime-oldrealtime < 1.0/(double)cl_maxfps.value)
+        return false;
 #endif
-       )
-		return false;		// framerate is too high
 #else
 	if (!cls.timedemo && realtime - oldrealtime < 1.0f/60.0f)
 		return false;		// framerate is too high
