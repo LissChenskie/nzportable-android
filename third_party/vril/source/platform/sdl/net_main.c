@@ -63,7 +63,13 @@ int messagesReceived = 0;
 int unreliableMessagesSent = 0;
 int unreliableMessagesReceived = 0;
 
-cvar_t	net_messagetimeout = {"net_messagetimeout","300"};
+#ifdef PLATFORM_ANDROID
+/* Release a dropped hotspot player's slot promptly; Quake keeps other
+ * clients running when an individual connection times out. */
+cvar_t net_messagetimeout = {"net_messagetimeout","25"};
+#else
+cvar_t net_messagetimeout = {"net_messagetimeout","300"};
+#endif
 cvar_t	hostname = {"hostname", "UNNAMED"};
 
 qboolean	configRestored = false;
