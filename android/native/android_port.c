@@ -359,23 +359,25 @@ static int perf_compare_desc(const void *a,const void *b) {
     double v=*(const double*)a, w=*(const double*)b;
     return (v<w)?1:(v>w)?-1:0;
 }
+int Android_ProfileEnabled(void) { return nzp_profile.value>0.f; }
 void Android_RecordFrame(double cpu_frame_ms) {
     static Uint64 last_report,last_render_timestamp;
     static double frame_time[2048],cpu_sum,cpu_max;
-    static unsigned recorded,frames,draw_calls;
+    static unsigned recorded,frames;
     static int last_r_frame;
+    static nzp_render_stats_t totals;
     static struct rusage previous_usage;
-    const int profiling=nzp_profile.value>0.f;
-    if(!profiling){
+    if(!Android_ProfileEnabled()) {
         last_report=last_render_timestamp=0;
         last_r_frame=r_framecount;
-        recorded=frames=draw_calls=0;
+        recorded=frames=0;
+        memset(&totals,0,sizeof(totals));
         cpu_sum=cpu_max=0.0;
         return;
     }
-    const Uint64 now=SDL_GetPerformanceCounter();
-    const double frequency=(double)SDL_GetPerformanceFrequency();
-    if(!last_report){
+    Uint64 now=SDL_GetPerformanceCounter();
+    double frequency=(double)SDL_GetPerformanceFrequency();
+    if(!last_report) {
         last_report=now;
         getrusage(RUSAGE_SELF,&previous_usage);
     }
@@ -384,16 +386,35 @@ void Android_RecordFrame(double cpu_frame_ms) {
         frames++;
         cpu_sum+=cpu_frame_ms;
         if(cpu_frame_ms>cpu_max)cpu_max=cpu_frame_ms;
-        draw_calls+=NZP_GLES_DrawCalls();
-        if(last_render_timestamp && recorded<2048)
+        nzp_render_stats_t sample;
+        NZP_GLES_GetFrameStats(&sample);
+        totals.draw_calls+=sample.draw_calls;
+        totals.nonempty_flushes+=sample.nonempty_flushes;
+        totals.texture_binds+=sample.texture_binds;
+        totals.texture_parameter_changes+=sample.texture_parameter_changes;
+        totals.shader_switches+=sample.shader_switches;
+        totals.uniform_updates+=sample.uniform_updates;
+        totals.buffer_uploads+=sample.buffer_uploads;
+        totals.vertex_upload_bytes+=sample.vertex_upload_bytes;
+        totals.skipped_state_changes+=sample.skipped_state_changes;
+        if(last_render_timestamp&&recorded<2048)
             frame_time[recorded++]=1000.0*(now-last_render_timestamp)/frequency;
         last_render_timestamp=now;
     }
-    const double elapsed=(double)(now-last_report)/frequency;
+    double elapsed=(double)(now-last_report)/frequency;
     if(elapsed<5.0)return;
+    /* Descending sort: worst frame times first. No allocations and only
+     * once every five seconds while the optional profiler is enabled. */
     qsort(frame_time,recorded,sizeof(frame_time[0]),perf_compare_desc);
-    const unsigned tail=(recorded>0)?(unsigned)fmax(0.0,ceil(recorded*0.01)-1):0;
-    const double low=recorded&&frame_time[tail]>0 ? 1000.0/frame_time[tail] : 0.0;
+    unsigned n1=recorded?(unsigned)ceil((double)recorded*0.01):0;
+    if(n1<1&&recorded)n1=1;
+    unsigned p99=n1?n1-1:0;
+    unsigned p95=recorded?(unsigned)ceil(recorded*0.05)-1:0;
+    unsigned p50=recorded?(unsigned)ceil(recorded*0.50)-1:0;
+    if(recorded && p50>=recorded)p50=recorded-1;
+    double worst_sum=0;
+    for(unsigned i=0;i<n1;i++)worst_sum+=frame_time[i];
+    double low=n1&&worst_sum>0?1000.0*n1/worst_sum:0.0;
     struct rusage usage;
     getrusage(RUSAGE_SELF,&usage);
     double cpu_seconds=(usage.ru_utime.tv_sec-previous_usage.ru_utime.tv_sec)+
@@ -404,14 +425,31 @@ void Android_RecordFrame(double cpu_frame_ms) {
     int world_width=0,world_height=0;
     extern void VID_GetWorldResolution(int *w,int *h);
     VID_GetWorldResolution(&world_width,&world_height);
-    SDL_Log("NZP_PERF fps=%.1f low_1pct_fps=%.1f cpu_ms_avg=%.2f "
-            "cpu_ms_max=%.2f draw_calls_per_frame=%.1f cpu_percent_one_core=%.1f "
-            "rss_peak_kb=%ld native=%dx%d world=%dx%d thermal=%d fps_cap=%d",
-            frames/elapsed,low,frames?cpu_sum/frames:0.0,cpu_max,
-            frames?(double)draw_calls/frames:0.0,100.0*cpu_seconds/elapsed,
-            (long)usage.ru_maxrss,vid.width,vid.height,
-            world_width,world_height,thermal,Android_FrameRate());
-    frames=draw_calls=recorded=0;cpu_sum=cpu_max=0.0;last_report=now;
+    double f=frames?(double)frames:1.0;
+    SDL_Log("NZP_PERF fps=%.2f low_1pct_fps=%.2f frame_p50_ms=%.3f "
+            "frame_p95_ms=%.3f frame_p99_ms=%.3f cpu_ms_avg=%.3f "
+            "cpu_ms_max=%.3f draw_calls_per_frame=%.2f "
+            "flushes_per_frame=%.2f texture_binds_per_frame=%.2f "
+            "texture_params_per_frame=%.2f shader_switches_per_frame=%.2f "
+            "uniform_updates_per_frame=%.2f vbo_uploads_per_frame=%.2f "
+            "vbo_upload_kib_per_frame=%.2f skipped_states_per_frame=%.2f "
+            "cpu_percent_one_core=%.2f rss_peak_kb=%ld "
+            "native=%dx%d world=%dx%d thermal=%d fps_cap=%d gpu_ms=unavailable",
+            frames/elapsed,low,
+            recorded?frame_time[p50]:0.0,
+            recorded?frame_time[p95]:0.0,
+            recorded?frame_time[p99]:0.0,
+            cpu_sum/f,cpu_max,totals.draw_calls/f,
+            totals.nonempty_flushes/f,totals.texture_binds/f,
+            totals.texture_parameter_changes/f,totals.shader_switches/f,
+            totals.uniform_updates/f,totals.buffer_uploads/f,
+            totals.vertex_upload_bytes/(1024.0*f),
+            totals.skipped_state_changes/f,
+            100.0*cpu_seconds/elapsed,(long)usage.ru_maxrss,
+            vid.width,vid.height,world_width,world_height,thermal,Android_FrameRate());
+    frames=recorded=0;cpu_sum=cpu_max=0.0;
+    memset(&totals,0,sizeof(totals));
+    last_report=now;
 }
 
 void Android_DrawTouch(void){
