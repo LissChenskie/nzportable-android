@@ -301,6 +301,10 @@ void Menu_DrawDivider (float order)
 
 	if (order < 0) {
 		y_pos = big_bar_height + ((order*-1)*y_factor);
+#ifdef PLATFORM_ANDROID
+        // Keep footer buttons below the four large touch rows.
+        y_pos = 5 + (-order)*20;
+#endif
 		UI_SetAlignment (UI_ANCHOR_LEFT, UI_ANCHOR_BOTTOM);
 	} else {
 		y_pos = 30 + (order*y_factor) - (_CHAR_HEIGHT/2);
@@ -566,6 +570,10 @@ void Menu_DrawButton (int order, int button_index, char* button_name, char* butt
 
 	if (order < 0) {
 		y_pos = big_bar_height + ((order*-1)*y_factor);
+#ifdef PLATFORM_ANDROID
+        // Keep footer buttons below the four large touch rows.
+        y_pos = 5 + (-order)*20;
+#endif
 		UI_SetAlignment (UI_ANCHOR_LEFT, UI_ANCHOR_BOTTOM);
 	} else {
 		y_pos = 30 + (order*y_factor);
@@ -630,6 +638,10 @@ void Menu_DrawGreyButton (int order, char* button_name)
 
 	if (order < 0) {
 		y_pos = big_bar_height + ((order*-1)*y_factor);
+#ifdef PLATFORM_ANDROID
+        // Keep footer buttons below the four large touch rows.
+        y_pos = 5 + (-order)*20;
+#endif
 		UI_SetAlignment (UI_ANCHOR_LEFT, UI_ANCHOR_BOTTOM);
 	} else {
 		y_pos = 30 + (order*y_factor);
