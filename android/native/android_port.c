@@ -34,7 +34,8 @@ static int touch_pressed[BUTTONS];
 static cvar_t touch_auto_sprint={"touch_auto_sprint","1",true};
 enum { NZP_TOUCH_ACTION=0x4e5a10, NZP_TOUCH_MOVE=0x4e5a11,
        NZP_TOUCH_LOOK=0x4e5a12, NZP_TOUCH_NEUTRAL=0x4e5a13,
-       NZP_LAN_CONNECT=0x4e5a14, NZP_LAN_NAME=0x4e5a15 };
+       NZP_LAN_CONNECT=0x4e5a14, NZP_LAN_NAME=0x4e5a15,
+       NZP_LAN_PLAYER_NAME=0x4e5a16 };
 static intptr_t float_bits(float f) { uint32_t bits; memcpy(&bits,&f,sizeof(bits)); return (intptr_t)bits; }
 static float bits_float(const void *p) { uint32_t bits=(uint32_t)(uintptr_t)p;float f;memcpy(&f,&bits,sizeof(f));return f; }
 static void push_touch(int code, intptr_t a, intptr_t b) {
@@ -158,6 +159,10 @@ JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeLanConnect
 JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeLanSetName(
     JNIEnv *env,jclass unused,jstring value) {
     (void)unused;Android_QueueLanString(env,value,NZP_LAN_NAME);
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeLanSetPlayerName(
+    JNIEnv *env,jclass unused,jstring value) {
+    (void)unused;Android_QueueLanString(env,value,NZP_LAN_PLAYER_NAME);
 }
 JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchNeutral(
         JNIEnv *env,jclass unused) {
@@ -312,6 +317,12 @@ int Android_Event(const SDL_Event *event){
                 case NZP_LAN_NAME: {
                     char *name=(char *)event->user.data1;
                     Menu_LAN_SetName(name);
+                    free(name);
+                    return 1;
+                }
+                case NZP_LAN_PLAYER_NAME: {
+                    char *name=(char *)event->user.data1;
+                    Menu_LAN_SetPlayerName(name);
                     free(name);
                     return 1;
                 }
