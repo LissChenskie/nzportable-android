@@ -264,10 +264,10 @@ void Menu_Video_Draw (void)
                  "NATIVE DISPLAY: %d x %d",native_w,native_h);
         if(render==100)
             snprintf(video_resolution_text,sizeof(video_resolution_text),
-                     "AUTO (NATIVE) %d x %d",native_w,native_h);
+                     "AUTO %dx%d (NATIVE)",native_w,native_h);
         else
             snprintf(video_resolution_text,sizeof(video_resolution_text),
-                     "%d%% (%d x %d)",render,selected_w,selected_h);
+                     "%d%% (%dx%d)",render,selected_w,selected_h);
         snprintf(video_ui_text,sizeof(video_ui_text),"%d%%",user_ui);
         if(cl_maxfps.value<1)
             snprintf(video_fps_text,sizeof(video_fps_text),"UNLIMITED");
