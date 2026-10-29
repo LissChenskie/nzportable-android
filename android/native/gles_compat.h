@@ -58,6 +58,13 @@ typedef struct nzp_render_stats_s {
 } nzp_render_stats_t;
 void NZP_GLES_GetFrameStats(nzp_render_stats_t *out);
 void NZP_GLES_InvalidateTextureState(void);
+/* Android Hyena 2D batches: emit interleaved GPU-ready vertices without
+ * three temporary position/UV/color arrays or per-vertex float conversion. */
+void NZP_GLES_AppendUIQuad(float x0,float y0,float x1,float y1,
+                            float u0,float v0,float u1,float v1,
+                            unsigned char r,unsigned char g,
+                            unsigned char b,unsigned char a);
+
 
 typedef struct {GLuint buffer;const void *offset;GLint size;GLenum type;GLsizei stride;} nzp_gpu_array;
 int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *arrays,GLuint index_buffer,size_t offset,int count);
