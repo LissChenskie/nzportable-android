@@ -440,8 +440,17 @@ int main(int argc, char **argv)
             double elapsed=(double)(SDL_GetPerformanceCounter()-frame_start)/
                            (double)SDL_GetPerformanceFrequency();
             double remaining=1.0/(double)fps_limit-elapsed;
-            if(remaining>=0.001)
-                SDL_Delay((Uint32)(remaining*1000.0)); /* floor, no busy-wait */
+            if(remaining>0.00001) {
+                /* Sub-millisecond tail remains an OS sleep: no polling
+                 * loop or second Host_FilterTime cap. Nanosleep is
+                 * interruptible and uses measured wall time. */
+                struct timespec req;
+                req.tv_sec=(time_t)remaining;
+                req.tv_nsec=(long)((remaining-(double)req.tv_sec)*1000000000.0);
+                if(req.tv_nsec>999999999)req.tv_nsec=999999999;
+                if(req.tv_nsec<0)req.tv_nsec=0;
+                while(nanosleep(&req,&req)<0 && errno==EINTR) {}
+            }
         }
 #endif
 	}
