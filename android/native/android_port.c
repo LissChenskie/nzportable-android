@@ -167,13 +167,18 @@ extern void Host_WriteConfiguration(void);
 extern void SNDDMA_SetPaused(int paused);
 
 int Android_ThermalStatus(void){return thermal;}
-int Android_FrameRate(void){int cap=thermal>=4?15:thermal>=2?30:60;return cl_maxfps.value>=1&&cl_maxfps.value<cap?(int)cl_maxfps.value:cap;}
+/* No thermal FPS or quality downgrade. 0 = explicit unlimited. */
+int Android_FrameRate(void) {
+    if (cl_maxfps.value<1.f)return 0;
+    int fps=(int)cl_maxfps.value;
+    return fps>500?500:fps;
+}
 int Android_Foreground(void){return foreground;}
 void Android_Init(void){
     Cvar_RegisterVariable(&touch_sensitivity);
     Cvar_RegisterVariable(&touch_auto_sprint);
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS,"0");SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS,"0");
-    SDL_Log("Android device profile: GLES2 / 1280x720 bounds / 128 MiB engine heap");
+    SDL_Log("Android device profile: native drawable + user-selected 3D scale");
 }
 void Android_ResetTouch(void){
     for(int i=0;i<BUTTONS;i++){
