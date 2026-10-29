@@ -78,6 +78,7 @@ void Menu_LAN_JoinAddress(const char *ip) {
     }
     snprintf(cmd,sizeof(cmd),"connect %u.%u.%u.%u:%u\n",
              octet[0],octet[1],octet[2],octet[3],port);
+    menu_is_solo=false;
     if(sv.active)Cbuf_AddText("disconnect\n");
     Cbuf_AddText(cmd);
     Menu_LAN_SetStatus("Connecting to LAN host...");
@@ -141,6 +142,7 @@ void Menu_LAN_Draw(void) {
     Menu_DrawButton(5,4,"SERVER NAME","Edit discoverable server name.",Menu_LAN_Rename);
     Menu_DrawButton(-1,5,"BACK","Main menu.",Menu_Main_Set);
     UI_SetAlignment(UI_ANCHOR_LEFT,UI_ANCHOR_TOP);
+    Menu_DrawString(170,72,hostname.string,255,255,255,255,vid.scale,0);
     Menu_DrawString(170,85,address,255,255,150,255,vid.scale,0);
     Menu_DrawString(170,105,lan_status,255,255,255,255,vid.scale,0);
 }
