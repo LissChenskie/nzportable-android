@@ -25,6 +25,13 @@ static int stream_index;
 static size_t stream_offset;
 enum { STREAM_BYTES=BATCH_CAPACITY*4*sizeof(nzp_vertex) };
 static int raster_enabled[4];
+static unsigned frame_draw_calls, frame_upload_bytes, frame_batches;
+void NZP_GLES_FrameStats(unsigned *draw_calls,unsigned *upload_bytes,unsigned *batches) {
+    if(draw_calls)*draw_calls=frame_draw_calls;
+    if(upload_bytes)*upload_bytes=frame_upload_bytes;
+    if(batches)*batches=frame_batches;
+}
+
 // Avoid redundant GLES uniform updates on Mali, especially for frequent HUD/world
 // draw calls that reuse the same projection, modelview and texture state.
 static struct {
@@ -62,6 +69,7 @@ void NZP_GLES_Init(void) {
     glLinkProgram(program);glGetProgramiv(program,GL_LINK_STATUS,&ok);
     if(!ok){char log[2048];glGetProgramInfoLog(program,sizeof(log),NULL,log);fail(log);}
     glDeleteShader(v);glDeleteShader(f);
+    glUseProgram(program);
 #define UNIFORM(name) name=glGetUniformLocation(program,#name)
     UNIFORM(u_mvp);UNIFORM(u_mv);UNIFORM(u_tm);UNIFORM(u_texture);UNIFORM(u_textured);
     UNIFORM(u_replace);UNIFORM(u_alpha);UNIFORM(u_fog);UNIFORM(u_fogcolor);
@@ -74,7 +82,7 @@ void NZP_GLES_Init(void) {
 }
 static void uniforms(const float *mvp,const float *mv,const float *tm,int tex,int replace,float alpha,float fog) {
     const float fog_params[4]={fog,fog_start,fog_end,fog_density};
-    glUseProgram(program);
+    // Bound once per frame; no per-draw shader program switching on Mali.
     if(!last_uniforms.valid||memcmp(last_uniforms.mvp,mvp,16*sizeof(float))) {
         glUniformMatrix4fv(u_mvp,1,GL_FALSE,mvp);
         memcpy(last_uniforms.mvp,mvp,16*sizeof(float));
@@ -115,16 +123,23 @@ static void upload(const nzp_vertex *vertices,int count,GLenum mode) {
     glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,uv)));
     glVertexAttribPointer(2,4,GL_UNSIGNED_BYTE,GL_TRUE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,color)));
     glDrawArrays(mode,0,count);
+    frame_draw_calls++;
+    frame_upload_bytes+=(unsigned)bytes;
     stream_offset+=bytes;
 }
 void NZP_GLES_BeginFrame(void){
     NZP_GLES_Flush();stream_index=(stream_index+1)%3;stream_offset=0;
+    frame_draw_calls=frame_upload_bytes=frame_batches=0;
+    // Fixed-pipeline renderer owns this GLES2 program for the whole frame.
+    glUseProgram(program);
     glBindBuffer(GL_ARRAY_BUFFER,streams[stream_index]);
     // One orphan per frame, instead of allocating a new store per HUD glyph batch.
     glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
 }
 void NZP_GLES_Flush(void) {
-    if(!batch_count)return;float mvp[16];nzp_multiply(mvp,matrices[1][matrix_depth[1]],matrices[0][matrix_depth[0]]);
+    if(!batch_count)return;
+    frame_batches++;
+    float mvp[16];nzp_multiply(mvp,matrices[1][matrix_depth[1]],matrices[0][matrix_depth[0]]);
     uniforms(mvp,matrices[0][matrix_depth[0]],matrices[2][matrix_depth[2]],textured,replace_mode,
         alpha_test?alpha_threshold:-1.f,fog_enabled?(fog_mode==GL_LINEAR?1.f:fog_mode==GL_EXP?2.f:3.f):0.f);
     glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,bound_texture);upload(batch,batch_count,batch_mode);
@@ -248,6 +263,7 @@ int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *a,GLuint index_buffer,size
     }
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,index_buffer);
     if(index_buffer)glDrawElements(mode,count,GL_UNSIGNED_SHORT,(const void*)offset);else glDrawArrays(mode,0,count);
+    frame_draw_calls++;
     glBindBuffer(GL_ARRAY_BUFFER,0);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);return 1;
 }
 
