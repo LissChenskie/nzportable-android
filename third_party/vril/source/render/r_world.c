@@ -562,8 +562,11 @@ R_DrawWorldBatches(void)
         group = world_base_groups + i;
         if (!group->count)
             continue;
-        memmove(world_base_indices + count, world_base_indices + group->offset,
-          group->count * sizeof(*world_base_indices));
+        /* The group is already in the compact destination for common
+         * contiguous visibility patterns; avoid redundant index copies. */
+        if(group->offset!=count)
+            memmove(world_base_indices + count, world_base_indices + group->offset,
+              group->count * sizeof(*world_base_indices));
         group->draw_offset = count;
         count += group->count;
     }
@@ -598,8 +601,9 @@ R_DrawWorldLightmapBatches(void)
         group = world_lightmap_groups + i;
         if (!group->count)
             continue;
-        memmove(world_lightmap_indices + count, world_lightmap_indices + group->offset,
-          group->count * sizeof(*world_lightmap_indices));
+        if(group->offset!=count)
+            memmove(world_lightmap_indices + count, world_lightmap_indices + group->offset,
+              group->count * sizeof(*world_lightmap_indices));
         group->draw_offset = count;
         count += group->count;
     }
