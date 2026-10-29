@@ -25,6 +25,9 @@ static int stream_index;
 static size_t stream_offset;
 enum { STREAM_BYTES=BATCH_CAPACITY*4*sizeof(nzp_vertex) };
 static int raster_enabled[4];
+static float viewport_xscale=1.f,viewport_yscale=1.f;
+static unsigned draw_calls_this_frame;
+static GLuint current_program;
 // Avoid redundant GLES uniform updates on Mali, especially for frequent HUD/world
 // draw calls that reuse the same projection, modelview and texture state.
 static struct {
@@ -74,7 +77,10 @@ void NZP_GLES_Init(void) {
 }
 static void uniforms(const float *mvp,const float *mv,const float *tm,int tex,int replace,float alpha,float fog) {
     const float fog_params[4]={fog,fog_start,fog_end,fog_density};
-    glUseProgram(program);
+    if(current_program!=program) {
+        glUseProgram(program);
+        current_program=program;
+    }
     if(!last_uniforms.valid||memcmp(last_uniforms.mvp,mvp,16*sizeof(float))) {
         glUniformMatrix4fv(u_mvp,1,GL_FALSE,mvp);
         memcpy(last_uniforms.mvp,mvp,16*sizeof(float));
@@ -115,10 +121,12 @@ static void upload(const nzp_vertex *vertices,int count,GLenum mode) {
     glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,uv)));
     glVertexAttribPointer(2,4,GL_UNSIGNED_BYTE,GL_TRUE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,color)));
     glDrawArrays(mode,0,count);
+    ++draw_calls_this_frame;
     stream_offset+=bytes;
 }
 void NZP_GLES_BeginFrame(void){
-    NZP_GLES_Flush();stream_index=(stream_index+1)%3;stream_offset=0;
+    NZP_GLES_Flush();
+    draw_calls_this_frame=0;stream_index=(stream_index+1)%3;stream_offset=0;
     glBindBuffer(GL_ARRAY_BUFFER,streams[stream_index]);
     // One orphan per frame, instead of allocating a new store per HUD glyph batch.
     glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
@@ -130,7 +138,7 @@ void NZP_GLES_Flush(void) {
     glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,bound_texture);upload(batch,batch_count,batch_mode);
     batch_count=0;
 }
-void NZP_GLES_Shutdown(void) { NZP_GLES_Flush();last_uniforms.valid=0;glDeleteBuffers(3,streams);glDeleteProgram(program);program=0;memset(streams,0,sizeof(streams)); }
+void NZP_GLES_Shutdown(void) { NZP_GLES_Flush();last_uniforms.valid=0;current_program=0;glDeleteBuffers(3,streams);glDeleteProgram(program);program=0;memset(streams,0,sizeof(streams)); }
 static void reserve(int count,GLenum mode) {
     if(batch_mode!=mode||batch_count+count>BATCH_CAPACITY)NZP_GLES_Flush();batch_mode=mode;
 }
@@ -224,7 +232,23 @@ FLUSH_CALL(glDepthFunc,(GLenum f),(f))
 FLUSH_CALL(glDepthMask,(GLboolean e),(e))
 FLUSH_CALL(glCullFace,(GLenum f),(f))
 FLUSH_CALL(glPolygonOffset,(float f,float u),(f,u))
-FLUSH_CALL(glViewport,(int x,int y,int w,int h),(x,y,w,h))
+/* Render only the 3D world at the user's optional resolution percentage.
+ * Logical viewport/refdef remains surface-native for a sharp HUD. */
+void NZP_GLES_SetWorldViewport(int ww,int wh,int sw,int sh) {
+    viewport_xscale=(float)ww/(float)(sw>0?sw:1);
+    viewport_yscale=(float)wh/(float)(sh>0?sh:1);
+}
+void NZP_GLES_SetNativeViewport(void) {
+    viewport_xscale=viewport_yscale=1.f;
+}
+void nzp_glViewport(int x,int y,int w,int h) {
+    NZP_GLES_Flush();
+    glViewport((int)lroundf(x*viewport_xscale),
+               (int)lroundf(y*viewport_yscale),
+               (int)lroundf(w*viewport_xscale),
+               (int)lroundf(h*viewport_yscale));
+}
+unsigned NZP_GLES_DrawCalls(void) { return draw_calls_this_frame; }
 FLUSH_CALL(glClear,(GLbitfield mask),(mask))
 FLUSH_CALL(glReadPixels,(int x,int y,int w,int h,GLenum f,GLenum t,void *p),(x,y,w,h,f,t,p))
 FLUSH_CALL(glFinish,(void),())
@@ -248,6 +272,7 @@ int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *a,GLuint index_buffer,size
     }
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,index_buffer);
     if(index_buffer)glDrawElements(mode,count,GL_UNSIGNED_SHORT,(const void*)offset);else glDrawArrays(mode,0,count);
+    ++draw_calls_this_frame;
     glBindBuffer(GL_ARRAY_BUFFER,0);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);return 1;
 }
 
