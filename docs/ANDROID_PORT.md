@@ -43,6 +43,8 @@ finger's held action. Touch-generated mouse events are disabled. Menu taps use
 the existing menu hit testing. Controller activity hides the touch overlay.
 Background/focus loss clears held inputs; background opens pause, saves config,
 pauses both sound devices and avoids simulation catch-up on resume.
+The game Activity uses its own app process, so exiting and launching again gets
+a clean native allocator/VM while keeping the launcher and installed files.
 
 Current touch controls have a fixed layout and a `touch_sensitivity` cvar.
 A draggable layout editor and dedicated mobile options UI remain future work.

@@ -50,7 +50,7 @@ def main():
         call('shell','input','keyevent','68');call('shell','input','text','map%sndu');call('shell','input','keyevent','66');time.sleep(25)
         with (a.out/'map.png').open('wb') as image:subprocess.run([str(adb),'exec-out','screencap','-p'],stdout=image,check=True)
         (a.out/'game.log').write_text(call('logcat','-d','-v','threadtime'))
-        process=call('shell','pidof','org.nzportable.android',check=False).strip();print('Game process: '+process,flush=True)
+        process=call('shell','pidof','org.nzportable.android:game',check=False).strip();print('Game process: '+process,flush=True)
         if not process:raise RuntimeError('Game process exited')
         call('shell','input','keyevent','3');time.sleep(2);call('shell','am','start','-n','org.nzportable.android/.LauncherActivity');time.sleep(2)
         (a.out/'lifecycle.log').write_text(call('logcat','-d','-v','threadtime'))

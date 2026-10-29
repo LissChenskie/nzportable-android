@@ -360,6 +360,7 @@ int main(int argc, char **argv)
 	if (android_dir) chdir(android_dir);
 	SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
 	SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
+	SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
 #endif
 	if (!Startup_LoadArguments(&startup, argc, argv, "setup.ini",
 		startup_error, sizeof(startup_error))) {

@@ -31,4 +31,11 @@ public final class GameActivity extends SDLActivity {
     @Override public void onWindowFocusChanged(boolean focused){super.onWindowFocusChanged(focused);if(focused)immersive();}
     // Called once/second by the native frame governor. No per-frame JNI or Java overlay.
     public int getThermalStatus(){return Build.VERSION.SDK_INT>=29&&power!=null?power.getCurrentThermalStatus():0;}
+    @Override protected void onDestroy(){
+        // Vril's global allocator/VM state is process-lifetime state. The launcher
+        // remains in the main app process; each completed game gets a fresh VM.
+        boolean finished=isFinishing()&&!isChangingConfigurations();
+        super.onDestroy();
+        if(finished)android.os.Process.killProcess(android.os.Process.myPid());
+    }
 }
