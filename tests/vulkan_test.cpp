@@ -20,6 +20,20 @@ int main(){
     if(SDL_Init(SDL_INIT_VIDEO)!=0){fprintf(stderr,"SDL init: %s\n",SDL_GetError());return 1;}SDL_Window *w=SDL_CreateWindow("Vulkan tests",0,0,64,64,SDL_WINDOW_VULKAN|SDL_WINDOW_HIDDEN);if(!w){fprintf(stderr,"SDL window: %s\n",SDL_GetError());return 1;}
     assert(NZP_VK_Init(w,"build/host-tests",1));auto u=uniform();auto s=raster();
     assert(NZP_VK_BeginFrame(0,100));quad(u,s,0,255,0,0);end();pixel(32,32,255,0,0);
+    // Identical repeated draws must reuse uniform data and GPU command state.
+    assert(NZP_VK_BeginFrame(0,100));
+    quad(u,s,0,255,0,0);quad(u,s,0,255,0,0);
+    nzp_vk_command_stats cmd{};NZP_VK_GetCommandStats(&cmd);
+    assert(cmd.draws==2 && cmd.pipeline_binds==1);
+    assert(cmd.viewport_sets==1 && cmd.scissor_sets==1);
+    assert(cmd.uniform_uploads==1 && cmd.uniform_reuses==1 && cmd.descriptor_binds==1);
+    end();pixel(32,32,255,0,0);
+    // A changed uniform must be rebound even though the material is unchanged.
+    assert(NZP_VK_BeginFrame(0,100));
+    auto shifted=u;shifted.mvp[12]=.1f;
+    quad(u,s,0,255,0,0);quad(shifted,s,0,255,0,0);
+    NZP_VK_GetCommandStats(&cmd);assert(cmd.uniform_uploads==2 && cmd.descriptor_binds==2);
+    end();
     // Culling, depth conversion and original non-premultiplied blending.
     assert(NZP_VK_BeginFrame(0,100));quad(u,s,0,0,0,255);s.blend=1;quad(u,s,0,255,0,0,128);s.blend=0;end();pixel(32,32,128,0,127);
     // Fog uses eye-space depth, independently of projection.
