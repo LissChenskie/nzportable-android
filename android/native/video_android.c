@@ -50,6 +50,19 @@ static int active_benchmark=-1;
 static Uint64 benchmark_start,benchmark_previous;static unsigned long long benchmark_frames;
 static double benchmark_intervals[600],benchmark_cpu_sum,benchmark_gpu_sum;
 static unsigned benchmark_samples,benchmark_gpu_samples;
+static nzp_vk_command_stats vk_bench_cmd, vk_screen_cmd;
+static nzp_vk_frame_timings vk_bench_time, vk_screen_time;
+static unsigned vk_screen_samples;
+static void vk_accumulate(nzp_vk_command_stats *sum,nzp_vk_frame_timings *times){
+    nzp_vk_command_stats now={0};nzp_vk_frame_timings timing={0};
+    NZP_VK_GetCommandStats(&now);NZP_VK_GetFrameTimings(&timing);
+    sum->draws+=now.draws;sum->pipeline_binds+=now.pipeline_binds;
+    sum->viewport_sets+=now.viewport_sets;sum->scissor_sets+=now.scissor_sets;
+    sum->depth_bias_sets+=now.depth_bias_sets;sum->uniform_uploads+=now.uniform_uploads;
+    sum->uniform_reuses+=now.uniform_reuses;sum->descriptor_binds+=now.descriptor_binds;
+    times->fence_wait_ms+=timing.fence_wait_ms;times->acquire_ms+=timing.acquire_ms;
+    times->queue_submit_ms+=timing.queue_submit_ms;times->present_ms+=timing.present_ms;
+}
 static struct timespec benchmark_cpu_start;
 static int render_frame_available=1,benchmark_restore;
 static float benchmark_saved_fps,benchmark_saved_vsync,benchmark_saved_profile;
@@ -198,7 +211,7 @@ void VID_SetVSync(qboolean vsync){
 }
 void GL_BeginRendering(int *x,int *y,int *w,int *h){
     if(vid_benchmark.value){
-        if(!benchmark_start){benchmark_start=SDL_GetPerformanceCounter();benchmark_previous=benchmark_start;benchmark_frames=0;benchmark_samples=benchmark_gpu_samples=0;benchmark_cpu_sum=benchmark_gpu_sum=0;}
+        if(!benchmark_start){benchmark_start=SDL_GetPerformanceCounter();benchmark_previous=benchmark_start;benchmark_frames=0;benchmark_samples=benchmark_gpu_samples=0;benchmark_cpu_sum=benchmark_gpu_sum=0;vk_bench_cmd=(nzp_vk_command_stats){0};vk_bench_time=(nzp_vk_frame_timings){0};}
         clock_gettime(CLOCK_THREAD_CPUTIME_ID,&benchmark_cpu_start);
     }
     render_frame_available=1;
@@ -229,6 +242,20 @@ void GL_EndRendering(void){
         /* The startup marker is removed only on clean shutdown. An abnormal
          * driver/process termination therefore falls back on the next launch. */
     } else if(active_benchmark)glFlush();else SDL_GL_SwapWindow(sdl_window);
+    if(NZP_VK_Active()){
+        if(vid_benchmark.value){vk_accumulate(&vk_bench_cmd,&vk_bench_time);}
+        else if(nzp_profile.value){
+            vk_accumulate(&vk_screen_cmd,&vk_screen_time);
+            if(++vk_screen_samples==120){
+                SDL_Log("NZP_VK_STAGES on-screen frames=%u avg_fence_wait_ms=%.3f avg_acquire_ms=%.3f avg_submit_ms=%.3f avg_present_ms=%.3f draws_per_frame=%.1f pipeline_binds_per_frame=%.1f uniform_reuses_per_frame=%.1f descriptor_binds_per_frame=%.1f",
+                    vk_screen_samples,vk_screen_time.fence_wait_ms/vk_screen_samples,vk_screen_time.acquire_ms/vk_screen_samples,
+                    vk_screen_time.queue_submit_ms/vk_screen_samples,vk_screen_time.present_ms/vk_screen_samples,
+                    (double)vk_screen_cmd.draws/vk_screen_samples,(double)vk_screen_cmd.pipeline_binds/vk_screen_samples,
+                    (double)vk_screen_cmd.uniform_reuses/vk_screen_samples,(double)vk_screen_cmd.descriptor_binds/vk_screen_samples);
+                vk_screen_cmd=(nzp_vk_command_stats){0};vk_screen_time=(nzp_vk_frame_timings){0};vk_screen_samples=0;
+            }
+        }
+    }
     if(vid_benchmark.value){
         Uint64 now=SDL_GetPerformanceCounter();
         benchmark_intervals[benchmark_samples++]=1000.0*(now-benchmark_previous)/SDL_GetPerformanceFrequency();benchmark_previous=now;
@@ -252,6 +279,22 @@ void GL_EndRendering(void){
                 fprintf(f,"%s,%d,%d,%d,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u\n",NZP_VK_Active()?"Vulkan":"GLES2",drawable_w,drawable_h,render_percent(),benchmark_frames,seconds,benchmark_frames/seconds,low,
                     benchmark_intervals[(benchmark_samples*95+99)/100-1],benchmark_intervals[(benchmark_samples*99+99)/100-1],benchmark_cpu_sum/benchmark_frames,
                     benchmark_gpu_samples?benchmark_gpu_sum/benchmark_gpu_samples:-1,benchmark_gpu_samples);fclose(f);
+            }
+            if(NZP_VK_Active()){
+                FILE *stage=fopen(va("%s/vulkan-stage-benchmark.csv",com_gamedir),"a");
+                if(stage){
+                    fseek(stage,0,SEEK_END);
+                    if(ftell(stage)==0)fprintf(stage,"native_w,native_h,world_percent,frames,fence_wait_ms,acquire_ms,submit_ms,present_ms,draws_per_frame,pipeline_binds_per_frame,viewport_sets_per_frame,scissor_sets_per_frame,depth_bias_sets_per_frame,uniform_uploads_per_frame,uniform_reuses_per_frame,descriptor_binds_per_frame\n");
+                    fprintf(stage,"%d,%d,%d,%llu,%.4f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+                        drawable_w,drawable_h,render_percent(),benchmark_frames,
+                        vk_bench_time.fence_wait_ms/benchmark_frames,vk_bench_time.acquire_ms/benchmark_frames,
+                        vk_bench_time.queue_submit_ms/benchmark_frames,vk_bench_time.present_ms/benchmark_frames,
+                        (double)vk_bench_cmd.draws/benchmark_frames,(double)vk_bench_cmd.pipeline_binds/benchmark_frames,
+                        (double)vk_bench_cmd.viewport_sets/benchmark_frames,(double)vk_bench_cmd.scissor_sets/benchmark_frames,
+                        (double)vk_bench_cmd.depth_bias_sets/benchmark_frames,(double)vk_bench_cmd.uniform_uploads/benchmark_frames,
+                        (double)vk_bench_cmd.uniform_reuses/benchmark_frames,(double)vk_bench_cmd.descriptor_binds/benchmark_frames);
+                    fclose(stage);
+                }
             }
             Con_Printf("Offscreen renderer benchmark: %.2f FPS, %llu completed frames in %.3f s\n",benchmark_frames/seconds,benchmark_frames,seconds);
             Cvar_SetValue("vid_benchmark",0);benchmark_start=0;
