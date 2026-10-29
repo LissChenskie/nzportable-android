@@ -39,6 +39,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifdef PLATFORM_ANDROID
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <errno.h>
+#include <SDL.h>
 #endif
 
 extern cvar_t hostname;
@@ -330,8 +332,15 @@ int UDP_Read (int socket, byte *buf, int len, struct qsockaddr *addr)
 	int ret;
 
 	ret = recvfrom(socket, (char *)buf, len, 0, (struct sockaddr *)addr, (socklen_t*)&addrlen);
-	if (ret == -1 )
+	if (ret == -1) {
+#ifdef PLATFORM_ANDROID
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
+		SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "UDP recvfrom error: %d", errno);
+		return -1;
+#else
 		return 0;
+#endif
+	}
 	return ret;
 }
 
@@ -385,8 +394,15 @@ int UDP_Write (int socket, byte *buf, int len, struct qsockaddr *addr)
 	int ret;
 
 	ret = sendto (socket, (const char *)buf, len, 0, (struct sockaddr *)addr, sizeof(struct qsockaddr));
-	if (ret == -1 )
+	if (ret == -1) {
+#ifdef PLATFORM_ANDROID
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
+		SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "UDP sendto error: %d", errno);
+		return -1;
+#else
 		return 0;
+#endif
+	}
 	return ret;
 }
 
