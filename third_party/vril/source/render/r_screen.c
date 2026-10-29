@@ -874,6 +874,11 @@ SCR_UpdateScreen(void)
         V_RenderView();
     }
 
+#ifdef PLATFORM_ANDROID
+    /* World can be optionally scaled; HUD/menu stay at native surface resolution. */
+    extern void VID_BeginNativeUI(void);
+    VID_BeginNativeUI();
+#endif
     Draw_Set2D();
 
     if (!LoadingScreen_IsWaiting()) {
