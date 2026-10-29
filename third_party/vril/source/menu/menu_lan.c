@@ -198,6 +198,10 @@ void Menu_LAN_ConnectAddress(const char *value) {
     m_state=m_none;
 }
 void Menu_LAN_Connected(void) { lan_join_pending=0; }
+void Menu_LAN_ShowError(const char *message) {
+    snprintf(lan_status,sizeof(lan_status),"LAN error: %.72s",message ? message : "unknown");
+    Menu_LAN_Set();
+}
 void Menu_LAN_ConnectionFailed(void) {
     if(!lan_join_pending)return;
     lan_join_pending=0;
