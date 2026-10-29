@@ -53,7 +53,7 @@ struct DrawState {
     VkRect2D scissor{};
     float bias_units{},bias_factor{};
     VkDescriptorSet sets[3]{};
-    uint32_t uniform_offset{};
+    uint32_t uniform_offset{},bound_offset{};
     nzp_vk_uniform uniform{};
     bool viewport_valid{},scissor_valid{},bias_valid{},sets_valid{},uniform_valid{};
 };
@@ -428,10 +428,10 @@ void bind_draw(const Layout &layout,unsigned mode,const nzp_vk_uniform &uniform,
         ++f.stats.uniform_uploads;
     }
     VkDescriptorSet sets[]={f.uniform_set,texture,lightmap?lightmap:texture};
-    if(!cached.sets_valid||cached.uniform_offset!=offset||std::memcmp(cached.sets,sets,sizeof(sets))){
+    if(!cached.sets_valid||cached.bound_offset!=offset||std::memcmp(cached.sets,sets,sizeof(sets))){
         vkCmdBindDescriptorSets(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_layout,0,3,sets,1,&offset);
         std::memcpy(cached.sets,sets,sizeof(sets));
-        cached.uniform_offset=offset;cached.sets_valid=true;++f.stats.descriptor_binds;
+        cached.bound_offset=offset;cached.sets_valid=true;++f.stats.descriptor_binds;
     }
     ++f.stats.draws;
 }
