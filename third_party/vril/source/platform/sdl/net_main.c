@@ -914,7 +914,9 @@ void		NET_Shutdown (void)
 
 	SetNetTime();
 
-	for (sock = net_activeSockets; sock; sock = sock->next)
+	// NET_Close rewires sock->next into the free list. Walking that pointer
+	// skips active peers; consume the current active-list head instead.
+	while ((sock = net_activeSockets) != NULL)
 		NET_Close(sock);
 
 //
