@@ -39,6 +39,7 @@ void NZP_GLES_BeginFrame(void);
 void NZP_GLES_Shutdown(void);
 void NZP_GLES_Flush(void);
 void NZP_GLES_Present(GLuint texture, int width, int height);
+void NZP_GLES_FrameStats(unsigned *draw_calls, unsigned *upload_bytes, unsigned *batches);
 typedef struct {GLuint buffer;const void *offset;GLint size;GLenum type;GLsizei stride;} nzp_gpu_array;
 int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *arrays,GLuint index_buffer,size_t offset,int count);
 void nzp_glBegin(GLenum mode);
