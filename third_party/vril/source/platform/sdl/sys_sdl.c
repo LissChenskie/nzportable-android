@@ -422,6 +422,10 @@ int main(int argc, char **argv)
 		music_update();
 		oldtime = now;
 #ifdef PLATFORM_ANDROID
+		Android_RecordFrame((double)(SDL_GetPerformanceCounter() - frame_start) * 1000.0 /
+		                    (double)SDL_GetPerformanceFrequency());
+#endif
+#ifdef PLATFORM_ANDROID
 		// Sleep through the unused frame budget; include swap time in it.
 		double elapsed = (double)(SDL_GetPerformanceCounter() - frame_start) / SDL_GetPerformanceFrequency();
 		double remaining = 1.0 / Android_FrameRate() - elapsed;
