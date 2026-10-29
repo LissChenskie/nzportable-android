@@ -70,7 +70,7 @@ int main(void){
         for(int q=0;q<10000;q++)quad(2,2,3,3);
         glColor4f(0,0,1,1);quad(0,-1,1,1);pixel(10,32,255,0,0);pixel(50,32,0,0,255);
     }
-    int rw,rh;nzp_render_size(2400,1080,1280,720,&rw,&rh);assert(rw==1280&&rh==576);nzp_render_size(1280,720,1024,576,&rw,&rh);assert(rw==1024&&rh==576);
+    int rw,rh;nzp_scale_size(2400,1080,100,&rw,&rh);assert(rw==2400&&rh==1080);nzp_scale_size(2400,1080,90,&rw,&rh);assert(rw==2160&&rh==972);
     NZP_GLES_Shutdown();eglMakeCurrent(d,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);eglDestroyContext(d,c);eglDestroySurface(d,s);eglTerminate(d);
     puts("GLES pixel, batching, matrices, topology, fog and size tests passed");return 0;
 }
