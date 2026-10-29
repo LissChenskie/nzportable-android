@@ -381,7 +381,9 @@ SCR_DrawFPS(void)
         const int pad = 7 * vid.scale;
         snprintf(st,sizeof(st),"FPS %.0f",lastfps);
         const int width = getTextWidth(st,font);
-        const int x = (int)vid.width - width - 3 * pad;
+        /* Top-left during play: the Java MENU touch button covers top-right. */
+        const int x = key_dest == key_game ? 2 * pad :
+                      (int)vid.width - width - 3 * pad;
         const int y = 2 * vid.scale + pad;
         Draw_FillByColor(x-pad,y-pad,width+pad*2,(int)(8*font)+pad*2,
                          0,0,0,220);
