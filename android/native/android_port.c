@@ -316,8 +316,13 @@ void Android_TouchLook(void){
 }
 void Android_Frame(void){
     static Uint64 thermal_poll,ui_poll,last_hot;Uint64 now=SDL_GetTicks64();
-    int need_thermal=now-thermal_poll>=1000;
-    int need_ui=now-ui_poll>=500;
+    // Avoid JNI dispatch every half-second while controls and lifecycle
+    // state have not changed; still refresh controller presence periodically.
+    int playing=host_initialized && key_dest==key_game &&
+        cls.state==ca_connected && cls.signon==SIGNONS &&
+        !cl.paused && !LoadingScreen_IsActive();
+    int need_thermal=now-thermal_poll>=2500;
+    int need_ui=playing!=last_touch_mode || now-ui_poll>=2500;
     if(!need_thermal&&!need_ui)return;
     JNIEnv *env=SDL_AndroidGetJNIEnv();jobject activity=SDL_AndroidGetActivity();
     if(!env||!activity)return;
@@ -333,8 +338,6 @@ void Android_Frame(void){
     }
     if(need_ui) {
         ui_poll=now;
-        int playing=host_initialized && key_dest==key_game && cls.state==ca_connected &&
-                    cls.signon==SIGNONS && !cl.paused && !LoadingScreen_IsActive();
         // Re-evaluate controllers on the Java side, without reallocating the overlay.
         if(!touch_method)touch_method=(*env)->GetMethodID(env,activity_class,
             "setTouchControlsVisible","(Z)V");
