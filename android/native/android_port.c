@@ -405,6 +405,7 @@ void Android_RecordFrame(double cpu_frame_ms) {
         totals.uniform_updates+=sample.uniform_updates;
         totals.buffer_uploads+=sample.buffer_uploads;
         totals.vertex_upload_bytes+=sample.vertex_upload_bytes;
+        totals.index_upload_bytes+=sample.index_upload_bytes;
         totals.skipped_state_changes+=sample.skipped_state_changes;
         if(last_render_timestamp&&recorded<2048)
             frame_time[recorded++]=1000.0*(now-last_render_timestamp)/frequency;
@@ -441,7 +442,8 @@ void Android_RecordFrame(double cpu_frame_ms) {
             "flushes_per_frame=%.2f texture_binds_per_frame=%.2f "
             "texture_params_per_frame=%.2f shader_switches_per_frame=%.2f "
             "uniform_updates_per_frame=%.2f vbo_uploads_per_frame=%.2f "
-            "vbo_upload_kib_per_frame=%.2f skipped_states_per_frame=%.2f "
+            "vbo_upload_kib_per_frame=%.2f ibo_upload_kib_per_frame=%.2f "
+            "skipped_states_per_frame=%.2f "
             "cpu_percent_one_core=%.2f rss_peak_kb=%ld "
             "native=%dx%d world=%dx%d thermal=%d fps_cap=%d gpu_ms=unavailable",
             frames/elapsed,low,
@@ -453,6 +455,7 @@ void Android_RecordFrame(double cpu_frame_ms) {
             totals.texture_parameter_changes/f,totals.shader_switches/f,
             totals.uniform_updates/f,totals.buffer_uploads/f,
             totals.vertex_upload_bytes/(1024.0*f),
+            totals.index_upload_bytes/(1024.0*f),
             totals.skipped_state_changes/f,
             100.0*cpu_seconds/elapsed,(long)usage.ru_maxrss,
             vid.width,vid.height,world_width,world_height,thermal,Android_FrameRate());
