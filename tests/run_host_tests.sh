@@ -9,3 +9,5 @@ java -cp build/host-tests DataInstallerTest "$@"
 
 cc -std=c99 -Wall -Wextra -Werror -Iandroid/native tests/lan_endpoint_test.c android/native/lan_endpoint.c -o build/host-tests/lan_endpoint_test
 build/host-tests/lan_endpoint_test
+
+python3 -m unittest discover -s tests -p 'test_lan_udp_transport.py' -v
