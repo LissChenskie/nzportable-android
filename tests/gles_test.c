@@ -92,6 +92,60 @@ int main(void){
     glDeleteFramebuffers(1,&world_fbo);glDeleteRenderbuffers(1,&world_depth);
     glDeleteTextures(1,&world_tex);glClearColor(0,0,0,1);
     glMatrixMode(GL_PROJECTION);glLoadIdentity();glMatrixMode(GL_MODELVIEW);glLoadIdentity();
+    // Exact pixel regression: old client-array 2D quads vs direct packed HUD.
+    // Partial alpha and overlap check draw order as well as geometry and color.
+    {
+        unsigned char reference[64*64*4],optimized[64*64*4];
+        const float red_pos[]={0,0,0,48,0,0,48,48,0,0,0,0,48,48,0,0,48,0};
+        const float blue_pos[]={16,16,0,64,16,0,64,64,0,16,16,0,64,64,0,16,64,0};
+        unsigned char red_col[24],blue_col[24];
+        for(int i=0;i<6;i++){
+            red_col[i*4]=220;red_col[i*4+1]=35;red_col[i*4+2]=20;red_col[i*4+3]=150;
+            blue_col[i*4]=35;blue_col[i*4+1]=80;blue_col[i*4+2]=210;blue_col[i*4+3]=120;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER,0);
+        glDisable(GL_FOG);glDisable(GL_ALPHA_TEST);glDisable(GL_TEXTURE_2D);
+        glDisable(GL_DEPTH_TEST);glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+        glMatrixMode(GL_PROJECTION);glLoadIdentity();glOrtho(0,64,64,0,-1,1);
+        glMatrixMode(GL_MODELVIEW);glLoadIdentity();
+        clear();
+        glEnableClientState(GL_VERTEX_ARRAY);glEnableClientState(GL_COLOR_ARRAY);
+        glVertexPointer(3,GL_FLOAT,0,red_pos);glColorPointer(4,GL_UNSIGNED_BYTE,0,red_col);
+        glDrawArrays(GL_TRIANGLES,0,6);
+        glVertexPointer(3,GL_FLOAT,0,blue_pos);glColorPointer(4,GL_UNSIGNED_BYTE,0,blue_col);
+        glDrawArrays(GL_TRIANGLES,0,6);
+        glDisableClientState(GL_COLOR_ARRAY);glDisableClientState(GL_VERTEX_ARRAY);
+        NZP_GLES_Flush();
+        glReadPixels(0,0,64,64,GL_RGBA,GL_UNSIGNED_BYTE,reference);
+        clear();
+        NZP_GLES_AppendUIQuad(0,0,48,48,0,0,1,1,220,35,20,150);
+        NZP_GLES_AppendUIQuad(16,16,64,64,0,0,1,1,35,80,210,120);
+        NZP_GLES_Flush();
+        glReadPixels(0,0,64,64,GL_RGBA,GL_UNSIGNED_BYTE,optimized);
+        for(unsigned i=0;i<sizeof(reference);i++)
+            if(abs((int)reference[i]-(int)optimized[i])>1){
+                fprintf(stderr,"HUD pixel regression byte %u: %u != %u\\n",
+                        i,reference[i],optimized[i]);abort();
+            }
+        printf("HUD reference: pixel-equivalent under ordered alpha blending\\n");
+        // State changes to the same value must not force a new batch.
+        nzp_render_stats_t stats0,stats1;
+        glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_TRUE);glDepthMask(GL_TRUE);
+        glViewport(0,0,64,64);glViewport(0,0,64,64);
+        glMatrixMode(GL_MODELVIEW);glLoadIdentity();glLoadIdentity();
+        NZP_GLES_GetFrameStats(&stats0);
+        glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_TRUE);
+        glViewport(0,0,64,64);glLoadIdentity();
+        NZP_GLES_GetFrameStats(&stats1);
+        assert(stats1.skipped_state_changes>=stats0.skipped_state_changes+4);
+        assert(stats1.nonempty_flushes==stats0.nonempty_flushes);
+        glDisable(GL_BLEND);
+        glMatrixMode(GL_PROJECTION);glLoadIdentity();
+        glMatrixMode(GL_MODELVIEW);glLoadIdentity();
+    }
     // Rotate all three frame arenas and cross the streaming capacity boundary.
     for(int frame=0;frame<4;frame++){
         NZP_GLES_BeginFrame();clear();glColor4f(1,0,0,1);quad(-1,-1,0,1);
