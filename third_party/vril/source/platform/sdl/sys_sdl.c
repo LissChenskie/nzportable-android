@@ -426,10 +426,16 @@ int main(int argc, char **argv)
 		                    (double)SDL_GetPerformanceFrequency());
 #endif
 #ifdef PLATFORM_ANDROID
-		// Sleep through the unused frame budget; include swap time in it.
-		double elapsed = (double)(SDL_GetPerformanceCounter() - frame_start) / SDL_GetPerformanceFrequency();
-		double remaining = 1.0 / Android_FrameRate() - elapsed;
-		if (remaining > 0) SDL_Delay((Uint32)ceil(remaining * 1000.0));
+		// Wait without CPU spinning. Zero means explicit UNLIMITED.
+        // Rendering work/SDL swap and sleeping never change simulation dt.
+        const int fps_limit=Android_FrameRate();
+        if(fps_limit>0) {
+            double elapsed=(double)(SDL_GetPerformanceCounter()-frame_start)/
+                           (double)SDL_GetPerformanceFrequency();
+            double remaining=1.0/(double)fps_limit-elapsed;
+            if(remaining>=0.001)
+                SDL_Delay((Uint32)(remaining*1000.0)); /* floor, no busy-wait */
+        }
 #endif
 	}
 	if (host_initialized)
