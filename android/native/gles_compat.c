@@ -447,6 +447,7 @@ void nzp_glViewport(int x,int y,int w,int h) {
     driver_state.valid|=DS_VIEWPORT;
 }
 unsigned NZP_GLES_DrawCalls(void) { return draw_calls_this_frame; }
+#define FLUSH_CALL(name,args,call) void nzp_##name args { NZP_GLES_Flush();name call; }
 FLUSH_CALL(glClear,(GLbitfield mask),(mask))
 FLUSH_CALL(glReadPixels,(int x,int y,int w,int h,GLenum f,GLenum t,void *p),(x,y,w,h,f,t,p))
 FLUSH_CALL(glFinish,(void),())
