@@ -31,6 +31,8 @@
 namespace {
 constexpr unsigned Frames=2;
 constexpr size_t ArenaBytes=16*1024*1024;
+constexpr size_t StagingChunkBytes=1024*1024;
+constexpr unsigned StagingIdleFrameLimit=90;
 struct Buffer {
     VkBuffer handle{}; VmaAllocation allocation{}; void *mapped{}; size_t size{};
 };
@@ -64,7 +66,7 @@ struct Frame {
     VkCommandPool pool{}; VkCommandBuffer upload{},draw{};
     VkFence fence{}; VkSemaphore acquired{};
     Buffer arena; size_t used{};
-    std::vector<Buffer> staging;std::vector<size_t> staging_used;unsigned staging_index{};
+    std::vector<Buffer> staging;std::vector<size_t> staging_used;unsigned staging_index{},staging_idle_frames{};
     VkDescriptorSet uniform_set{};
     std::vector<std::shared_ptr<TextureGPU>> textures;
     std::vector<std::shared_ptr<Buffer>> meshes;
@@ -154,7 +156,7 @@ std::pair<VkBuffer,size_t> stage(const void *data,size_t bytes){
         }
         ++f.staging_index;
     }
-    f.staging.push_back(make_buffer(std::max<size_t>(4*1024*1024,bytes),VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+    f.staging.push_back(make_buffer(std::max<size_t>(StagingChunkBytes,bytes),VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
     f.staging_used.push_back(bytes);std::memcpy(f.staging.back().mapped,data,bytes);return {f.staging.back().handle,0};
 }
 void barrier(VkCommandBuffer cb,VkImage image,VkImageLayout old,VkImageLayout next,
@@ -585,6 +587,16 @@ int NZP_VK_BeginFrame(int vsync,int percent){
     if(was_submitted&&f.queries){uint64_t times[2]{};if(vkGetQueryPoolResults(device,f.queries,0,2,sizeof(times),times,8,VK_QUERY_RESULT_64_BIT)==VK_SUCCESS)
         gpu_ms=((times[1]-times[0])&(timestamp_bits<64?((uint64_t(1)<<timestamp_bits)-1):UINT64_MAX))*properties.limits.timestampPeriod/1e6;}
     f.textures.clear();f.meshes.clear();f.used=0;f.staging_index=0;f.stats={};f.draw_state={};
+    // A loading scene can allocate many staging buffers. On the next safe
+    // fence completion, release them after a sustained idle period instead
+    // of keeping peak map-loading memory for the entire game session.
+    bool used_staging=false;
+    for(size_t n:f.staging_used)if(n){used_staging=true;break;}
+    if(used_staging)f.staging_idle_frames=0;
+    else if(!f.staging.empty() && ++f.staging_idle_frames>=StagingIdleFrameLimit){
+        for(auto &b:f.staging)destroy(b);
+        f.staging.clear();f.staging_used.clear();f.staging_idle_frames=0;
+    }
     std::fill(f.staging_used.begin(),f.staging_used.end(),0);
     int w,h;SDL_Vulkan_GetDrawableSize(window,&w,&h);
     if(w<=0||h<=0)return 0;
@@ -643,7 +655,8 @@ void NZP_VK_EndFrame(){
     frame_index=(frame_index+1)%Frames;
 }
 void NZP_VK_Draw(const nzp_vk_vertex *v,int count,unsigned mode,const nzp_vk_uniform *u,const nzp_vk_raster *s,unsigned tex){
-    if(!recording||!count)return;auto gpu=material(tex);frame().textures.push_back(gpu);
+    if(!recording||!count)return;auto gpu=material(tex);
+    if(frame().textures.empty() || frame().textures.back()!=gpu)frame().textures.push_back(gpu);
     size_t offset=allocate(count*sizeof(*v),4);std::memcpy((char*)frame().arena.mapped+offset,v,count*sizeof(*v));
     bind_draw(interleaved(),mode,*u,*s,gpu->descriptor);
     VkBuffer buffers[]={frame().arena.handle,frame().arena.handle,frame().arena.handle,frame().arena.handle};VkDeviceSize offsets[]={offset,offset+12,offset+20,offset+12};
@@ -670,7 +683,7 @@ static int draw_buffers(const nzp_vk_array *a,unsigned ib,size_t io,int count,un
         layout.stride[3]=lm->stride;layout.format[3]=VK_FORMAT_R32G32_SFLOAT;
         lightmap=material(lmtex);frame().textures.push_back(lightmap);
     }
-    auto gpu=material(tex);frame().textures.push_back(gpu);nzp_vk_uniform uniforms=*u;uniforms.params[3]=lm?1.f:0.f;
+    auto gpu=material(tex);if(frame().textures.empty() || frame().textures.back()!=gpu)frame().textures.push_back(gpu);nzp_vk_uniform uniforms=*u;uniforms.params[3]=lm?1.f:0.f;
     bind_draw(layout,mode,uniforms,*s,gpu->descriptor,lightmap?lightmap->descriptor:VK_NULL_HANDLE);
     vkCmdBindVertexBuffers(frame().draw,0,4,buffers,offsets);
     if(ib){auto it=meshes.find(ib);if(it==meshes.end()||!it->second.gpu)return 0;frame().meshes.push_back(it->second.gpu);
@@ -703,6 +716,23 @@ void NZP_VK_Texture(unsigned id,int level,int x,int y,int w,int h,unsigned forma
     if(x<0||y<0||x+w>m.w||y+h>m.h)throw std::runtime_error("Invalid texture subregion");
     int components=format==0x1909?1:4;int pixelbytes=type==0x1401?components:2;
     size_t row=(size_t(w)*pixelbytes+alignment-1)/alignment*alignment;
+    // RGBA8 is already in the native upload format. Copy contiguous rows
+    // instead of calling memcpy four bytes at a time for every texel.
+    if(type==0x1401 && format==0x1908 && pixels){
+        const size_t bytes=size_t(w)*4;
+        if(x==0 && y==0 && w==m.w && h==m.h && row==bytes)
+            std::memcpy(m.rgba.data(),pixels,bytes*size_t(h));
+        else for(int j=0;j<h;j++)
+            std::memcpy(m.rgba.data()+(size_t(y+j)*m.w+x)*4,
+                        (const unsigned char*)pixels+size_t(j)*row,bytes);
+        t.dirty=t.pixel_dirty=true;
+        return;
+    }
+    if(!pixels && x==0 && y==0 && w==m.w && h==m.h){
+        std::memset(m.rgba.data(),0,m.rgba.size());
+        t.dirty=t.pixel_dirty=true;
+        return;
+    }
     for(int j=0;j<h;j++)for(int i=0;i<w;i++){
         unsigned char *out=m.rgba.data()+((size_t(y+j)*m.w)+x+i)*4;
         if(!pixels){std::memset(out,0,4);continue;}

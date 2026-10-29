@@ -29,11 +29,13 @@ static float move_x,move_y,move_origin_x,move_origin_y,look_x,look_y;
 static jmethodID thermal_method, touch_method;
 static int external_touch, last_touch_mode=-1;
 static TouchSprintState touch_sprint;
+static float map_touch_start[FINGERS];
 static int touch_pressed[BUTTONS];
 static cvar_t touch_auto_sprint={"touch_auto_sprint","1",true};
 enum { NZP_TOUCH_ACTION=0x4e5a10, NZP_TOUCH_MOVE=0x4e5a11,
        NZP_TOUCH_LOOK=0x4e5a12, NZP_TOUCH_NEUTRAL=0x4e5a13,
-       NZP_LAN_CONNECT=0x4e5a14, NZP_LAN_NAME=0x4e5a15 };
+       NZP_LAN_CONNECT=0x4e5a14, NZP_LAN_NAME=0x4e5a15,
+       NZP_LAN_PLAYER_NAME=0x4e5a16 };
 static intptr_t float_bits(float f) { uint32_t bits; memcpy(&bits,&f,sizeof(bits)); return (intptr_t)bits; }
 static float bits_float(const void *p) { uint32_t bits=(uint32_t)(uintptr_t)p;float f;memcpy(&f,&bits,sizeof(f));return f; }
 static void push_touch(int code, intptr_t a, intptr_t b) {
@@ -158,6 +160,10 @@ JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeLanSetName
     JNIEnv *env,jclass unused,jstring value) {
     (void)unused;Android_QueueLanString(env,value,NZP_LAN_NAME);
 }
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeLanSetPlayerName(
+    JNIEnv *env,jclass unused,jstring value) {
+    (void)unused;Android_QueueLanString(env,value,NZP_LAN_PLAYER_NAME);
+}
 JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchNeutral(
         JNIEnv *env,jclass unused) {
     (void)env;(void)unused;push_touch(NZP_TOUCH_NEUTRAL,0,0);
@@ -240,6 +246,13 @@ static void touch(const SDL_TouchFingerEvent *event){
         f->active=1;f->id=event->fingerId;f->x=event->x;f->y=event->y;f->role=-4;
         touch_visible=1;IN_SetActiveDevice(IN_DEVICE_KEYBOARD_MOUSE);Menu_SetInputDevice(IN_DEVICE_KEYBOARD_MOUSE);
         if(key_dest!=key_game){
+            // Map rows are activated on release, allowing swipe-to-scroll
+            // without accidentally starting the highlighted map.
+            if(m_state==m_stockmaps || m_state==m_custommaps){
+                f->role=-5;map_touch_start[f-fingers]=event->y;
+                Menu_MouseMove(event->x*vid.width,event->y*vid.height);
+                return;
+            }
             f->role=-3;Menu_MouseMove(event->x*vid.width,event->y*vid.height);
             if(!Menu_MouseButton(event->x*vid.width,event->y*vid.height,true))Menu_ButtonPress();return;
         }
@@ -255,9 +268,18 @@ static void touch(const SDL_TouchFingerEvent *event){
         if(f->role>=0&&button_refs[f->role]>0&&--button_refs[f->role]==0)Android_EmitTouchAction(buttons[f->role].key,false);
         if(f->role==-1){move_x=move_y=0;Android_UpdateSprint();}
         if(f->role==-3)Menu_MouseButton(event->x*vid.width,event->y*vid.height,false);
+        if(f->role==-5 && (m_state==m_stockmaps || m_state==m_custommaps)){
+            float delta=event->y-map_touch_start[f-fingers];
+            if(delta<-.08f)Menu_Maps_Scroll(+1);
+            else if(delta>.08f)Menu_Maps_Scroll(-1);
+            else {
+                Menu_MouseMove(event->x*vid.width,event->y*vid.height);
+                Menu_ButtonPress();
+            }
+        }
         f->active=0;return;
     }
-    if(f->role==-3){Menu_MouseMove(event->x*vid.width,event->y*vid.height);}
+    if(f->role==-3 || f->role==-5){Menu_MouseMove(event->x*vid.width,event->y*vid.height);}
     else if(key_dest==key_game){
         if(f->role==-1)update_move(event->x,event->y);
         if(f->role==-2){look_x+=(event->x-f->x);look_y+=(event->y-f->y);}
@@ -295,6 +317,12 @@ int Android_Event(const SDL_Event *event){
                 case NZP_LAN_NAME: {
                     char *name=(char *)event->user.data1;
                     Menu_LAN_SetName(name);
+                    free(name);
+                    return 1;
+                }
+                case NZP_LAN_PLAYER_NAME: {
+                    char *name=(char *)event->user.data1;
+                    Menu_LAN_SetPlayerName(name);
                     free(name);
                     return 1;
                 }

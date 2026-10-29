@@ -194,7 +194,12 @@ void Menu_BuildMenuButtons (int button_index, char *button_name, void *on_activa
 	if (!current_menu.button[button_index].enabled) {
 		current_menu.button[button_index].enabled = true;
 		current_menu.button[button_index].index = button_index;
-		current_menu.button[button_index].name = button_name;
+		// Text is kept until the button array is reset. Previously temporary
+        // uppercase map labels were freed while their pointers remained here.
+        snprintf(current_menu.button[button_index].label_storage,
+                 sizeof(current_menu.button[button_index].label_storage), "%s",
+                 button_name ? button_name : "");
+        current_menu.button[button_index].name = current_menu.button[button_index].label_storage;
 		current_menu.button[button_index].on_activate = on_activate;
 	} else {
 		// This button is now disabled
@@ -698,7 +703,7 @@ void Menu_DrawMapButton (int order, int button_index, int usermap_index, int map
 	int i;
 	int index = 0;
 	char *button_name;
-	char *final_name;
+	char final_name[128];
 	int desc_y_factor = 10*vid.scale;
 
 	int image_width = (vid.width/3);
@@ -725,19 +730,10 @@ void Menu_DrawMapButton (int order, int button_index, int usermap_index, int map
 		button_name = custom_maps[index].map_name;
 	}
 
-	// Don't modify map_name_pretty memory location
-	// create a copy for uppercase drawing
-	final_name = malloc(strlen(button_name) + 1);
-	if (!final_name)
-		Sys_Error("Menu_DrawMapButton: out of memory");
-	strcpy(final_name, button_name);
-	strtoupper(final_name);
-
-	// Draw the selectable button
-	Menu_DrawButton (order, button_index, final_name, button_name, on_activate);
-	if (final_name != NULL) {
-		free (final_name);
-	}
+	// No heap allocation or dangling button name on every rendered frame.
+    snprintf(final_name, sizeof(final_name), "%s", button_name);
+    strtoupper(final_name);
+    Menu_DrawButton(order, button_index, final_name, button_name, on_activate);
 
 	if (Menu_IsButtonHovered(button_index)) {
 

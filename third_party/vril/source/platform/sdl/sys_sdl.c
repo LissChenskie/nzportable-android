@@ -321,8 +321,16 @@ void Sys_SendKeyEvents(void)
 				key = event.wheel.y > 0 ? K_MWHEELUP : event.wheel.y < 0 ? K_MWHEELDOWN : 0;
 				if (key) { Key_Event(key, true); Key_Event(key, false); }
 			} else {
-				if (event.wheel.y > 0) Menu_IncreaseCursor();
-				if (event.wheel.y < 0) Menu_DecreaseCursor();
+#ifdef PLATFORM_ANDROID
+                if (m_state==m_stockmaps || m_state==m_custommaps) {
+                    if(event.wheel.y>0)Menu_Maps_Scroll(-1);
+                    if(event.wheel.y<0)Menu_Maps_Scroll(+1);
+                } else
+#endif
+                {
+                    if(event.wheel.y>0)Menu_IncreaseCursor();
+                    if(event.wheel.y<0)Menu_DecreaseCursor();
+                }
 			}
 			break;
 		case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP:

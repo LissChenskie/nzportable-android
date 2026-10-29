@@ -21,6 +21,7 @@ public final class GameActivity extends SDLActivity {
     static native void nativeTouchNeutral();
     static native void nativeLanConnect(String address);
     static native void nativeLanSetName(String name);
+    static native void nativeLanSetPlayerName(String name);
 
     @Override protected String[] getLibraries() { return new String[]{"SDL2", "SDL2_mixer", "main"}; }
     @Override protected String[] getArguments() {
@@ -71,6 +72,23 @@ public final class GameActivity extends SDLActivity {
                 .setPositiveButton("SAVE", (dialog, which) ->
                     nativeLanSetName(field.getText().toString().trim()))
                 .setNegativeButton("CANCEL", null).show();
+        });
+    }
+    public void promptLanPlayerName(final String previous) {
+        runOnUiThread(() -> {
+            EditText field=new EditText(this);
+            field.setSingleLine(true);
+            field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PERSON_NAME);
+            field.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(15)});
+            field.setText(previous==null?"player":previous);
+            field.selectAll();
+            new AlertDialog.Builder(this)
+                .setTitle("CO-OP PLAYER NICKNAME")
+                .setMessage("Up to 15 characters. Visible to other LAN players.")
+                .setView(field)
+                .setPositiveButton("SAVE", (dialog,which) ->
+                    nativeLanSetPlayerName(field.getText().toString().trim()))
+                .setNegativeButton("CANCEL",null).show();
         });
     }
     // Compatibility entry points for the extended LAN co-op menu.

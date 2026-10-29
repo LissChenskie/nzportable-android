@@ -67,6 +67,7 @@ typedef struct menu_button_s {
 	qboolean		enabled;
 	int				index;
 	char			*name;
+    char             label_storage[128]; /* button text owned by menu (no freed names) */
 	void			(*on_activate)(void);
 	int             x, y, width, height;
 	qboolean        is_slider;
@@ -313,6 +314,9 @@ void Menu_DrawString (int x, int y, char* string, int r, int g, int b, int a, fl
 void Menu_DrawStringCentered (int x, int y, char* text, int r, int g, int b, int a);
 
 void Menu_StockMaps_Set (void);
+void Menu_Maps_Scroll(int direction); /* -1 previous, +1 next */
+void Menu_CustomMaps_NextPage(void);
+void Menu_CustomMaps_PrevPage(void);
 void Menu_Pause_Set(void);
 void Menu_Resume(void);
 void Menu_Keys_Set(void);
@@ -334,6 +338,7 @@ void Menu_LAN_PrepareHost(void);
 int Menu_LAN_Slots(void);
 void Menu_LAN_ConnectAddress(const char *addr);
 void Menu_LAN_SetName(const char *name);
+void Menu_LAN_SetPlayerName(const char *name);
 void Menu_LAN_ConnectionFailed(void);
 void Menu_LAN_ShowError(const char *message);
 void Menu_LAN_Connected(void);

@@ -322,6 +322,7 @@ typedef struct {
 typedef struct {
     world_batch_group_t batch;
     int page,texture,lightmap;
+    int uploaded_lightmap; /* cache pre-upload result for this frame */
 } world_single_group_t;
 static world_single_group_t *world_single_groups;
 static unsigned short *world_single_indices;
@@ -662,11 +663,13 @@ static void R_DrawWorldSinglePass(void){
     R_BeginWorldIndices(world_single_indices,count);
     // All visible dynamic/animated lightmaps were updated during traversal;
     // upload each atlas once before any of the combined material draws.
-    for(int i=0;i<world_single_count;i++)if(world_single_groups[i].batch.count)R_UploadLightmap(world_single_groups[i].lightmap);
+    for(int i=0;i<world_single_count;i++)
+        if(world_single_groups[i].batch.count)
+            world_single_groups[i].uploaded_lightmap=R_UploadLightmap(world_single_groups[i].lightmap);
     for(int i=0;i<world_single_count;i++){
         world_single_group_t *sg=world_single_groups+i;world_batch_group_t *g=&sg->batch;if(!g->count)continue;
         texture_t *texture=R_TextureAnimation(g->surface->texinfo->texture);Hyena_BindTexture(texture->gl_texturenum);
-        if(!Hyena_DrawWorldLightmapped(world_pages[sg->page].vertices,world_indices,g->count,g->draw_offset*sizeof(unsigned short),R_UploadLightmap(sg->lightmap)))
+        if(!Hyena_DrawWorldLightmapped(world_pages[sg->page].vertices,world_indices,g->count,g->draw_offset*sizeof(unsigned short),sg->uploaded_lightmap))
             Sys_Error("Vulkan combined BSP draw failed");
         ++world_base_draws;world_base_draw_indices+=g->count;g->count=0;
     }
