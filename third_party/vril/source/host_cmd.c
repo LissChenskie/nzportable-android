@@ -19,6 +19,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 #include "nzportable_def.h"
+#ifdef PLATFORM_ANDROID
+#include "menu/menu_defs.h"
+#endif
 
 extern cvar_t	pausable;
 
@@ -368,10 +371,15 @@ void Host_Connect_f (void)
 		CL_StopPlayback ();
 		CL_Disconnect ();
 	}
-	Q_strncpyz (name, Cmd_Argv(1), sizeof(name));
+	strcpy (name, Cmd_Argv(1));
 	CL_EstablishConnection (name);
-    if (cls.state == ca_connected)
-	    Host_Reconnect_f ();
+	// Do not display a stuck loading plaque when the UDP handshake failed.
+	if (cls.state != ca_connected)
+		return;
+#ifdef PLATFORM_ANDROID
+	Menu_LAN_Connected();
+#endif
+	Host_Reconnect_f ();
 }
 
 

@@ -26,7 +26,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "../../nzportable_def.h"
 #include "net_udp.h"
-#include "net_lan_utils.h"
 
 #if !defined(_WIN32)
 #include <sys/socket.h>
@@ -37,10 +36,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include <sys/fcntl.h>
 #include <unistd.h>
-#include <errno.h>
 #ifdef PLATFORM_ANDROID
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <errno.h>
+#include <SDL.h>
 #endif
 
 extern cvar_t hostname;
@@ -51,27 +51,42 @@ static int net_broadcastsocket = 0;
 static struct qsockaddr broadcastaddr;
 
 static unsigned long myAddr;
+// Android Hotspot and Wi-Fi can have different directed broadcast addresses.
+// Refresh each scan: switching networks after app startup must keep discovery alive.
 #ifdef PLATFORM_ANDROID
-/* Pick the address from a live IPv4 network, not the stale interface at
- * process startup. Both Wi-Fi client and hotspot can change at runtime. */
-static unsigned long UDP_ActiveIPv4 (void)
+static int UDP_SendInterfaceBroadcasts(int socket, byte *buf, int len)
 {
-    struct ifaddrs *all = NULL, *it;
-    unsigned long address = htonl(INADDR_LOOPBACK);
-    if (getifaddrs(&all) != 0) return address;
-    for (it = all; it; it = it->ifa_next) {
+    struct ifaddrs *list = NULL, *it;
+    int sent = 0;
+    if (getifaddrs(&list) != 0) return 0;
+    for (it = list; it; it = it->ifa_next) {
+        struct sockaddr_in dest;
+        struct sockaddr_in *ip, *mask;
         if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET ||
-            !(it->ifa_flags & IFF_UP) || (it->ifa_flags & IFF_LOOPBACK)) continue;
-        address = ((struct sockaddr_in *)it->ifa_addr)->sin_addr.s_addr;
-        /* Wi-Fi and tethering interfaces are preferable to cellular/VPN. */
-        if (it->ifa_name && (!strncmp(it->ifa_name, "wlan", 4) ||
-                             !strncmp(it->ifa_name, "ap", 2) ||
-                             !strncmp(it->ifa_name, "swlan", 5))) break;
+            !(it->ifa_flags & IFF_UP) || (it->ifa_flags & IFF_LOOPBACK))
+            continue;
+        ip = (struct sockaddr_in *)it->ifa_addr;
+        if (ip->sin_addr.s_addr == 0) continue;
+        memset(&dest, 0, sizeof(dest));
+        dest.sin_family = AF_INET;
+        dest.sin_port = htons(net_hostport);
+        if ((it->ifa_flags & IFF_BROADCAST) && it->ifa_broadaddr) {
+            dest.sin_addr = ((struct sockaddr_in *)it->ifa_broadaddr)->sin_addr;
+        } else if (it->ifa_netmask && it->ifa_netmask->sa_family == AF_INET) {
+            mask = (struct sockaddr_in *)it->ifa_netmask;
+            dest.sin_addr.s_addr = (ip->sin_addr.s_addr & mask->sin_addr.s_addr) |
+                                   ~mask->sin_addr.s_addr;
+        } else continue;
+        if (dest.sin_addr.s_addr == 0 || dest.sin_addr.s_addr == INADDR_BROADCAST)
+            continue;
+        if (sendto(socket, (const char *)buf, len, 0,
+                   (struct sockaddr *)&dest, sizeof(dest)) == len) sent++;
     }
-    freeifaddrs(all);
-    return address;
+    freeifaddrs(list);
+    return sent;
 }
 #endif
+
 
 #include "net_udp.h"
 
@@ -106,7 +121,18 @@ int UDP_Init (void)
 				myAddr = inet_addr("127.0.0.1");
 		}
 	#elif defined(PLATFORM_ANDROID)
-		myAddr = UDP_ActiveIPv4();
+		// Bionic has no gethostid(). Choose an actual active IPv4 interface.
+		struct ifaddrs *interfaces = NULL;
+		myAddr = htonl(INADDR_LOOPBACK);
+		if (getifaddrs(&interfaces) == 0) {
+			for (struct ifaddrs *it = interfaces; it; it = it->ifa_next) {
+				if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET ||
+					!(it->ifa_flags & IFF_UP) || (it->ifa_flags & IFF_LOOPBACK)) continue;
+				myAddr = ((struct sockaddr_in *)it->ifa_addr)->sin_addr.s_addr;
+				break;
+			}
+			freeifaddrs(interfaces);
+		}
 	#else
 		myAddr = gethostid();
 	#endif
@@ -141,18 +167,6 @@ int UDP_Init (void)
 }
 
 //=============================================================================
-
-#ifdef PLATFORM_ANDROID
-const char *UDP_ActiveAddressString(void)
-{
-    static char address[INET_ADDRSTRLEN];
-    struct in_addr ip;
-    ip.s_addr=UDP_ActiveIPv4();
-    if (!inet_ntop(AF_INET, &ip, address, sizeof(address)))
-        snprintf(address,sizeof(address),"127.0.0.1");
-    return address;
-}
-#endif
 
 void UDP_Shutdown (void)
 {
@@ -242,7 +256,6 @@ the local network components to fill in the rest
 */
 static int PartialIPAddress (char *in, struct qsockaddr *hostaddr)
 {
-    if(!in || strlen(in)>=255)return -1;
 	char buff[256];
 	char *b;
 	int addr;
@@ -319,8 +332,15 @@ int UDP_Read (int socket, byte *buf, int len, struct qsockaddr *addr)
 	int ret;
 
 	ret = recvfrom(socket, (char *)buf, len, 0, (struct sockaddr *)addr, (socklen_t*)&addrlen);
-	if (ret == -1 )
+	if (ret == -1) {
+#ifdef PLATFORM_ANDROID
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
+		SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "UDP recvfrom error: %d", errno);
+		return -1;
+#else
 		return 0;
+#endif
+	}
 	return ret;
 }
 
@@ -359,38 +379,12 @@ int UDP_Broadcast (int socket, byte *buf, int len)
 		}
 	}
 
+	ret = UDP_Write (socket, buf, len, &broadcastaddr);
 #ifdef PLATFORM_ANDROID
-    /* INADDR_BROADCAST is not routed on all Android hotspot drivers. Send
-     * the existing Quake discovery packet to each active subnet broadcast. */
-    struct ifaddrs *all = NULL, *it;
-    int sent = 0;
-    if (getifaddrs(&all) == 0) {
-        for (it = all; it; it = it->ifa_next) {
-            struct sockaddr_in target;
-            uint32_t ip, mask;
-            if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET ||
-                !(it->ifa_flags & IFF_UP) || !(it->ifa_flags & IFF_BROADCAST) ||
-                (it->ifa_flags & IFF_LOOPBACK) ||
-                !it->ifa_netmask || it->ifa_netmask->sa_family != AF_INET)
-                continue;
-            ip = ((struct sockaddr_in *)it->ifa_addr)->sin_addr.s_addr;
-            mask = ((struct sockaddr_in *)it->ifa_netmask)->sin_addr.s_addr;
-            memset(&target, 0, sizeof(target));
-            target.sin_family = AF_INET;
-            target.sin_port = htons(net_hostport);
-            target.sin_addr.s_addr = LAN_SubnetBroadcast(ip,mask);
-            if (sendto(socket, (const char *)buf, len, 0,
-                       (struct sockaddr *)&target, sizeof(target)) == len)
-                ++sent;
-        }
-        freeifaddrs(all);
-    }
-    /* Keep limited/global-broadcast fallback for nonstandard interfaces. */
-    ret = UDP_Write(socket, buf, len, &broadcastaddr);
-    return sent ? len : ret;
-#else
-    return UDP_Write(socket, buf, len, &broadcastaddr);
+	// Some Android tethering routers filter limited broadcast but permit subnet broadcast.
+	if (UDP_SendInterfaceBroadcasts(socket, buf, len) > 0) ret = len;
 #endif
+	return ret;
 }
 
 //=============================================================================
@@ -400,8 +394,15 @@ int UDP_Write (int socket, byte *buf, int len, struct qsockaddr *addr)
 	int ret;
 
 	ret = sendto (socket, (const char *)buf, len, 0, (struct sockaddr *)addr, sizeof(struct qsockaddr));
-	if (ret == -1 )
+	if (ret == -1) {
+#ifdef PLATFORM_ANDROID
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
+		SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "UDP sendto error: %d", errno);
+		return -1;
+#else
 		return 0;
+#endif
+	}
 	return ret;
 }
 
@@ -421,15 +422,16 @@ char *UDP_AddrToString (struct qsockaddr *addr)
 
 int UDP_StringToAddr (char *string, struct qsockaddr *addr)
 {
-    unsigned octet[4],port=26000;
-    unsigned int ipaddr;
-    if(!LAN_ParseIPv4(string,octet,&port,(unsigned)net_hostport))return -1;
-    ipaddr = (octet[0]<<24) | (octet[1]<<16) | (octet[2]<<8) | octet[3];
-    memset(addr,0,sizeof(*addr));
-    addr->sa_family = AF_INET;
-    ((struct sockaddr_in *)addr)->sin_addr.s_addr = htonl(ipaddr);
-    ((struct sockaddr_in *)addr)->sin_port = htons(port);
-    return 0;
+	int ha1, ha2, ha3, ha4, hp;
+	int ipaddr;
+
+	sscanf(string, "%d.%d.%d.%d:%d", &ha1, &ha2, &ha3, &ha4, &hp);
+	ipaddr = (ha1 << 24) | (ha2 << 16) | (ha3 << 8) | ha4;
+
+	addr->sa_family = AF_INET;
+	((struct sockaddr_in *)addr)->sin_addr.s_addr = htonl(ipaddr);
+	((struct sockaddr_in *)addr)->sin_port = htons(hp);
+	return 0;
 }
 
 //=============================================================================
@@ -442,12 +444,23 @@ int UDP_GetSocketAddr (int socket, struct qsockaddr *addr)
 	Q_memset(addr, 0, sizeof(struct qsockaddr));
 	getsockname(socket, (struct sockaddr *)addr, (socklen_t*)&addrlen);
 	a = ((struct sockaddr_in *)addr)->sin_addr.s_addr;
-	if (a == 0 || a == inet_addr("127.0.0.1")) {
 #ifdef PLATFORM_ANDROID
-        myAddr = UDP_ActiveIPv4();
+	if (a == 0 || a == inet_addr("127.0.0.1")) {
+		struct ifaddrs *list = NULL, *it;
+		if (getifaddrs(&list) == 0) {
+			for (it = list; it; it = it->ifa_next) {
+				if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET ||
+				    !(it->ifa_flags & IFF_UP) || (it->ifa_flags & IFF_LOOPBACK))
+					continue;
+				myAddr = ((struct sockaddr_in *)it->ifa_addr)->sin_addr.s_addr;
+				break;
+			}
+			freeifaddrs(list);
+		}
+	}
 #endif
+	if (a == 0 || a == inet_addr("127.0.0.1"))
 		((struct sockaddr_in *)addr)->sin_addr.s_addr = myAddr;
-    }
 
 	return 0;
 }
@@ -457,11 +470,10 @@ int UDP_GetSocketAddr (int socket, struct qsockaddr *addr)
 int UDP_GetNameFromAddr (struct qsockaddr *addr, char *name)
 {
 #ifdef PLATFORM_ANDROID
-    /* Reverse DNS on hotspot guests is often unavailable and blocks the game thread. */
-    Q_strncpy(name,UDP_AddrToString(addr),NET_NAMELEN-1);
-    name[NET_NAMELEN-1]=0;
-    return 0;
-#else
+	// Reverse DNS may block indefinitely on isolated Hotspot networks.
+	Q_strncpyz(name, UDP_AddrToString(addr), NET_NAMELEN);
+	return 0;
+#endif
 	struct hostent *hostentry;
 
 	hostentry = gethostbyaddr ((char *)&((struct sockaddr_in *)addr)->sin_addr, sizeof(struct in_addr), AF_INET);
@@ -473,7 +485,6 @@ int UDP_GetNameFromAddr (struct qsockaddr *addr, char *name)
 
 	Q_strcpy (name, UDP_AddrToString (addr));
 	return 0;
-#endif
 }
 
 //=============================================================================
@@ -482,8 +493,31 @@ int UDP_GetAddrFromName(char *name, struct qsockaddr *addr)
 {
 	struct hostent *hostentry;
 
+#ifdef PLATFORM_ANDROID
+	if (name[0] >= '0' && name[0] <= '9') {
+		struct in_addr ip;
+		char host[INET_ADDRSTRLEN];
+		const char *colon = strchr(name, ':');
+		size_t len = colon ? (size_t)(colon-name) : strlen(name);
+		unsigned long port = (unsigned long)net_hostport;
+		if (!len || len >= sizeof(host)) return -1;
+		memcpy(host,name,len);host[len]=0;
+		if (inet_pton(AF_INET,host,&ip)!=1)return -1;
+		if(colon){
+			char *end=NULL;
+			port=strtoul(colon+1,&end,10);
+			if(end==colon+1 || *end || port==0 || port>65535)return -1;
+		}
+		memset(addr,0,sizeof(*addr));
+		((struct sockaddr_in *)addr)->sin_family=AF_INET;
+		((struct sockaddr_in *)addr)->sin_addr=ip;
+		((struct sockaddr_in *)addr)->sin_port=htons((unsigned short)port);
+		return 0;
+	}
+#else
 	if (name[0] >= '0' && name[0] <= '9')
 		return PartialIPAddress (name, addr);
+#endif
 
 	hostentry = gethostbyname (name);
 	if (!hostentry)

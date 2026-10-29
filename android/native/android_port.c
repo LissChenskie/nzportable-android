@@ -288,13 +288,13 @@ int Android_Event(const SDL_Event *event){
                 case NZP_TOUCH_NEUTRAL:Android_ResetTouch();return 1;
                 case NZP_LAN_CONNECT: {
                     char *ip=(char *)event->user.data1;
-                    Menu_LAN_JoinAddress(ip);
+                    Menu_LAN_ConnectAddress(ip);
                     free(ip);
                     return 1;
                 }
                 case NZP_LAN_NAME: {
                     char *name=(char *)event->user.data1;
-                    Menu_LAN_SetServerName(name);
+                    Menu_LAN_SetName(name);
                     free(name);
                     return 1;
                 }

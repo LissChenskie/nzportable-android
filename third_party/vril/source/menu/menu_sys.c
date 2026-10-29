@@ -360,12 +360,14 @@ void Menu_SetPreviousMenu (void)
 		case m_main:
 			Menu_Main_Set();
 			return;
-        case m_lan:
-            Menu_LAN_Set();
-            return;
-        case m_lanbrowser:
-            Menu_LAN_BrowserSet();
-            return;
+		case m_lan:
+		case m_lancreate:
+		case m_lanfind:
+			Menu_LAN_Set();
+			return;
+		case m_lanhost:
+			Menu_LAN_HostClose();
+			return;
 		case m_stockmaps:
 			Menu_StockMaps_Set();
 			break;

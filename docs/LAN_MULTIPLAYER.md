@@ -1,72 +1,162 @@
-# NZPortable Android LAN cooperative multiplayer — experimental
+# NZPortable Android — LAN cooperative mode (experimental)
 
-Status: engine-integrated LAN hosting and joining, but four-player gameplay on real
-Android phones has NOT been verified. Successful compilation is not proof of gameplay sync.
+This document describes the actual Vril/Quake UDP implementation in the
+`feat/lan-coop-android-20261029` branch. It is **not a statement that four
+physical Android devices have already been verified**. Read the known limits.
 
-## Features implemented in this branch
+## Architecture
 
-- The COOPERATIVE main-menu entry is enabled.
-- CREATE LAN GAME uses existing stock/custom maps and pre-game settings, followed
-  by the real Vril local server with coop=1, deathmatch=0, maxplayers 2–4.
-- FIND LAN GAMES uses Quake Datagram UDP discovery and real hostcache entries.
-  The server list displays map, advertised name and occupied/max slots.
-- CONNECT BY IP opens an Android EditText dialog, accepts IPv4[:port], validates
-  its octets and port and hands the result to existing Vril connect.
-- The host displays its actual local interface address and connected player
-  names in the pause menu; clients have an explicit leave option.
-- Directed broadcasts are sent to all active IPv4 subnet broadcast addresses
-  with limited broadcast fallback, without hardcoding any hotspot IP.
-- LAN discovery uses the actual reply source IP if a hotspot advertises another
-  unreachable interface. Numeric LAN joins skip synchronous slist discovery.
-- Android reverse-DNS lookups are avoided; the socket itself remains nonblocking.
-- All Android address/name dialog input crosses into the SDL game thread via events.
-- Existing RetroTouch gameplay controls, GLES optimization and solo startup remain.
+- **Host**: the player's Android app runs Vril's authoritative local Quake
+  server and its own loopback client in the same `:game` process.
+- **Remote peers**: use Vril's existing datagram/UDP transport:
+  `net_main.c`, `net_dgrm.c`, `net_udp_sdl.c`, `net_loop.c`,
+  `host.c`, `host_cmd.c` and `sv_main.c`.
+- **Default port**: UDP **26000**. The game does not need an external service,
+  account, cloud server, mobile data connection, or web service.
+- **Discovery**: standard Quake `CCREQ_SERVER_INFO` broadcasts on the
+  limited-broadcast address and all suitable active IPv4 interfaces' directed
+  broadcast addresses (Android); the reply contains the real server endpoint,
+  name, map, active/max player count, and protocol version.
+- **Direct join**: the user can input a complete numeric
+  `IPv4[:port]` address. The address is validated before calling the
+  existing `connect` engine command; no arbitrary console commands are
+  accepted.
+- **Coop cvars**: `coop 1`, `deathmatch 0`, `maxplayers 2..4`,
+  `listen 1` are applied before `map` to stop Quake's multiplayer
+  deathmatch default. The server simulation is paused in the LAN lobby;
+  the host explicitly unpauses to begin the match.
+- **Authority**: Vril already simulates zombies, projectiles, movement and
+  game entities in the host server, with per-client signon and Quake
+  world-state messages. We do *not* create independent client zombie worlds.
+  The exact outcomes of special NZ:P mechanics still depend on the particular
+  compiled `nzp/progs.dat` imported on each device.
 
-## How to play / limitations
+## Setup
 
-1. On phone A enable Android Wi-Fi hotspot; on B (and optionally C/D) connect to it.
-   Home Wi-Fi works too if clients can send UDP packets to one another.
-2. Install the same Android APK and import identical game-data archives on all devices.
-3. On A: COOPERATIVE > CREATE LAN GAME > map > START GAME. Set the player count
-   before choosing the map. The host is also a player.
-4. Once A has loaded the world, on B select COOPERATIVE > FIND LAN GAMES.
-   If discovery fails, use CONNECT BY IP with the address displayed on A,
-   e.g. 192.168.1.1:26000. This is an example, not an assumed hotspot address.
+1. Install the same APK **and the same complete NZPortable PC game ZIP** on
+   every phone. Every phone needs the corresponding maps, sounds and
+   `nzp/progs.dat`. A matching protocol number alone does not verify all
+   game assets.
+2. The host enables an Android **Wi-Fi hotspot**, or everybody connects to
+   the same home Wi-Fi. Turn the hotspot on *before* launching NZPortable.
+   No internet or mobile-data plan is required.
+3. Host: `COOPERATIVE > CREATE LAN GAME`, set name, slots (2–4),
+   difficulty and round, select map, then choose `OPEN LAN LOBBY`.
+   The app actually loads a server map and stops its physics while waiting.
+4. Peers: `COOPERATIVE > FIND LAN GAMES`, select the listed game. If the
+   hotspot filters broadcast, use `CONNECT BY IP` and type
+   `hostIPv4:26000` (example: `192.168.43.1:26000` **only if that is
+   the actual host IP**; there is no fixed hotspot subnet).
+5. The host sees joined player names and counts. Tap `START MATCH`.
+   `CLOSE SERVER` shuts down the hosting session.
 
-Vril creates its server as a map starts. A persistent pre-match lobby with
-ready states and a host-controlled launch AFTER other players join is not
-implemented. Joining the real running server is the available workflow.
+If your Android device has multiple active IPv4 networks, the advertised
+address in the lobby may not be the one peers can reach. Use the address
+shown in the hotspot configuration or the connected peers' gateway, and
+join by IP. Private hotspot routing, wireless client isolation and
+manufacturer network policies can still prevent device-to-device UDP.
 
-## Gameplay authority and asset compatibility
+## Current integration
 
-Vril's local host runs the authoritative server, with Quake datagram reliable
-packets and QuakeC world simulation. The upstream NZ:P QuakeC sources have
-multi-player player spawn/disconnect, rounds, and zombie AI loops:
-https://github.com/nzp-team/quakec/tree/main/source/server
-The FTEQW QuakeC source contains FTE-specific compiler branches; it is not
-automatically interchangeable with the user's imported Vril progs.dat.
-The Android client currently has no game-asset hash/version negotiation beyond
-the engine's existing network protocol compatibility check.
+Implemented in the Android branch:
 
-## CI tests and outstanding validation
+- Actual Vril UDP discovery/connect/host and original network server
+- Android hotspot/Wi-Fi directed + limited broadcast
+- Live subnet IPv4 lookup; fast numeric connect; nonblocking socket polling
+- UDP recv/send error differentiation and safe shutdown socket iteration
+- Native Android address/name text input via SDL event queue
+- Coop host creation, map selection, slots, round and difficulty
+- Host lobby with active engine client list and manual start
+- Build and endpoint validation tests; host loopback UDP transport smoke test
+- Retains previous map-load fix and RetroTouch gameplay overlay
 
-tests/run_host_tests.sh runs tests/test_lan_network.c: valid and malicious
-IP/port inputs plus /24, /28 and /16 directed broadcast calculations.
-Existing GLES and import checks run too. GitHub Actions compiles ARM64 and ARMv7.
+### Important remaining work / not verified
 
-NOT YET VERIFIED on physical hardware:
-- Two-phone hotspot discovery, connect and simultaneous visible player entities.
-- Four participants, synchronized zombie kills, score, round, door, perks, weapons.
-- Host/player disconnect, reconnection, missing/mismatched map, router isolation.
-- 30-minute four-phone run under packet loss and thermal throttling.
+- **No physical two-phone hotspot session was available for this build**.
+  Thus actual Android hotspot discovery, map signon, spawn placement,
+  client-to-client visibility, ammo, purchases, AI targeting, zombies,
+  round progression and 30-minute stability have **not** been verified.
+- Java touch UI and native network compilation succeeding does not establish
+  correct in-game co-op. Read the Vril logs from *both* host and client.
+- Version mismatch uses the original Quake `NET_PROTOCOL_VERSION` gate;
+  asset hashes/version of `progs.dat` and map BSP content are **not**
+  negotiated yet. Only connect devices with identical imports.
+- `FIND LAN GAMES` shows host name/map/slots; it does not yet perform a
+  separate RTT ping measurement or distinct detailed resource compatibility
+  probe.
+- There is no automatic reconnection with saved inventory/points. After
+  dropped Wi-Fi, reconnect manually; restoration of original player state
+  is not guaranteed. A disconnected player should not terminate the Vril
+  server, but this is not yet phone-tested.
+- There is no client-side Ready toggle in the LAN lobby. Joined clients
+  remain connected to the paused server until the host unpauses it.
+- `connect` still uses the classic synchronous Quake initial connection
+  handshake, with short SDL yields on Android. Normal gameplay uses
+  nonblocking UDP sockets, but failed connection setup can still briefly
+  interrupt the UI.
+- Clients receive Vril's standard disconnection status when the host closes,
+  not a new customized Android popup.
+- The host/three-client, simulated packet loss, full player state replication,
+  zombie synchronization and long-session acceptance tests cannot be
+  honestly certified without engine-level integration and physical tests.
 
-Known limitations: old Datagram_Connect still blocks the game frame while trying
-its synchronous handshake; host backgrounding suspends the server main loop,
-potentially causing a timeout. Neither reconnection restoration nor ready-status
-sync is promised.
+## Automated checks
 
-To collect diagnostic logs on a Windows PC:
+The GitHub Actions Android workflow produces the APKs and runs
+`tests/run_host_tests.sh`. It now includes:
 
-    adb logcat -d | findstr /I "NZP_PERF NZP_LEVEL_LOAD UDP LAN"
+- `tests/lan_endpoint_test.c`: runs the **same parser** used by the Android
+  IP entrypoint, rejects malformed endpoints and console injection strings.
+- `tests/test_lan_udp_transport.py`: proves four separate UDP sockets can
+  exchange messages with one host, sockets are nonblocking, and a client can
+  reconnect after closing its socket **on local host networking**. This is
+  a transport smoke test, not an emulator/gameplay or Vril protocol test.
+- Existing GLES, render and game-data installer regression tests.
 
-Do not merge or call multiplayer fully verified based on compilation alone.
+## Real-world acceptance matrix (to be executed)
+
+| Scenario | Status |
+|---|---|
+| ARM64 Android APK compiles | CI |
+| Host opens UDP server | Code path wired; phone verification required |
+| Second Android connects over hotspot | Not verified |
+| Discovery across hotspot and home Wi-Fi | Not verified |
+| Manual IPv4 join | Code path wired; phone verification required |
+| Host + three clients | Not verified |
+| Same map and visible players | Not verified |
+| Zombie spawns, kills and rounds identical | Not verified |
+| Purchases, equipment, powerups and points identical | Not verified |
+| Client disconnect, continue and reconnect | Not verified |
+| Lossy network and 30-minute match | Not verified |
+| All clients' touch controls | Not verified |
+
+## Logs and troubleshooting
+
+On a Windows PC with ADB, connect each phone in turn:
+
+```powershell
+adb logcat -c
+adb logcat -d -v time > lan-device-log.txt
+adb shell dumpsys meminfo org.nzportable.android:game
+```
+
+Filter for `NZP_PERF`, `UDP`, `Network`, `Server`, `Signon`,
+`No Response`, `client`, `Warning`, `Error` and `AndroidRuntime`.
+
+When a second phone cannot join, confirm that a server was created in
+`OPEN LAN LOBBY`, the device is on the host's hotspot and its real IP
+was supplied, no client isolation is enabled, and the import data matches.
+Try manually using the host IP before blaming discovery. A router may
+block broadcast but still allow unicast UDP.
+
+## Sources
+
+- [NZPortable (upstream)](https://github.com/nzp-team/nzportable)
+- [Vril Engine](https://github.com/nzp-team/vril-engine)
+- [QuakeC](https://github.com/nzp-team/quakec)
+- [FTEQW](https://github.com/nzp-team/fteqw)
+
+The QuakeC repository includes server-player logic, zombies and rounds
+using shared player entities and server messages, but the imported compiled
+`progs.dat` remains an independent prerequisite. We cannot confirm its
+version from this repository alone.

@@ -33,6 +33,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #endif	// BAN_TEST
 
 #include "../../nzportable_def.h"
+#ifdef PLATFORM_ANDROID
+#include <SDL.h>
+#endif
 #include "net_dgrm.h"
 
 // these two macros are to make the code more readable
@@ -1113,21 +1116,14 @@ static void _Datagram_SearchForHosts (qboolean xmit)
 		if (MSG_ReadByte() != CCREP_SERVER_INFO)
 			continue;
 
-        /* Do not trust an advertised interface IP that is unreachable from
-         * the guest (e.g. cellular/VPN when the host runs Android Hotspot).
-         * Keep the advertised game port, but use the actual reply source IP. */
-        {
-            struct qsockaddr advertised;
-            struct qsockaddr source=readaddr;
-            char *endpoint=MSG_ReadString();
-            if(dfunc.GetAddrFromName(endpoint,&advertised)<0)continue;
-            if(dfunc.AddrCompare(&advertised,&source)<0) {
-                readaddr=source;
-                dfunc.SetSocketPort(&readaddr,dfunc.GetSocketPort(&advertised));
-            } else {
-                readaddr=advertised;
-            }
-        }
+#ifdef PLATFORM_ANDROID
+        // The payload can advertise cellular rmnet0 while the reply actually
+        // arrived from the Hotspot/Wi-Fi interface. Use observed UDP source IP.
+        // Quake server-info packets originate on the real UDP 26000 listen port.
+        MSG_ReadString();
+#else
+        dfunc.GetAddrFromName(MSG_ReadString(), &readaddr);
+#endif
 		// search the cache for this server
 		for (n = 0; n < hostCacheCount; n++)
 			if (dfunc.AddrCompare(&readaddr, &hostcache[n].addr) == 0)
@@ -1279,8 +1275,11 @@ static qsocket_t *_Datagram_Connect (char *host)
 					continue;
 				}
 			}
-		}
-		while (ret == 0 && (SetNetTime() - start_time) < 2.5);
+#ifdef PLATFORM_ANDROID
+			// No CPU busy-spin while probing a sleeping Wi-Fi server.
+			if (ret == 0) SDL_Delay(1);
+#endif
+		} while (ret == 0 && (SetNetTime() - start_time) < 2.5);
 		if (ret)
 			break;
 		Con_Printf("still trying...\n"); SCR_UpdateScreen ();
@@ -1307,7 +1306,7 @@ static qsocket_t *_Datagram_Connect (char *host)
 	if (ret == CCREP_REJECT)
 	{
 		reason = MSG_ReadString();
-		Con_Printf(reason);
+		Con_Printf("%s\\n",reason);
 		Q_strncpy(m_return_reason, reason, 31);
 		goto ErrorReturn;
 	}

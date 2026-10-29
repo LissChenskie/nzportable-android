@@ -23,7 +23,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 /* MAIN MENU */
 qboolean in_submenu;
 
-void Menu_Solo(void) { menu_is_solo = true; Menu_StockMaps_Set(); }
+void Menu_Solo(void) {
+    // A previous LAN server must not leak maxplayers/coop into solo games.
+    if(sv.active) Cbuf_AddText("disconnect\n");
+    Cbuf_AddText("listen 0\nmaxplayers 1\ncoop 0\ndeathmatch 0\n");
+    menu_is_solo = true;
+    Menu_StockMaps_Set();
+}
 void Menu_Quit(void) { key_dest = key_console; Host_Quit_f(); }
 void Menu_EnterSubMenu(void) { Menu_ResetMenuButtons(); in_submenu = true; }
 void Menu_ExitSubMenu(void) { in_submenu = false; Menu_ResetMenuButtons(); }
@@ -69,20 +75,20 @@ void Menu_Main_Draw (void)
 
 	if (!in_submenu) {
 		Menu_DrawButton(1, 0, "SOLO", "Play Solo.", Menu_Solo);
-		Menu_DrawButton(2, 1, "COOPERATIVE", "Wi-Fi and Hotspot LAN games.", Menu_LAN_Set);
+		Menu_DrawButton(2, 1, "COOPERATIVE", "Play over LAN or Android Hotspot.", Menu_LAN_Set);
 
 		Menu_DrawDivider(3);
 
-		Menu_DrawButton(3, 2, "CONFIGURATION", "Tweak Game Related Options", Menu_Configuration_Set);
-		Menu_DrawButton(4, 3, "CHARACTER BIOS", "View Character Bios", Menu_Bios_Set);
+		Menu_DrawButton(3, 1, "CONFIGURATION", "Tweak Game Related Options", Menu_Configuration_Set);
+		Menu_DrawButton(4, 2, "CHARACTER BIOS", "View Character Bios", Menu_Bios_Set);
 
 		Menu_DrawDivider(5);
 
-		Menu_DrawButton(5, 4, "CREDITS", "NZ:P Team + Special Thanks", Menu_Credits_Set);
+		Menu_DrawButton(5, 3, "CREDITS", "NZ:P Team + Special Thanks", Menu_Credits_Set);
 
 		Menu_DrawDivider(6);
 
-		Menu_DrawButton(6, 5, "QUIT GAME", "Return to Home Screen", Menu_EnterSubMenu);
+		Menu_DrawButton(6, 4, "QUIT GAME", "Return to Home Screen", Menu_EnterSubMenu);
 
 		Menu_DrawSocialBadge (1, MENU_SOC_YOUTUBE);
 		Menu_DrawSocialBadge (2, MENU_SOC_BLUESKY);

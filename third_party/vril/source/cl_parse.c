@@ -21,6 +21,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "nzportable_def.h"
 #ifdef PLATFORM_ANDROID
+#include "menu/menu_defs.h"
+#endif
+#ifdef PLATFORM_ANDROID
 #include <SDL_log.h>
 #endif
 
@@ -449,6 +452,15 @@ void CL_ParseServerInfo (void)
 	for (i=1 ; i<nummodels ; i++)
 	{
 		cl.model_precache[i] = Mod_ForName (model_precache[i], false);
+#ifdef PLATFORM_ANDROID
+        // World BSP cannot be substituted by the missing-model placeholder.
+        // Reject incompatible game assets before R_NewMap dereferences world geometry.
+        if (i == 1 && !cl.model_precache[i] && !sv.active) {
+            Menu_LAN_ShowError("Required server map is missing");
+            Host_EndGame("Missing LAN map %s",model_precache[i]);
+            return;
+        }
+#endif
 
 		// rbaldwin2 -- At last resort use a missing model
 		if (cl.model_precache[i] == NULL)

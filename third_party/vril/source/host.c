@@ -20,6 +20,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // host.c -- coordinates spawning and killing of local servers
 
 #include "nzportable_def.h"
+#ifdef PLATFORM_ANDROID
+#include "menu/menu_defs.h"
+#endif
 
 #ifdef PLATFORM_SDL
 extern qboolean sdl_running;
@@ -114,6 +117,9 @@ void Host_EndGame (char *message, ...)
 	vsprintf (string,message,argptr);
 	va_end (argptr);
 	Con_DPrintf ("Host_EndGame: %s\n",string);
+#ifdef PLATFORM_ANDROID
+    qboolean lost_lan_host = !sv.active && cls.state == ca_connected && !menu_is_solo;
+#endif
 
 	if (sv.active)
 		Host_ShutdownServer (false);
@@ -125,6 +131,9 @@ void Host_EndGame (char *message, ...)
 		CL_NextDemo ();
 	else
 		CL_Disconnect ();
+#ifdef PLATFORM_ANDROID
+    if (lost_lan_host) Menu_LAN_ShowError("Server disconnected or game ended");
+#endif
 
     Clear_LoadingFill ();
 

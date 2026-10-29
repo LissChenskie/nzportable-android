@@ -237,14 +237,12 @@ void CL_EstablishConnection (char *host)
 	cls.netcon = NET_Connect (host);
 	if (!cls.netcon) {
 #ifdef PLATFORM_ANDROID
-        /* An unreachable/full LAN host must not abort the Android game VM. */
-        extern char m_return_reason[32];
-        Menu_LAN_SetStatus(m_return_reason[0] ?
-                          m_return_reason : "Unable to connect to LAN host.");
-        Menu_LAN_Set();
+        // Failed Wi-Fi/Hotspot join is recoverable, not a fatal engine error.
+        Con_Printf("LAN connection failed: %s\n", host);
+        Menu_LAN_ConnectionFailed();
         return;
 #else
-		Host_Error ("CL_Connect: connect failed\n");
+        Host_Error("CL_Connect: connect failed\n");
 #endif
     }
 	//Con_DPrintf ("CL_EstablishConnection: connected to %s\n", host);
