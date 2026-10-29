@@ -49,6 +49,27 @@ static int net_broadcastsocket = 0;
 static struct qsockaddr broadcastaddr;
 
 static unsigned long myAddr;
+#ifdef PLATFORM_ANDROID
+/* Pick the address from a live IPv4 network, not the stale interface at
+ * process startup. Both Wi-Fi client and hotspot can change at runtime. */
+static unsigned long UDP_ActiveIPv4 (void)
+{
+    struct ifaddrs *all = NULL, *it;
+    unsigned long address = htonl(INADDR_LOOPBACK);
+    if (getifaddrs(&all) != 0) return address;
+    for (it = all; it; it = it->ifa_next) {
+        if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET ||
+            !(it->ifa_flags & IFF_UP) || (it->ifa_flags & IFF_LOOPBACK)) continue;
+        address = ((struct sockaddr_in *)it->ifa_addr)->sin_addr.s_addr;
+        /* Wi-Fi and tethering interfaces are preferable to cellular/VPN. */
+        if (it->ifa_name && (!strncmp(it->ifa_name, "wlan", 4) ||
+                             !strncmp(it->ifa_name, "ap", 2) ||
+                             !strncmp(it->ifa_name, "swlan", 5))) break;
+    }
+    freeifaddrs(all);
+    return address;
+}
+#endif
 
 #include "net_udp.h"
 
@@ -83,18 +104,7 @@ int UDP_Init (void)
 				myAddr = inet_addr("127.0.0.1");
 		}
 	#elif defined(PLATFORM_ANDROID)
-		// Bionic has no gethostid(). Choose an actual active IPv4 interface.
-		struct ifaddrs *interfaces = NULL;
-		myAddr = htonl(INADDR_LOOPBACK);
-		if (getifaddrs(&interfaces) == 0) {
-			for (struct ifaddrs *it = interfaces; it; it = it->ifa_next) {
-				if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET ||
-					!(it->ifa_flags & IFF_UP) || (it->ifa_flags & IFF_LOOPBACK)) continue;
-				myAddr = ((struct sockaddr_in *)it->ifa_addr)->sin_addr.s_addr;
-				break;
-			}
-			freeifaddrs(interfaces);
-		}
+		myAddr = UDP_ActiveIPv4();
 	#else
 		myAddr = gethostid();
 	#endif
@@ -334,7 +344,38 @@ int UDP_Broadcast (int socket, byte *buf, int len)
 		}
 	}
 
-	return UDP_Write (socket, buf, len, &broadcastaddr);
+#ifdef PLATFORM_ANDROID
+    /* INADDR_BROADCAST is not routed on all Android hotspot drivers. Send
+     * the existing Quake discovery packet to each active subnet broadcast. */
+    struct ifaddrs *all = NULL, *it;
+    int sent = 0;
+    if (getifaddrs(&all) == 0) {
+        for (it = all; it; it = it->ifa_next) {
+            struct sockaddr_in target;
+            uint32_t ip, mask;
+            if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET ||
+                !(it->ifa_flags & IFF_UP) || !(it->ifa_flags & IFF_BROADCAST) ||
+                (it->ifa_flags & IFF_LOOPBACK) ||
+                !it->ifa_netmask || it->ifa_netmask->sa_family != AF_INET)
+                continue;
+            ip = ((struct sockaddr_in *)it->ifa_addr)->sin_addr.s_addr;
+            mask = ((struct sockaddr_in *)it->ifa_netmask)->sin_addr.s_addr;
+            memset(&target, 0, sizeof(target));
+            target.sin_family = AF_INET;
+            target.sin_port = htons(net_hostport);
+            target.sin_addr.s_addr = (ip & mask) | ~mask;
+            if (sendto(socket, (const char *)buf, len, 0,
+                       (struct sockaddr *)&target, sizeof(target)) == len)
+                ++sent;
+        }
+        freeifaddrs(all);
+    }
+    /* Keep limited/global-broadcast fallback for nonstandard interfaces. */
+    ret = UDP_Write(socket, buf, len, &broadcastaddr);
+    return sent ? len : ret;
+#else
+    return UDP_Write(socket, buf, len, &broadcastaddr);
+#endif
 }
 
 //=============================================================================
@@ -387,8 +428,12 @@ int UDP_GetSocketAddr (int socket, struct qsockaddr *addr)
 	Q_memset(addr, 0, sizeof(struct qsockaddr));
 	getsockname(socket, (struct sockaddr *)addr, (socklen_t*)&addrlen);
 	a = ((struct sockaddr_in *)addr)->sin_addr.s_addr;
-	if (a == 0 || a == inet_addr("127.0.0.1"))
+	if (a == 0 || a == inet_addr("127.0.0.1")) {
+#ifdef PLATFORM_ANDROID
+        myAddr = UDP_ActiveIPv4();
+#endif
 		((struct sockaddr_in *)addr)->sin_addr.s_addr = myAddr;
+    }
 
 	return 0;
 }
