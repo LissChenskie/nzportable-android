@@ -1,45 +1,86 @@
 #!/usr/bin/env python3
-"""Compare on-device NZP_PERF logs; no invented performance numbers."""
+"""Compare on-device NZP_PERF records. Missing measurements remain N/A."""
+from __future__ import annotations
+
 import re
 import statistics
 import sys
 from pathlib import Path
 
-KEYS = ("fps", "low_1pct_fps", "cpu_ms_avg", "cpu_ms_max",
-        "draw_calls_per_frame", "cpu_percent_one_core", "rss_peak_kb")
-def read_samples(filename):
-    out = []
+METRICS = (
+    ("fps", "Average FPS", "higher"),
+    ("low_1pct_fps", "1% low FPS", "higher"),
+    ("frame_p50_ms", "P50 frame time, ms", "lower"),
+    ("frame_p95_ms", "P95 frame time, ms", "lower"),
+    ("frame_p99_ms", "P99 frame time, ms", "lower"),
+    ("cpu_ms_avg", "CPU thread time, ms", "lower"),
+    ("cpu_ms_max", "Peak CPU thread ms", "lower"),
+    ("draw_calls_per_frame", "Draw calls / frame", "lower"),
+    ("flushes_per_frame", "GLES flushes / frame", "lower"),
+    ("texture_binds_per_frame", "Texture binds / frame", "lower"),
+    ("texture_params_per_frame", "Texture parameter updates / frame", "lower"),
+    ("shader_switches_per_frame", "Shader switches / frame", "lower"),
+    ("uniform_updates_per_frame", "Uniform updates / frame", "lower"),
+    ("vbo_uploads_per_frame", "VBO uploads / frame", "lower"),
+    ("vbo_upload_kib_per_frame", "Stream upload KiB / frame", "lower"),
+    ("skipped_states_per_frame", "Skipped redundant state calls / frame", "higher"),
+    ("cpu_percent_one_core", "CPU use as % of 1 core", "lower"),
+    ("rss_peak_kb", "Process peak RSS, KiB", "lower"),
+)
+PATTERN = re.compile(r"([A-Za-z0-9_]+)=([-+]?[0-9]+(?:\.[0-9]+)?)")
+
+
+def read_samples(filename: str | Path) -> list[dict[str, float]]:
+    samples = []
     for line in Path(filename).read_text(encoding="utf-8", errors="replace").splitlines():
         if "NZP_PERF " not in line:
             continue
         values = {}
-        for key, val in re.findall(r"([a-zA-Z0-9_]+)=([0-9.]+)", line):
+        for key, val in PATTERN.findall(line.split("NZP_PERF ", 1)[1]):
             try:
                 values[key] = float(val)
             except ValueError:
                 pass
-        if all(k in values for k in KEYS):
-            out.append(values)
-    return out
+        if "fps" in values:
+            samples.append(values)
+    return samples
 
-def summary(samples):
-    return {key: statistics.mean(sample[key] for sample in samples) for key in KEYS}
 
-def main():
-    if len(sys.argv) != 3:
-        sys.exit("Usage: compare_android_perf.py before/logcat.txt after/logcat.txt")
-    before = read_samples(sys.argv[1])
-    after = read_samples(sys.argv[2])
+def metric_mean(samples: list[dict[str, float]], key: str) -> float | None:
+    values = [sample[key] for sample in samples if key in sample]
+    return statistics.mean(values) if values else None
+
+
+def format_metric(value: float | None) -> str:
+    return "Не измерено" if value is None else f"{value:.2f}"
+
+
+def compare(before: list[dict[str, float]], after: list[dict[str, float]]) -> str:
     if not before or not after:
-        sys.exit("No complete NZP_PERF records; enable PERFORMANCE LOG in both APKs.")
-    first, second = summary(before), summary(after)
-    print("Hardware benchmark comparison, samples:", len(before), "before,", len(after), "after")
-    print(f"{'Metric':26s} {'Before':>13} {'After':>13} {'Delta':>13}")
-    for key in KEYS:
-        a, b = first[key], second[key]
-        pct = (b / a - 1.0) * 100 if a else 0
-        print(f"{key:26s} {a:13.2f} {b:13.2f} {pct:+12.1f}%")
-    print("Results are meaningful only with matched map, resolution, thermals and gameplay.")
+        raise ValueError("Нет NZP_PERF в одном из логов. Включите PERFORMANCE LOG.")
+    lines = [
+        f"Сэмплов: до {len(before)}, после {len(after)}",
+        f"{'Метрика':40s} {'До':>15} {'После':>15} {'Изменение':>14}",
+    ]
+    for key, label, preference in METRICS:
+        a, b = metric_mean(before, key), metric_mean(after, key)
+        if a is None or b is None or a == 0:
+            change = "Не измерено"
+        else:
+            change = f"{(b/a-1.0)*100:+.1f}%"
+        lines.append(f"{label:40s} {format_metric(a):>15} "
+                     f"{format_metric(b):>15} {change:>14}")
+    lines.append("Сравнивайте одинаковую карту, 3D-разрешение, FPS/VSync, "
+                 "освещение и одинаковые сцены. Часть драйверных счётчиков "
+                 "недоступна в старых сборках.")
+    lines.append("GPU время и мощность: без аппаратного замера — Не измерено.")
+    return "\n".join(lines)
+
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) != 3:
+        sys.exit("Usage: python scripts/compare_android_perf.py before/logcat.txt after/logcat.txt")
+    try:
+        print(compare(read_samples(sys.argv[1]), read_samples(sys.argv[2])))
+    except (OSError, ValueError) as exc:
+        sys.exit(str(exc))
