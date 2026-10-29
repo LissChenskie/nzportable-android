@@ -6,6 +6,7 @@
 #endif
 
 #include <errno.h>
+#include <time.h>
 #if defined(_WIN32)
 #include <direct.h>
 #endif
@@ -408,7 +409,15 @@ int main(int argc, char **argv)
 	oldtime = Sys_FloatTime();
 	while (sdl_running) {
 #ifdef PLATFORM_ANDROID
-		Uint64 frame_start = SDL_GetPerformanceCounter();
+        static Uint64 previous_frame_start;
+        Uint64 frame_start = SDL_GetPerformanceCounter();
+        double frame_period_ms=previous_frame_start?
+            (double)(frame_start-previous_frame_start)*1000.0/
+            (double)SDL_GetPerformanceFrequency():0;
+        previous_frame_start=frame_start;
+        struct timespec cpu_begin={0},cpu_end={0};
+        int profile=Android_ProfileEnabled();
+        if(profile)clock_gettime(CLOCK_THREAD_CPUTIME_ID,&cpu_begin);
 		Sys_SendKeyEvents();
 		if (!Android_Foreground()) {
 			SDL_Delay(50);
@@ -422,8 +431,11 @@ int main(int argc, char **argv)
 		music_update();
 		oldtime = now;
 #ifdef PLATFORM_ANDROID
-		Android_RecordFrame((double)(SDL_GetPerformanceCounter() - frame_start) * 1000.0 /
-		                    (double)SDL_GetPerformanceFrequency());
+        if(profile)clock_gettime(CLOCK_THREAD_CPUTIME_ID,&cpu_end);
+        double thread_ms=profile?
+            (cpu_end.tv_sec-cpu_begin.tv_sec)*1000.0+
+            (cpu_end.tv_nsec-cpu_begin.tv_nsec)/1000000.0:0;
+        Android_RecordFrame(thread_ms,frame_period_ms);
 #endif
 #ifdef PLATFORM_ANDROID
 		// Sleep through the unused frame budget; include swap time in it.
