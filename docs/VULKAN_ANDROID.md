@@ -89,7 +89,44 @@ older frame slots and exclude the separate upload command buffer. Unsupported
 GPU timing is -1. Neither throughput nor submission rate is display refresh.
 
 The optional existing `NZP_PERF` log now identifies the active backend and last
-completed Vulkan GPU draw duration. The existing ADB scripts can collect logs,
+completed Vulkan GPU draw duration.
+
+### Draw-state command cache and CPU stall timing
+
+The Vulkan backend now skips redundant `vkCmdBindPipeline`, viewport,
+scissor, depth-bias and descriptor-set commands within the active render pass.
+It also reuses the dynamic UBO offset when the complete uniform value is
+unchanged. The cache is invalidated on each new command buffer/render pass,
+including the transition to the native-resolution HUD. The fast last-pipeline
+lookup keeps the existing persistent pipeline cache and full state-key map as
+fallbacks. No image-quality defaults were changed.
+
+`NZP_VK_GetCommandStats` exposes recorded draw count and the number of
+pipeline, viewport, scissor, depth-bias and descriptor binds, plus uniform
+uploads/reuses. These are CPU-side command counts, **not** GPU workload or FPS.
+Host tests now exercise repeated uniforms and changed-uniform rebinds under
+Vulkan validation.
+
+For the real on-screen path, enable the existing `nzp_profile` option. Every
+120 rendered Vulkan frames, logcat emits `NZP_VK_STAGES` with average CPU
+wait times in `vkWaitForFences`, `vkAcquireNextImageKHR`, `vkQueueSubmit`,
+and `vkQueuePresentKHR`, as well as draw and bind counts. These times are
+API call durations; they are not GPU execution time and are **not additive**
+to the independently measured frame time. Use GPU timestamps/counters for
+the GPU side and Android frame-pacing tools for displayed frames.
+
+A 600-frame `vid_benchmark` run also writes
+`nzp/vulkan-stage-benchmark.csv` with average API times and command counts.
+As the Vulkan offscreen benchmark does not acquire or present, its acquire
+and present columns are expected to be zero. Use on-screen `NZP_VK_STAGES`
+logs to diagnose presentation stalls. This new CSV does not alter the
+existing `renderer-benchmark.csv` format.
+
+**A51 baseline still required:** compare this branch against the merged main
+using the same A51, thermal condition, map, camera, graphics settings and
+native `vid_render_scale 100`. In particular verify whether the reduction
+in CPU command recording actually changes the frame budget before attempting
+more intrusive Vulkan resource or shader rewrites. The existing ADB scripts can collect logs,
 process memory and thermal information. They do not magically measure GPU
 bandwidth, power or all CPU allocations; those require device-specific tooling.
 
