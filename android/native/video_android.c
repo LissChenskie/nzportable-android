@@ -19,9 +19,8 @@ unsigned d_8to24table[256];unsigned char d_15to8table[65536];
 int texture_mode=GL_LINEAR;
 double gldepthmin,gldepthmax;
 qboolean isPermedia=true;
-/* The 3D world uses a smaller target ONLY on explicit user request.
- * The HUD and menu always render to the full-resolution surface target. */
-static GLuint ui_framebuffer,ui_color,ui_depth;
+/* 100% renders directly to the native EGL surface, no full-frame copy.
+ * Only explicit sub-100% creates one offscreen 3D FBO; the UI stays native. */
 static GLuint world_framebuffer,world_color,world_depth;
 static int drawable_w,drawable_h,world_w,world_h;
 static int active_percent=-1,swap_interval=-1,software_sync,has_world_target;
@@ -35,11 +34,7 @@ static void delete_target(void){
     if(world_framebuffer)glDeleteFramebuffers(1,&world_framebuffer);
     if(world_color)glDeleteTextures(1,&world_color);
     if(world_depth)glDeleteRenderbuffers(1,&world_depth);
-    if(ui_framebuffer)glDeleteFramebuffers(1,&ui_framebuffer);
-    if(ui_color)glDeleteTextures(1,&ui_color);
-    if(ui_depth)glDeleteRenderbuffers(1,&ui_depth);
     world_framebuffer=world_color=world_depth=0;
-    ui_framebuffer=ui_color=ui_depth=0;
     has_world_target=0;
 }
 static void create_target(int w,int h,GLuint *fbo,GLuint *tex,GLuint *depth,
@@ -90,13 +85,12 @@ void VID_SDLResize(void) {
         vid.scale=ui_scale;
         vid.recalc_refdef=true;
     }
-    if(ui_framebuffer && width==drawable_w && height==drawable_h &&
+    if(active_percent>=0 && width==drawable_w && height==drawable_h &&
        percent==active_percent) return;
     delete_target();
     drawable_w=width;drawable_h=height;
     world_w=target_w;world_h=target_h;
     active_percent=percent;
-    create_target(width,height,&ui_framebuffer,&ui_color,&ui_depth,0);
     if(percent!=100){
         create_target(target_w,target_h,&world_framebuffer,&world_color,&world_depth,1);
         has_world_target=1;
@@ -121,7 +115,7 @@ void VID_BeginNativeUI(void) {
     NZP_GLES_Flush();
     NZP_GLES_SetNativeViewport();
     if(has_world_target) {
-        glBindFramebuffer(GL_FRAMEBUFFER,ui_framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER,0);
         NZP_GLES_Present(world_color,drawable_w,drawable_h);
     }
     glViewport(0,0,drawable_w,drawable_h);
@@ -141,7 +135,7 @@ void GL_BeginRendering(int *x,int *y,int *w,int *h){
         glBindFramebuffer(GL_FRAMEBUFFER,world_framebuffer);
         NZP_GLES_SetWorldViewport(world_w,world_h,drawable_w,drawable_h);
     } else {
-        glBindFramebuffer(GL_FRAMEBUFFER,ui_framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER,0);
         NZP_GLES_SetNativeViewport();
     }
     *x=*y=0;*w=vid.width;*h=vid.height;
@@ -151,8 +145,6 @@ void GL_BeginRendering(int *x,int *y,int *w,int *h){
 void GL_EndRendering(void){
     VID_BeginNativeUI();
     Draw_Flush();Android_DrawTouch();Draw_Flush();NZP_GLES_Flush();
-    glBindFramebuffer(GL_FRAMEBUFFER,0);
-    NZP_GLES_Present(ui_color,drawable_w,drawable_h);
     if(swap_interval!=(r_vsync.value!=0))VID_SetVSync(r_vsync.value!=0);
     if(software_sync)glFinish();
     SDL_GL_SwapWindow(sdl_window);
