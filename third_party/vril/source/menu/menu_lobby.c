@@ -18,6 +18,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 #include "../nzportable_def.h"
 #include "menu_defs.h"
+extern int net_hostport;
 
 //=============================================================================
 /* LOBBY MENU */
@@ -160,7 +161,7 @@ void Menu_Lobby_Draw (void)
     // Background
 	Menu_DrawCustomBackground (true);
     // Title
-    Menu_DrawTitle("PRE-GAME", MENU_COLOR_WHITE);
+    Menu_DrawTitle(menu_is_solo ? "PRE-GAME" : "COOP: HOST SETTINGS", MENU_COLOR_WHITE);
     // Map panel makes the background darker
     Menu_DrawMapPanel();
 
@@ -170,6 +171,12 @@ void Menu_Lobby_Draw (void)
         Menu_DrawButton (1, 0, "CANCEL", "..Take it back!", Menu_Lobby_StopCountdown);
     }
 
+    if (!menu_is_solo) {
+        char host[80];
+        snprintf(host,sizeof(host),"%s:%d",Menu_LAN_Address(),net_hostport);
+        UI_SetAlignment(UI_ANCHOR_LEFT,UI_ANCHOR_TOP);
+        Menu_DrawString(160,42,host,255,255,150,255,vid.scale,0);
+    }
     if (support_gamesettings) {
         Menu_DrawButton(2, 1, "GAME SETTINGS", "Adjust Gameplay Options.", Menu_GameSettings_Set);
     } else {
@@ -202,6 +209,17 @@ void Menu_Lobby_Draw (void)
         }
     } else if (lobby_delta < 0 && menu_lobby_countdown != 0) {
         // Start a match!
+        if (!menu_is_solo) {
+            char command[80];
+            Cvar_Set("coop","1");
+            Cvar_Set("deathmatch","0");
+            snprintf(command,sizeof(command),"maxplayers %d\nlisten 1\n",Menu_LAN_GetSlots());
+            Cbuf_AddText(command);
+        } else {
+            Cvar_Set("coop","0");
+            Cvar_Set("deathmatch","0");
+            Cbuf_AddText("maxplayers 1\n");
+        }
         Menu_LoadMap(current_selected_bsp);
         Menu_Lobby_StopCountdown();
     }
