@@ -39,14 +39,14 @@ to the actual Android EGL surface. No user-controlled scale was available.
 VIDEO OPTIONS, display page:
 
 - RESOLUTION: AUTO (NATIVE) = 100%; then 90%, 80%, 75%, 60%.
-- UI SCALE: 75%, 100%, 125%, 150%, capped by drawable dimensions.
+- UI SCALE: 75%, 100%, 125% (default), 150%, capped by drawable dimensions.
 - FPS LIMIT: 30, 45, 60, Unlimited (`cl_maxfps=0`). Default 60.
 - SHOW FPS: HUD overlay; VSYNC: actual display presentation synchronization.
 - PERFORMANCE LOG: opt-in 5-second sampled frame statistics to `logcat`.
 - MORE GRAPHICS: existing FOV, gamma, ultrawide, particles, filtering,
   dithering (where supported). No quality feature is disabled automatically.
 
-`cl_maxfps` is a frame pacing preference; VSync may also limit the
+`cl_maxfps` is a frame pacing preference (default 60 on 60+ Hz displays,\n30 on lower-refresh modes); VSync may also limit the
 actual presentation rate. For truly uncapped FPS turn VSync off manually.
 The Android event loop sleeps with `SDL_Delay` for whole unused milliseconds
 rather than busy-waiting, and avoids overriding FPS based on thermal state.
