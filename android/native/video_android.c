@@ -166,7 +166,13 @@ void VID_Init(unsigned char *palette) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE,16);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE,0);
     SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS,0);
-    sdl_window=SDL_CreateWindow("NZPortable Android",0,0,0,0,
+    SDL_DisplayMode mode;
+    int native_width=640,native_height=480;
+    if(SDL_GetCurrentDisplayMode(0,&mode)==0) {
+        native_width=mode.w;native_height=mode.h;
+    }
+    sdl_window=SDL_CreateWindow("NZPortable Android",SDL_WINDOWPOS_UNDEFINED,
+        SDL_WINDOWPOS_UNDEFINED,native_width,native_height,
         SDL_WINDOW_OPENGL|SDL_WINDOW_FULLSCREEN|SDL_WINDOW_ALLOW_HIGHDPI|
         SDL_WINDOW_RESIZABLE);
     if(!sdl_window)Sys_Error("Android window: %s",SDL_GetError());
