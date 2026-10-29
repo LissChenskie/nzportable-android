@@ -44,10 +44,6 @@ extern cvar_t r_vsync;
 extern cvar_t vid_render_scale;
 extern cvar_t vid_ui_scale;
 extern cvar_t android_profile;
-static void Menu_Video_ToggleProfile(void) {
-    Cvar_SetValue("android_profile",!android_profile.value);
-    Menu_Video_SaveAndroid();
-}
 extern void Host_WriteConfiguration(void);
 static int video_android_page;
 static char video_resolution_text[80];
@@ -55,6 +51,11 @@ static char video_ui_text[32];
 static char video_fps_text[32];
 static char video_native_text[80];
 static void Menu_Video_SaveAndroid(void) {Host_WriteConfiguration();}
+static void Menu_Video_ToggleProfile(void) {
+    Cvar_SetValue("android_profile",!android_profile.value);
+    Menu_Video_SaveAndroid();
+}
+
 static void Menu_Video_ResolutionNext(void) {
     static const int modes[]={100,90,80,75,60};
     int n=0;
