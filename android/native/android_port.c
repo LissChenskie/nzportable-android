@@ -342,7 +342,9 @@ void Android_Frame(void){
         // Re-evaluate controllers on the Java side, without reallocating the overlay.
         if(!touch_method)touch_method=(*env)->GetMethodID(env,activity_class,
             "setTouchControlsVisible","(Z)V");
-        if(touch_method) {
+        if(touch_method && last_touch_mode!=playing) {
+            /* UI thread work only on a real menu/game transition.
+             * No periodic overlay redraws while the touch mode is unchanged. */
             (*env)->CallVoidMethod(env,activity,touch_method,playing?JNI_TRUE:JNI_FALSE);
             external_touch=1;last_touch_mode=playing;
         }
