@@ -45,6 +45,7 @@ static unsigned draw_calls_this_frame;
 static GLuint current_program;
 static GLuint driver_bound_texture;
 static int driver_texture_valid;
+static nzp_render_stats_t render_stats;
 static int vertex_attribute_enabled[3]={-1,-1,-1};
 static void enable_vertex_attribute(int index,int enable) {
     if(vertex_attribute_enabled[index]==enable) {
@@ -54,7 +55,6 @@ static void enable_vertex_attribute(int index,int enable) {
     else glDisableVertexAttribArray(index);
     vertex_attribute_enabled[index]=enable;
 }
-static nzp_render_stats_t render_stats;
 static void bind_tex0(GLuint texture) {
     /* The Quake GLES2 backend uses texture unit 0. GPU API calls from
      * presentation/surface creation invalidate this cache explicitly. */
