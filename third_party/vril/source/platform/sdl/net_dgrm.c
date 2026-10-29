@@ -1268,12 +1268,11 @@ static qsocket_t *_Datagram_Connect (char *host)
 					continue;
 				}
 			}
-		}
 #ifdef PLATFORM_ANDROID
-		// Do not spin at 100% CPU during retries on Exynos.
+			// No CPU busy-spin while probing a sleeping Wi-Fi server.
 			if (ret == 0) SDL_Delay(1);
 #endif
-		while (ret == 0 && (SetNetTime() - start_time) < 2.5);
+		} while (ret == 0 && (SetNetTime() - start_time) < 2.5);
 		if (ret)
 			break;
 		Con_Printf("still trying...\n"); SCR_UpdateScreen ();
