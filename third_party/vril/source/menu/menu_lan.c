@@ -14,7 +14,6 @@ static int lan_slots = 4;
 static char lan_status[96] = "Create a game or search your local Wi-Fi.";
 static char lan_endpoint[64];
 static char lan_line[160];
-static char lan_selected_map[MAX_QPATH] = "ndu";
 
 void Menu_LAN_Set(void) {
     Menu_ResetMenuButtons();
@@ -217,11 +216,11 @@ static void Menu_LAN_Create_Draw(void) {
     Menu_DrawButton(-1,5,"BACK","Return to LAN menu.",Menu_LAN_Set);
     UI_SetAlignment(UI_ANCHOR_LEFT,UI_ANCHOR_TOP);
     snprintf(lan_line,sizeof(lan_line),"Name: %.28s",Cvar_VariableString("hostname"));
-    Menu_DrawString(153*vid.scale,45*vid.scale,lan_line,255,255,255,255,vid.scale,0);
+    Menu_DrawString(153,45,lan_line,255,255,255,255,vid.scale,0);
     snprintf(lan_line,sizeof(lan_line),"Players: %d / 4",lan_slots);
-    Menu_DrawString(153*vid.scale,65*vid.scale,lan_line,255,255,255,255,vid.scale,0);
+    Menu_DrawString(153,65,lan_line,255,255,255,255,vid.scale,0);
     snprintf(lan_line,sizeof(lan_line),"Difficulty: %d | Round: %d",(int)sv_difficulty.value,(int)sv_startround.value);
-    Menu_DrawString(153*vid.scale,85*vid.scale,lan_line,255,255,255,255,vid.scale,0);
+    Menu_DrawString(153,85,lan_line,255,255,255,255,vid.scale,0);
 }
 
 static void Menu_LAN_Find_Draw(void) {
@@ -238,14 +237,14 @@ static void Menu_LAN_Find_Draw(void) {
     Menu_DrawButton(count+1,count,"REFRESH","Search all local interfaces again.",Menu_LAN_Find_Set);
     Menu_DrawButton(-1,count+1,"BACK","Return to cooperative menu.",Menu_LAN_Set);
     UI_SetAlignment(UI_ANCHOR_LEFT,UI_ANCHOR_TOP);
-    if(count==0)Menu_DrawString(153*vid.scale,65*vid.scale,
+    if(count==0)Menu_DrawString(153,65,
         slistInProgress?"Searching LAN...":"No compatible servers found.",255,255,255,255,vid.scale,0);
     else if(current_menu.cursor<count) {
         hostcache_t *h=&hostcache[current_menu.cursor];
         snprintf(lan_line,sizeof(lan_line),"Map: %.23s",h->map);
-        Menu_DrawString(153*vid.scale,55*vid.scale,lan_line,255,255,255,255,vid.scale,0);
+        Menu_DrawString(153,55,lan_line,255,255,255,255,vid.scale,0);
         snprintf(lan_endpoint,sizeof(lan_endpoint),"%.55s",h->cname);
-        Menu_DrawString(153*vid.scale,75*vid.scale,lan_endpoint,255,255,255,255,vid.scale,0);
+        Menu_DrawString(153,75,lan_endpoint,255,255,255,255,vid.scale,0);
     }
 }
 
@@ -257,19 +256,19 @@ static void Menu_LAN_Host_Draw(void) {
     Menu_DrawButton(2,1,"CLOSE SERVER","Disconnect every player and close LAN.",Menu_LAN_HostClose);
     UI_SetAlignment(UI_ANCHOR_LEFT,UI_ANCHOR_TOP);
     snprintf(lan_line,sizeof(lan_line),"%.22s",Cvar_VariableString("hostname"));
-    Menu_DrawString(153*vid.scale,45*vid.scale,lan_line,255,255,0,255,vid.scale,0);
+    Menu_DrawString(153,45,lan_line,255,255,0,255,vid.scale,0);
     snprintf(lan_line,sizeof(lan_line),"IP: %.32s:%d",my_tcpip_address,net_hostport);
-    Menu_DrawString(153*vid.scale,58*vid.scale,lan_line,255,255,255,255,vid.scale,0);
+    Menu_DrawString(153,58,lan_line,255,255,255,255,vid.scale,0);
     snprintf(lan_line,sizeof(lan_line),"Map: %.28s",sv.name);
-    Menu_DrawString(153*vid.scale,71*vid.scale,lan_line,255,255,255,255,vid.scale,0);
+    Menu_DrawString(153,71,lan_line,255,255,255,255,vid.scale,0);
     int n=0;
     for(int i=0;i<svs.maxclients;i++) if(svs.clients[i].active) {
         snprintf(lan_line,sizeof(lan_line),"%d. %.27s",i+1,svs.clients[i].name);
-        Menu_DrawString(153*vid.scale,(88+n*11)*vid.scale,lan_line,255,255,255,255,vid.scale,0);
+        Menu_DrawString(153,(88+n*11),lan_line,255,255,255,255,vid.scale,0);
         n++;
     }
     snprintf(lan_line,sizeof(lan_line),"Connected %d/%d | Free %d",n,svs.maxclients,svs.maxclients-n);
-    Menu_DrawString(153*vid.scale,151*vid.scale,lan_line,255,255,0,255,vid.scale,0);
+    Menu_DrawString(153,151,lan_line,255,255,0,255,vid.scale,0);
 }
 
 void Menu_LAN_Draw(void) {
@@ -283,5 +282,5 @@ void Menu_LAN_Draw(void) {
     Menu_DrawButton(3,2,"CONNECT BY IP","Manual address for filtered Hotspot networks.",Menu_LAN_RequestIp);
     Menu_DrawButton(-1,3,"BACK","Return to main menu.",Menu_Main_Set);
     UI_SetAlignment(UI_ANCHOR_LEFT,UI_ANCHOR_TOP);
-    Menu_DrawString(153*vid.scale,70*vid.scale,lan_status,255,255,255,255,vid.scale,0);
+    Menu_DrawString(153,70,lan_status,255,255,255,255,vid.scale,0);
 }
