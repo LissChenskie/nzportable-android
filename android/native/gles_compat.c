@@ -20,7 +20,10 @@ static int matrix_depth[3];
 static int textured=1, alpha_test, fog_enabled, replace_mode, flat_shading;
 static float alpha_threshold=.666f, fog_start, fog_end=1.f, fog_density=1.f, fog_color[4];
 static int fog_mode=GL_LINEAR;
-static GLuint program, stream, bound_texture;
+static GLuint program, streams[3], bound_texture;
+static int stream_index;
+static size_t stream_offset;
+enum { STREAM_BYTES=BATCH_CAPACITY*4*sizeof(nzp_vertex) };
 static int raster_enabled[4];
 static GLint u_mvp,u_mv,u_tm,u_texture,u_textured,u_replace,u_alpha,u_fog,u_fogcolor;
 
@@ -57,7 +60,8 @@ void NZP_GLES_Init(void) {
     UNIFORM(u_mvp);UNIFORM(u_mv);UNIFORM(u_tm);UNIFORM(u_texture);UNIFORM(u_textured);
     UNIFORM(u_replace);UNIFORM(u_alpha);UNIFORM(u_fog);UNIFORM(u_fogcolor);
 #undef UNIFORM
-    glGenBuffers(1,&stream);
+    glGenBuffers(3,streams);
+    glBindBuffer(GL_ARRAY_BUFFER,streams[0]);glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
     for(int i=0;i<3;i++)nzp_identity(matrices[i][0]);
     memset(current.color,255,sizeof(current.color));
 }
@@ -67,23 +71,31 @@ static void uniforms(const float *mvp,const float *mv,const float *tm,int tex,in
     glUniform1f(u_alpha,alpha);glUniform4f(u_fog,fog,fog_start,fog_end,fog_density);glUniform4fv(u_fogcolor,1,fog_color);
 }
 static void upload(const nzp_vertex *vertices,int count,GLenum mode) {
-    glBindBuffer(GL_ARRAY_BUFFER,stream);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);
-    // Orphan rather than stall on an in-flight Mali buffer.
-    glBufferData(GL_ARRAY_BUFFER,BATCH_CAPACITY*sizeof(nzp_vertex),NULL,GL_STREAM_DRAW);
-    glBufferSubData(GL_ARRAY_BUFFER,0,count*sizeof(nzp_vertex),vertices);
+    glBindBuffer(GL_ARRAY_BUFFER,streams[stream_index]);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);
+    size_t bytes=count*sizeof(nzp_vertex);
+    if(stream_offset+bytes>STREAM_BYTES){glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);stream_offset=0;}
+    glBufferSubData(GL_ARRAY_BUFFER,stream_offset,bytes,vertices);
     glEnableVertexAttribArray(0);glEnableVertexAttribArray(1);glEnableVertexAttribArray(2);
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(nzp_vertex),(void*)offsetof(nzp_vertex,xyz));
-    glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,sizeof(nzp_vertex),(void*)offsetof(nzp_vertex,uv));
-    glVertexAttribPointer(2,4,GL_UNSIGNED_BYTE,GL_TRUE,sizeof(nzp_vertex),(void*)offsetof(nzp_vertex,color));
+    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,xyz)));
+    glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,uv)));
+    glVertexAttribPointer(2,4,GL_UNSIGNED_BYTE,GL_TRUE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,color)));
     glDrawArrays(mode,0,count);
+    stream_offset+=bytes;
+}
+void NZP_GLES_BeginFrame(void){
+    NZP_GLES_Flush();stream_index=(stream_index+1)%3;stream_offset=0;
+    glBindBuffer(GL_ARRAY_BUFFER,streams[stream_index]);
+    // One orphan per frame, instead of allocating a new store per HUD glyph batch.
+    glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
 }
 void NZP_GLES_Flush(void) {
     if(!batch_count)return;float mvp[16];nzp_multiply(mvp,matrices[1][matrix_depth[1]],matrices[0][matrix_depth[0]]);
     uniforms(mvp,matrices[0][matrix_depth[0]],matrices[2][matrix_depth[2]],textured,replace_mode,
         alpha_test?alpha_threshold:-1.f,fog_enabled?(fog_mode==GL_LINEAR?1.f:fog_mode==GL_EXP?2.f:3.f):0.f);
-    glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,bound_texture);upload(batch,batch_count,batch_mode);batch_count=0;
+    glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,bound_texture);upload(batch,batch_count,batch_mode);
+    batch_count=0;
 }
-void NZP_GLES_Shutdown(void) { NZP_GLES_Flush();glDeleteBuffers(1,&stream);glDeleteProgram(program);program=stream=0; }
+void NZP_GLES_Shutdown(void) { NZP_GLES_Flush();glDeleteBuffers(3,streams);glDeleteProgram(program);program=0;memset(streams,0,sizeof(streams)); }
 static void reserve(int count,GLenum mode) {
     if(batch_mode!=mode||batch_count+count>BATCH_CAPACITY)NZP_GLES_Flush();batch_mode=mode;
 }

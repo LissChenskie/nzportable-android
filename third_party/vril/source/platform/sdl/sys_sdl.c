@@ -95,7 +95,13 @@ void Sys_mkdir(char *path)
 void Sys_MakeCodeWriteable(unsigned long startaddr, unsigned long length) { (void)startaddr; (void)length; }
 
 void Sys_PrintSystemInfo(void) { Con_Printf("Vril Engine SDL (%s)\n", SDL_GetPlatform()); }
-void Sys_Printf(char *fmt, ...) { va_list args; va_start(args, fmt); vfprintf(stdout, fmt, args); va_end(args); }
+void Sys_Printf(char *fmt, ...) { va_list args; va_start(args, fmt);
+#ifdef PLATFORM_ANDROID
+	SDL_LogMessageV(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_INFO, fmt, args);
+#else
+	vfprintf(stdout, fmt, args);
+#endif
+	va_end(args); }
 void Sys_SystemError(char *error) { SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Vril Engine fatal: %s", error); fprintf(stderr, "Vril Engine: %s\n", error); if (SDL_WasInit(SDL_INIT_VIDEO)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Vril Engine", error, sdl_window); SDL_Quit(); exit(1); }
 void Sys_Quit(void) { sdl_running = false; }
 double Sys_FloatTime(void) { static Uint64 start; Uint64 now = SDL_GetPerformanceCounter(); if (!start) start = now; return (double)(now - start) / SDL_GetPerformanceFrequency(); }

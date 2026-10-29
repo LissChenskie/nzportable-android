@@ -45,7 +45,7 @@ static void suspend_game(void){
     if(key_dest==key_game){Key_Event(K_ESCAPE,true);Key_Event(K_ESCAPE,false);}
     Host_WriteConfiguration();Mix_PauseMusic();SNDDMA_SetPaused(1);
 }
-static void resume_game(void){foreground=1;reset_input();SNDDMA_SetPaused(0);Mix_ResumeMusic();}
+static void resume_game(void){foreground=1;reset_input();SNDDMA_SetPaused(0);if(!music_paused)Mix_ResumeMusic();}
 static int hit_button(float x,float y){
     float aspect=(float)vid.width/fmaxf(1.f,vid.height);
     for(int i=0;i<BUTTONS;i++){float dx=(x-buttons[i].x)*aspect,dy=y-buttons[i].y;
@@ -131,11 +131,14 @@ void Android_Frame(void){
     }
 }
 void Android_DrawTouch(void){
-    if(!touch_visible||key_dest!=key_game)return;
+    if(!touch_visible||!host_initialized||key_dest!=key_game||cls.state!=ca_connected)return;
     for(int i=0;i<BUTTONS;i++){
         int r=buttons[i].r*vid.height,x=buttons[i].x*vid.width,y=buttons[i].y*vid.height;
         Draw_FillByColor(x-r,y-r,r*2,r*2,button_refs[i]?180:32,button_refs[i]?110:40,50,button_refs[i]?170:95);
-        Draw_ColoredString(x-r+4,y-4,(char*)buttons[i].label,1,1,1,.8f,.65f);
+        // Vril's text API takes byte-range colors, unlike the GL color API.
+        int scale=(r*2-8)/(8*(int)strlen(buttons[i].label));
+        if(scale<1)scale=1;if(scale>vid.scale)scale=vid.scale;
+        Draw_ColoredString(x-getTextWidth((char*)buttons[i].label,scale)/2,y-4*scale,(char*)buttons[i].label,255,255,255,210,scale);
     }
     int size=vid.height*.06f,x=role_in_use(-1)?move_origin_x*vid.width:vid.width*.16f,y=role_in_use(-1)?move_origin_y*vid.height:vid.height*.76f;
     Draw_FillByColor(x-size,y-size,size*2,size*2,48,58,68,90);

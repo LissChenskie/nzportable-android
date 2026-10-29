@@ -18,6 +18,7 @@ int main(void){
     EGLSurface s=eglCreatePbufferSurface(d,config,pa);EGLContext c=eglCreateContext(d,config,EGL_NO_CONTEXT,ctx);
     assert(eglMakeCurrent(d,s,s,c));printf("GLES test GPU: %s\n",glGetString(GL_RENDERER));
     NZP_GLES_Init();glViewport(0,0,64,64);glClearColor(0,0,0,1);glDisable(GL_TEXTURE_2D);glShadeModel(GL_SMOOTH);
+    NZP_GLES_BeginFrame();
     clear();glColor4f(1,0,0,1);quad(-1,-1,0,1);glColor4f(0,1,0,1);quad(0,-1,1,1);pixel(10,32,255,0,0);pixel(50,32,0,255,0);
     // A raster-state change cannot retroactively alpha-test an earlier batch.
     clear();glColor4f(1,0,0,.2f);quad(-1,-1,0,1);glEnable(GL_ALPHA_TEST);glAlphaFunc(GL_GREATER,.5f);quad(0,-1,1,1);
@@ -49,6 +50,26 @@ int main(void){
     clear();glEnable(GL_TEXTURE_2D);glTexEnvf(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_REPLACE);glColor4f(1,0,0,1);quad(-1,-1,1,1);pixel(32,32,0,255,0);
     clear();glTexEnvf(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_MODULATE);quad(-1,-1,1,1);pixel(32,32,0,0,0);
     clear();NZP_GLES_Present(texture,64,64);pixel(32,32,0,255,0);glDeleteTextures(1,&texture);
+    // Full mobile path: pixel-space HUD arrays -> offscreen FBO -> presentation.
+    GLuint target,fbo;glGenTextures(1,&target);glBindTexture(GL_TEXTURE_2D,target);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,64,64,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+    glTexParameterf(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameterf(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glTexParameterf(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameterf(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);assert(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,target,0);assert(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE);
+    clear();glDisable(GL_TEXTURE_2D);glMatrixMode(GL_PROJECTION);glLoadIdentity();glOrtho(0,640,320,0,-99999,99999);glMatrixMode(GL_MODELVIEW);glLoadIdentity();
+    float hud[]={0,0,0,640,0,0,640,320,0,0,0,0,640,320,0,0,320,0};unsigned char rgba[24];memset(rgba,255,sizeof(rgba));
+    glEnableClientState(GL_VERTEX_ARRAY);glEnableClientState(GL_COLOR_ARRAY);glVertexPointer(3,GL_FLOAT,0,hud);glColorPointer(4,GL_UNSIGNED_BYTE,0,rgba);
+    glDrawArrays(GL_TRIANGLES,0,6);NZP_GLES_Flush();pixel(32,32,255,255,255);glBindFramebuffer(GL_FRAMEBUFFER,0);NZP_GLES_Present(target,64,64);pixel(32,32,255,255,255);
+    glDeleteFramebuffers(1,&fbo);glDeleteTextures(1,&target);
+    glDisableClientState(GL_COLOR_ARRAY);glDisableClientState(GL_VERTEX_ARRAY);glDisable(GL_TEXTURE_2D);
+    glMatrixMode(GL_PROJECTION);glLoadIdentity();glMatrixMode(GL_MODELVIEW);glLoadIdentity();
+    // Rotate all three frame arenas and cross the streaming capacity boundary.
+    for(int frame=0;frame<4;frame++){
+        NZP_GLES_BeginFrame();clear();glColor4f(1,0,0,1);quad(-1,-1,0,1);
+        for(int q=0;q<10000;q++)quad(2,2,3,3);
+        glColor4f(0,0,1,1);quad(0,-1,1,1);pixel(10,32,255,0,0);pixel(50,32,0,0,255);
+    }
     int rw,rh;nzp_render_size(2400,1080,1280,720,&rw,&rh);assert(rw==1280&&rh==576);nzp_render_size(1280,720,1024,576,&rw,&rh);assert(rw==1024&&rh==576);
     NZP_GLES_Shutdown();eglMakeCurrent(d,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);eglDestroyContext(d,c);eglDestroySurface(d,s);eglTerminate(d);
     puts("GLES pixel, batching, matrices, topology, fog and size tests passed");return 0;

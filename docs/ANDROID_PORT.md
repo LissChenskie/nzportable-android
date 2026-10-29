@@ -11,7 +11,8 @@ testing, texture replace/modulate, texture matrices and fog. Convex BSP fans,
 triangle strips and quads become triangles. Flat shading uses provoking-vertex
 colors on the CPU; no unsupported GLES flat-shading qualifier is required.
 
-Dynamic geometry goes through an orphaned streaming VBO. Adjacent compatible
+Dynamic geometry goes through three rotating VBO arenas, orphaned once per frame
+and advanced by subrange uploads. Adjacent compatible
 submissions coalesce, and changes to matrices, textures or raster state flush
 before taking effect. BSP geometry has a separate direct GPU path: immutable
 world VBOs, up to a 32 MiB cache budget, with streamed index buffers. It does not
@@ -81,3 +82,9 @@ Physical Galaxy A51 validation is still required: gameplay on multiple maps,
 touch comfort, Bluetooth/USB pads, audio latency, repeated background/resume,
 visual comparison with upstream, 30-minute frame-time/thermal/battery capture.
 An emulator/software renderer cannot establish the Mali-G72's performance.
+
+Android 10 x86_64 / SwiftShader smoke checks reached the native main menu,
+rendered the Nacht der Untoten map and game HUD, and opened the pause/exit
+dialogs through Android back and touch input. That run caught the Android
+single-output audio requirement and the per-draw VBO storage churn; both were
+fixed before delivering the ARM64 test APK. These are functional checks only.

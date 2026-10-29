@@ -35,6 +35,7 @@ typedef double GLclampd;
 #define GL_PERSPECTIVE_CORRECTION_HINT 0x0C50
 
 void NZP_GLES_Init(void);
+void NZP_GLES_BeginFrame(void);
 void NZP_GLES_Shutdown(void);
 void NZP_GLES_Flush(void);
 void NZP_GLES_Present(GLuint texture, int width, int height);

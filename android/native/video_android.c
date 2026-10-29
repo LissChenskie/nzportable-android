@@ -4,7 +4,6 @@
 #include "platform/sdl/sdl_local.h"
 #include "android_port.h"
 #include "render_math.h"
-#include <GLES2/gl2ext.h>
 
 SDL_Window *sdl_window;
 SDL_GLContext sdl_gl_context;
@@ -18,7 +17,6 @@ double gldepthmin,gldepthmax;
 qboolean isPermedia=true;
 static GLuint framebuffer,color,depth;
 static int drawable_w,drawable_h,swap_interval=-1;
-static PFNGLDISCARDFRAMEBUFFEREXTPROC discard_framebuffer;
 
 static void delete_target(void){
     NZP_GLES_Flush();glBindFramebuffer(GL_FRAMEBUFFER,0);
@@ -57,11 +55,12 @@ void VID_SetFullscreen(qboolean fullscreen){(void)fullscreen;Cvar_SetValue("vid_
 void VID_SetVSync(qboolean vsync){swap_interval=vsync?1:0;SDL_GL_SetSwapInterval(swap_interval);}
 void GL_BeginRendering(int *x,int *y,int *w,int *h){
     VID_SDLResize();glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);*x=*y=0;*w=vid.width;*h=vid.height;
+    NZP_GLES_BeginFrame();
+    // Menus contain blended/fading layers and cannot inherit undefined FBO pixels.
+    glClear(GL_COLOR_BUFFER_BIT);
 }
 void GL_EndRendering(void){
     Draw_Flush();Android_DrawTouch();Draw_Flush();NZP_GLES_Flush();
-    // Mali is a tile renderer. Depth is no longer needed after this render pass.
-    if(discard_framebuffer&&!gl_ztrick.value){GLenum attachment=GL_DEPTH_ATTACHMENT;discard_framebuffer(GL_FRAMEBUFFER,1,&attachment);}
     glBindFramebuffer(GL_FRAMEBUFFER,0);NZP_GLES_Present(color,drawable_w,drawable_h);
     if(swap_interval!=(r_vsync.value!=0))VID_SetVSync(r_vsync.value!=0);
     SDL_GL_SwapWindow(sdl_window);
@@ -86,9 +85,6 @@ void VID_Init(unsigned char *palette){
     SDL_Log("GPU: %s / %s / %s",glGetString(GL_VENDOR),glGetString(GL_RENDERER),glGetString(GL_VERSION));
     vid.colormap=host_colormap;vid.fullbright=256-LittleLong(*((int*)vid.colormap+2048));vid.numpages=2;
     GL_Init();VID_SetVSync(true);VID_SDLResize();
-    const char *extensions=(const char*)glGetString(GL_EXTENSIONS);
-    if(extensions&&strstr(extensions,"GL_EXT_discard_framebuffer"))
-        discard_framebuffer=(PFNGLDISCARDFRAMEBUFFEREXTPROC)SDL_GL_GetProcAddress("glDiscardFramebufferEXT");
     // Preserve upstream palette gamma, without forcing gamma on Android's compositor.
     for(int i=0;i<768;i++)palette[i]=(unsigned char)fminf(255,powf((palette[i]+1)/256.f,.7f)*255+.5f);
     VID_SetPalette(palette);
