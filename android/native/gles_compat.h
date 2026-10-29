@@ -54,9 +54,11 @@ typedef struct nzp_render_stats_s {
     unsigned uniform_updates;
     unsigned buffer_uploads;
     unsigned vertex_upload_bytes;
+    unsigned index_upload_bytes;
     unsigned skipped_state_changes;
 } nzp_render_stats_t;
 void NZP_GLES_GetFrameStats(nzp_render_stats_t *out);
+void NZP_GLES_RecordExternalUpload(GLenum target,size_t bytes);
 void NZP_GLES_InvalidateTextureState(void);
 /* Android Hyena 2D batches: emit interleaved GPU-ready vertices without
  * three temporary position/UV/color arrays or per-vertex float conversion. */
