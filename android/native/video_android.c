@@ -8,7 +8,7 @@
 SDL_Window *sdl_window;
 SDL_GLContext sdl_gl_context;
 int sdl_window_width=1280,sdl_window_height=720;
-cvar_t vid_width={"vid_width","1280",true},vid_height={"vid_height","720",true};
+cvar_t vid_width={"vid_width","960",true},vid_height={"vid_height","540",true};
 cvar_t vid_fullscreen={"vid_fullscreen","1",true},r_vsync={"r_vsync","1",true};
 cvar_t gl_ztrick={"gl_ztrick","0"};
 unsigned d_8to24table[256];unsigned char d_15to8table[65536];
