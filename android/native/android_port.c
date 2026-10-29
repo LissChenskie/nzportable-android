@@ -171,9 +171,16 @@ extern void SNDDMA_SetPaused(int paused);
 int Android_ThermalStatus(void){return thermal;}
 /* No thermal FPS or quality downgrade. 0 = explicit unlimited. */
 int Android_FrameRate(void) {
-    if (cl_maxfps.value<1.f)return 0;
-    int fps=(int)cl_maxfps.value;
-    return fps>500?500:fps;
+    /* Android THERMAL_STATUS_CRITICAL=4, EMERGENCY=5, SHUTDOWN=6.
+     * Preserve FULL native resolution and all effects. Only when hardware
+     * declares a critical thermal emergency, temporarily pace frames more
+     * slowly. Never enforce a secret 30/45 FPS cap at normal temperatures. */
+    int user_limit=cl_maxfps.value<1.f?0:(int)cl_maxfps.value;
+    if(user_limit>500)user_limit=500;
+    int safety_limit=thermal>=5?30:thermal>=4?45:0;
+    if(safety_limit && (!user_limit || user_limit>safety_limit))
+        return safety_limit;
+    return user_limit;
 }
 int Android_Foreground(void){return foreground;}
 void Android_Init(void){
