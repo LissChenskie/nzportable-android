@@ -22,7 +22,7 @@ def fetch():
     else:
         with urllib.request.urlopen(URL, timeout=90) as request:
             data = request.read()
-    header = b"blob " + str(len(data)).encode("ascii") + b"\\0"
+    header = b"blob " + str(len(data)).encode("ascii") + b"\0"
     actual = hashlib.sha1(header + data).hexdigest()
     if actual != BLOB:
         raise RuntimeError(f"RetroTouch changed or corrupted (Git blob {actual}, expected {BLOB})")
@@ -42,7 +42,7 @@ def fetch():
         if len(matches) != 1:
             raise RuntimeError(f"RetroTouch class {item} not uniquely found: {matches}")
         imports.append("import " + matches[0][:-6].replace("/", ".") + ";")
-    src = TEMPLATE.read_text(encoding="utf-8").replace("// __RETROTOUCH_IMPORTS__", "\\n".join(imports))
+    src = TEMPLATE.read_text(encoding="utf-8").replace("// __RETROTOUCH_IMPORTS__", "\n".join(imports))
     generated = OUT / "org/nzportable/android/RetroTouchBridge.java"
     generated.parent.mkdir(parents=True, exist_ok=True)
     generated.write_text(src, encoding="utf-8")
