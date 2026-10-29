@@ -18,8 +18,10 @@ static inline void nzp_render_size(int w, int h, int max_w, int max_h, int *rw, 
     if (w<1) w=1; if (h<1) h=1;
     float s=fminf(1.f,fminf((float)max_w/w,(float)max_h/h));
     *rw=(int)(w*s); *rh=(int)(h*s);
-    if (*rw>1) *rw &= ~1; if (*rh>1) *rh &= ~1;
-    if (*rw<1) *rw=1; if (*rh<1) *rh=1;
+    if (*rw>1) *rw &= ~1;
+    if (*rh>1) *rh &= ~1;
+    if (*rw<1) *rw=1;
+    if (*rh<1) *rh=1;
 }
 
 // Render percentage is a deliberate user option. No thermal/device heuristics.
