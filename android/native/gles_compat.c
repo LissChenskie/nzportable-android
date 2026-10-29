@@ -28,7 +28,20 @@ static int raster_enabled[4];
 static float viewport_xscale=1.f,viewport_yscale=1.f;
 static unsigned draw_calls_this_frame;
 static GLuint current_program;
+static GLuint driver_bound_texture;
+static int driver_texture_valid;
 static nzp_render_stats_t render_stats;
+static void bind_tex0(GLuint texture) {
+    /* The Quake GLES2 backend uses texture unit 0. GPU API calls from
+     * presentation/surface creation invalidate this cache explicitly. */
+    glActiveTexture(GL_TEXTURE0);
+    if(!driver_texture_valid || driver_bound_texture!=texture) {
+        glBindTexture(GL_TEXTURE_2D,texture);
+        driver_bound_texture=texture;
+        driver_texture_valid=1;
+        ++render_stats.texture_binds;
+    } else ++render_stats.skipped_state_changes;
+}
 /* Direct mapped per-texture cache. Exact values only; deleted textures
  * invalidate entries to protect against GL object-id reuse. */
 enum { FILTER_SLOTS=1024 };
@@ -56,8 +69,8 @@ void NZP_GLES_GetFrameStats(nzp_render_stats_t *out) {
 void NZP_GLES_InvalidateTextureState(void) {
     /* Native EGL/FBO code may bind a texture directly; the next wrapped
      * texture bind must restore our desired binding. */
-    memset(filter_cache,0,sizeof(filter_cache));
-    bound_texture=0;
+    /* Direct GLES binding must not discard the engine's logical texture. */
+    driver_texture_valid=0;
 }
 
 // Avoid redundant GLES uniform updates on Mali, especially for frequent HUD/world
@@ -106,6 +119,7 @@ void NZP_GLES_Init(void) {
     memset(&driver_state,0,sizeof(driver_state));
     memset(filter_cache,0,sizeof(filter_cache));
     current_program=0;
+    driver_texture_valid=0;
     glGenBuffers(3,streams);
     glBindBuffer(GL_ARRAY_BUFFER,streams[0]);glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
     for(int i=0;i<3;i++)nzp_identity(matrices[i][0]);
@@ -178,7 +192,7 @@ void NZP_GLES_Flush(void) {
     float mvp[16];nzp_multiply(mvp,matrices[1][matrix_depth[1]],matrices[0][matrix_depth[0]]);
     uniforms(mvp,matrices[0][matrix_depth[0]],matrices[2][matrix_depth[2]],textured,replace_mode,
         alpha_test?alpha_threshold:-1.f,fog_enabled?(fog_mode==GL_LINEAR?1.f:fog_mode==GL_EXP?2.f:3.f):0.f);
-    glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,bound_texture);upload(batch,batch_count,batch_mode);
+    bind_tex0(bound_texture);upload(batch,batch_count,batch_mode);
     batch_count=0;
 }
 void NZP_GLES_Shutdown(void) { NZP_GLES_Flush();last_uniforms.valid=0;current_program=0;
@@ -306,7 +320,15 @@ void nzp_glDrawArrays(GLenum mode,int first,int count){nzp_glBegin(mode);for(int
 void nzp_glDrawElements(GLenum mode,int count,GLenum type,const void *indices){nzp_glBegin(mode);for(int i=0;i<count;i++){unsigned index;
     if(type==GL_UNSIGNED_SHORT){unsigned short s;memcpy(&s,(const unsigned char*)indices+2*i,2);index=s;}else if(type==GL_UNSIGNED_INT){memcpy(&index,(const unsigned char*)indices+4*i,4);}else index=((const unsigned char*)indices)[i];array_vertex(index);}nzp_glEnd();}
 
-void nzp_glBindTexture(GLenum t,GLuint texture){if(bound_texture!=texture){NZP_GLES_Flush();bound_texture=texture;glBindTexture(t,texture);}}
+void nzp_glBindTexture(GLenum t,GLuint texture){
+    if(bound_texture!=texture) {
+        NZP_GLES_Flush();bound_texture=texture;
+        bind_tex0(texture);
+    } else if(!driver_texture_valid || driver_bound_texture!=texture)
+        bind_tex0(texture);
+    else ++render_stats.skipped_state_changes;
+    (void)t;
+}
 void nzp_glTexParameterf(GLenum t,GLenum n,float v){
     if(t==GL_TEXTURE_2D && bound_texture &&
        (n==GL_TEXTURE_MIN_FILTER || n==GL_TEXTURE_MAG_FILTER)) {
@@ -347,6 +369,7 @@ void nzp_glDeleteTextures(int n,const GLuint *textures){
             filter_cache[slot].valid=0;
     }
     glDeleteTextures(n,textures);
+    driver_texture_valid=0;
 }
 /* Only flush if a *real* GLES state mutation would affect queued draws. */
 void nzp_glBlendFunc(GLenum s,GLenum d){
@@ -383,10 +406,12 @@ void nzp_glPolygonOffset(float f,float u){
 /* Render only the 3D world at the user's optional resolution percentage.
  * Logical viewport/refdef remains surface-native for a sharp HUD. */
 void NZP_GLES_SetWorldViewport(int ww,int wh,int sw,int sh) {
+    driver_state.valid&=~DS_VIEWPORT;
     viewport_xscale=(float)ww/(float)(sw>0?sw:1);
     viewport_yscale=(float)wh/(float)(sh>0?sh:1);
 }
 void NZP_GLES_SetNativeViewport(void) {
+    driver_state.valid&=~DS_VIEWPORT;
     viewport_xscale=viewport_yscale=1.f;
 }
 void nzp_glViewport(int x,int y,int w,int h) {
@@ -428,7 +453,7 @@ int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *a,GLuint index_buffer,size
     NZP_GLES_Flush();float mvp[16];nzp_multiply(mvp,matrices[1][matrix_depth[1]],matrices[0][matrix_depth[0]]);
     uniforms(mvp,matrices[0][matrix_depth[0]],matrices[2][matrix_depth[2]],textured,replace_mode,
         alpha_test?alpha_threshold:-1.f,fog_enabled?(fog_mode==GL_LINEAR?1.f:fog_mode==GL_EXP?2.f:3.f):0.f);
-    glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,bound_texture);
+    bind_tex0(bound_texture);
     for(int i=0;i<3;i++){
         if(a[i].buffer){glBindBuffer(GL_ARRAY_BUFFER,a[i].buffer);glEnableVertexAttribArray(i);
             glVertexAttribPointer(i,a[i].size,a[i].type,i==2?GL_TRUE:GL_FALSE,a[i].stride,a[i].offset);
@@ -443,12 +468,22 @@ int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *a,GLuint index_buffer,size
 }
 
 void NZP_GLES_Present(GLuint texture,int width,int height){
-    NZP_GLES_Flush();GLboolean depth=glIsEnabled(GL_DEPTH_TEST),blend=glIsEnabled(GL_BLEND),cull=glIsEnabled(GL_CULL_FACE);
-    GLboolean offset=glIsEnabled(GL_POLYGON_OFFSET_FILL);float identity[16];nzp_identity(identity);
+    NZP_GLES_Flush();
+    /* These values are written only through nzp_glEnable/Disable.
+     * Avoid four glIsEnabled driver queries (potential CPU/GPU sync). */
+    GLboolean depth=raster_enabled[1],blend=raster_enabled[0],
+              cull=raster_enabled[2],offset=raster_enabled[3];
+    float identity[16];nzp_identity(identity);
     const nzp_vertex quad[]={{{-1,-1,0},{0,0},{255,255,255,255}},{{1,-1,0},{1,0},{255,255,255,255}},{{1,1,0},{1,1},{255,255,255,255}},
         {{-1,-1,0},{0,0},{255,255,255,255}},{{1,1,0},{1,1},{255,255,255,255}},{{-1,1,0},{0,1},{255,255,255,255}}};
-    glViewport(0,0,width,height);glDisable(GL_DEPTH_TEST);glDisable(GL_BLEND);glDisable(GL_CULL_FACE);glDisable(GL_POLYGON_OFFSET_FILL);
-    uniforms(identity,identity,identity,1,1,-1,0);glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,texture);upload(quad,6,GL_TRIANGLES);
-    glBindTexture(GL_TEXTURE_2D,bound_texture);
+    glViewport(0,0,width,height);
+    driver_state.valid&=~DS_VIEWPORT;
+    if(depth)glDisable(GL_DEPTH_TEST);
+    if(blend)glDisable(GL_BLEND);
+    if(cull)glDisable(GL_CULL_FACE);
+    if(offset)glDisable(GL_POLYGON_OFFSET_FILL);
+    uniforms(identity,identity,identity,1,1,-1,0);
+    bind_tex0(texture);upload(quad,6,GL_TRIANGLES);
+    bind_tex0(bound_texture);
     if(depth)glEnable(GL_DEPTH_TEST);if(blend)glEnable(GL_BLEND);if(cull)glEnable(GL_CULL_FACE);if(offset)glEnable(GL_POLYGON_OFFSET_FILL);
 }
