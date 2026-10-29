@@ -167,7 +167,12 @@ extern void Host_WriteConfiguration(void);
 extern void SNDDMA_SetPaused(int paused);
 
 int Android_ThermalStatus(void){return thermal;}
-int Android_FrameRate(void){int cap=thermal>=4?15:thermal>=2?30:60;return cl_maxfps.value>=1&&cl_maxfps.value<cap?(int)cl_maxfps.value:cap;}
+int Android_FrameRate(void){
+    // The user's selected cap, never thermal-dependent hidden downscaling.
+    // Unlimited returns zero so the render loop does not sleep intentionally.
+    if(cl_maxfps.value<1)return 0;
+    return (int)cl_maxfps.value;
+}
 int Android_Foreground(void){return foreground;}
 void Android_Init(void){
     Cvar_RegisterVariable(&touch_sensitivity);
