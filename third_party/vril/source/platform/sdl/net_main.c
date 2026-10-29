@@ -380,6 +380,8 @@ qsocket_t *NET_Connect (char *host)
 
 	if (host)
 	{
+        /* Numeric IPv4 avoids synchronous discovery before connecting. */
+        if (strchr(host, '.')) goto JustDoIt;
 		if (Q_strcasecmp (host, "local") == 0)
 		{
 			numdrivers = 1;
