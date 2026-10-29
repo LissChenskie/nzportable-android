@@ -116,6 +116,13 @@ void Menu_LAN_HostStart(void) {
         Menu_LAN_Set();
         return;
     }
+    // A player in signon cannot safely start the shared zombie simulation.
+    for(int i=0;i<svs.maxclients;i++) {
+        if(svs.clients[i].active && !svs.clients[i].spawned) {
+            Con_Printf("LAN: player %d is still loading\\n",i+1);
+            return;
+        }
+    }
     sv.paused = false;
     Menu_ResetMenuButtons();
     key_dest = key_game;
@@ -297,7 +304,8 @@ static void Menu_LAN_Host_Draw(void) {
     Menu_DrawString(153,71,lan_line,255,255,255,255,vid.scale,0);
     int n=0;
     for(int i=0;i<svs.maxclients;i++) if(svs.clients[i].active) {
-        snprintf(lan_line,sizeof(lan_line),"%d. %.27s",i+1,svs.clients[i].name);
+        snprintf(lan_line,sizeof(lan_line),"%d. %.21s %s",i+1,
+                 svs.clients[i].name,svs.clients[i].spawned ? "READY" : "LOADING");
         Menu_DrawString(153,(88+n*11),lan_line,255,255,255,255,vid.scale,0);
         n++;
     }
