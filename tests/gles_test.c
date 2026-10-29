@@ -64,6 +64,34 @@ int main(void){
     glDeleteFramebuffers(1,&fbo);glDeleteTextures(1,&target);
     glDisableClientState(GL_COLOR_ARRAY);glDisableClientState(GL_VERTEX_ARRAY);glDisable(GL_TEXTURE_2D);
     glMatrixMode(GL_PROJECTION);glLoadIdentity();glMatrixMode(GL_MODELVIEW);glLoadIdentity();
+    // Android optional 3D scale: world is rendered to a 32x32 FBO while
+    // the gameplay HUD is drawn at the full 64x64 native surface resolution.
+    GLuint world_tex,world_fbo,world_depth;
+    glGenTextures(1,&world_tex);glBindTexture(GL_TEXTURE_2D,world_tex);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,32,32,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glGenRenderbuffers(1,&world_depth);glBindRenderbuffer(GL_RENDERBUFFER,world_depth);
+    glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT16,32,32);
+    glGenFramebuffers(1,&world_fbo);glBindFramebuffer(GL_FRAMEBUFFER,world_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,world_tex,0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,world_depth);
+    assert(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE);
+    NZP_GLES_SetWorldViewport(32,32,64,64);
+    glViewport(0,0,64,64);glClearColor(0,0,1,1);clear();
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    NZP_GLES_SetNativeViewport();
+    NZP_GLES_Present(world_tex,64,64);
+    glViewport(0,0,64,64);
+    glDisable(GL_TEXTURE_2D);glDisable(GL_FOG);glDisable(GL_ALPHA_TEST);
+    glMatrixMode(GL_PROJECTION);glLoadIdentity();glOrtho(0,64,64,0,-1,1);
+    glMatrixMode(GL_MODELVIEW);glLoadIdentity();glColor4f(1,1,0,1);
+    quad(0,0,16,16);NZP_GLES_Flush();
+    pixel(8,56,255,255,0); // native-resolution HUD overlay
+    pixel(32,32,0,0,255); // independently rasterized 3D background
+    glDeleteFramebuffers(1,&world_fbo);glDeleteRenderbuffers(1,&world_depth);
+    glDeleteTextures(1,&world_tex);glClearColor(0,0,0,1);
+    glMatrixMode(GL_PROJECTION);glLoadIdentity();glMatrixMode(GL_MODELVIEW);glLoadIdentity();
     // Rotate all three frame arenas and cross the streaming capacity boundary.
     for(int frame=0;frame<4;frame++){
         NZP_GLES_BeginFrame();clear();glColor4f(1,0,0,1);quad(-1,-1,0,1);
