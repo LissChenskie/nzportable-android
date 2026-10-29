@@ -48,6 +48,8 @@ extern int				m_previous_state;
 #define m_bindings		22
 #define m_bios 			23
 #define m_gyro			24
+#define m_lan           25
+#define m_lanbrowser    26
 ///////////////////////////
 ///////////////////////////
 ///////////////////////////
@@ -319,6 +321,16 @@ void Menu_Exit_Set(void);
 void Menu_GameOptions_Set(void);
 void Menu_CustomMaps_Set(void);
 void Menu_Lobby_Set(void);
+void Menu_LAN_Set(void);
+void Menu_LAN_Create(void);
+void Menu_LAN_BrowserSet(void);
+void Menu_LAN_Draw(void);
+void Menu_LAN_BrowserDraw(void);
+void Menu_LAN_JoinAddress(const char *address);
+void Menu_LAN_SetServerName(const char *name);
+void Menu_LAN_SetStatus(const char *message);
+int Menu_LAN_GetSlots(void);
+const char *Menu_LAN_Address(void);
 void Menu_GameSettings_Set(void);
 void Menu_Bios_Set(void);
 void Menu_Video_Set (void);
