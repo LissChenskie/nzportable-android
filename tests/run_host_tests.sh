@@ -2,6 +2,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 mkdir -p build/host-tests
+python3 tests/test_compare_perf.py
 cc -std=c99 -Wall -Wextra -Werror tests/test_lan_network.c -o build/host-tests/test_lan_network
 cc -std=c99 -Wall -Wextra -Werror tests/test_touch_gameplay.c -o build/host-tests/test_touch_gameplay -lm
 build/host-tests/test_touch_gameplay
