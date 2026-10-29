@@ -50,6 +50,9 @@ static const char *LAN_CurrentAddress(void) {
 static const char *LAN_CurrentAddress(void) { return my_tcpip_address; }
 #endif
 
+// Available to the pause menu and LAN lobby; reuse the same live interface lookup.
+const char *Menu_LAN_Address(void) { return LAN_CurrentAddress(); }
+
 static char lan_line[160];
 
 void Menu_LAN_Set(void) {
