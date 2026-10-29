@@ -42,6 +42,23 @@ void NZP_GLES_Present(GLuint texture, int width, int height);
 void NZP_GLES_SetWorldViewport(int world_width,int world_height,int surface_width,int surface_height);
 void NZP_GLES_SetNativeViewport(void);
 unsigned NZP_GLES_DrawCalls(void);
+/* Graphics API-neutral frame telemetry (no GPU readbacks or allocations).
+ * Can also be populated by a future Vulkan backend without exposing GL.
+ */
+typedef struct nzp_render_stats_s {
+    unsigned draw_calls;
+    unsigned nonempty_flushes;
+    unsigned texture_binds;
+    unsigned texture_parameter_changes;
+    unsigned shader_switches;
+    unsigned uniform_updates;
+    unsigned buffer_uploads;
+    unsigned vertex_upload_bytes;
+    unsigned skipped_state_changes;
+} nzp_render_stats_t;
+void NZP_GLES_GetFrameStats(nzp_render_stats_t *out);
+void NZP_GLES_InvalidateTextureState(void);
+
 typedef struct {GLuint buffer;const void *offset;GLint size;GLenum type;GLsizei stride;} nzp_gpu_array;
 int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *arrays,GLuint index_buffer,size_t offset,int count);
 void nzp_glBegin(GLenum mode);
