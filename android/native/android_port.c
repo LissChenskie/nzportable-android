@@ -9,6 +9,7 @@
 #include <jni.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <sys/resource.h>
 
 typedef struct {float x,y,r;int key;const char *label;} touch_button;
 // Coordinates normalized to the rendered area, with radii relative to height.
@@ -162,6 +163,7 @@ JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchNeutr
 }
 
 static cvar_t touch_sensitivity={"touch_sensitivity","1.0",true};
+cvar_t nzp_profile={"nzp_profile","0",true};
 extern cvar_t cl_maxfps;
 extern void Host_WriteConfiguration(void);
 extern void SNDDMA_SetPaused(int paused);
@@ -177,6 +179,7 @@ int Android_Foreground(void){return foreground;}
 void Android_Init(void){
     Cvar_RegisterVariable(&touch_sensitivity);
     Cvar_RegisterVariable(&touch_auto_sprint);
+    Cvar_RegisterVariable(&nzp_profile);
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS,"0");SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS,"0");
     SDL_Log("Android device profile: native drawable + user-selected 3D scale");
 }
@@ -315,8 +318,10 @@ void Android_TouchLook(void){
 }
 void Android_Frame(void){
     static Uint64 thermal_poll,ui_poll,last_hot;Uint64 now=SDL_GetTicks64();
-    int need_thermal=now-thermal_poll>=1000;
-    int need_ui=now-ui_poll>=500;
+    /* Thermal monitoring is diagnostic only: never changes resolution/FPS.
+     * Poll less often so JNI and main-thread wakeups cost less power. */
+    int need_thermal=now-thermal_poll>=5000;
+    int need_ui=now-ui_poll>=1000;
     if(!need_thermal&&!need_ui)return;
     JNIEnv *env=SDL_AndroidGetJNIEnv();jobject activity=SDL_AndroidGetActivity();
     if(!env||!activity)return;
@@ -347,20 +352,64 @@ void Android_Frame(void){
     }
     (*env)->DeleteLocalRef(env,activity_class);(*env)->DeleteLocalRef(env,activity);
 }
-void Android_RecordFrame(double cpu_frame_ms) {
-    static Uint64 last_report;static double elapsed_sum,worst;static unsigned frames;
-    Uint64 now=SDL_GetTicks64();
-    if(!last_report)last_report=now;
-    frames++;elapsed_sum+=cpu_frame_ms;if(cpu_frame_ms>worst)worst=cpu_frame_ms;
-    if(now-last_report>=5000){
-        double seconds=(now-last_report)/1000.0;
-        SDL_Log("NZP_PERF frames=%u fps=%.1f render_ms_avg=%.1f render_ms_max=%.1f "
-                "res=%dx%d thermal=%d cap=%d overlay=%d",
-                frames,frames/seconds,elapsed_sum/frames,worst,
-                vid.width,vid.height,thermal,Android_FrameRate(),last_touch_mode);
-        frames=0;elapsed_sum=worst=0;last_report=now;
-    }
+/* On-demand metrics. With profiling disabled, there are no allocations,
+ * sorting or periodic logcat writes in the frame loop. FPS is counted from
+ * actual rendered frames rather than CPU iterations rejected by Host_FilterTime. */
+static int perf_compare_desc(const void *a,const void *b) {
+    double v=*(const double*)a, w=*(const double*)b;
+    return (v<w)?1:(v>w)?-1:0;
 }
+void Android_RecordFrame(double cpu_frame_ms) {
+    static Uint64 last_report,last_render_timestamp;
+    static double frame_time[2048],cpu_sum,cpu_max;
+    static unsigned recorded,frames,draw_calls;
+    static int last_r_frame;
+    static struct rusage previous_usage;
+    const int profiling=nzp_profile.value>0.f;
+    if(!profiling){
+        last_report=last_render_timestamp=0;
+        last_r_frame=r_framecount;
+        recorded=frames=draw_calls=0;
+        cpu_sum=cpu_max=0.0;
+        return;
+    }
+    const Uint64 now=SDL_GetPerformanceCounter();
+    const double frequency=(double)SDL_GetPerformanceFrequency();
+    if(!last_report){
+        last_report=now;
+        getrusage(RUSAGE_SELF,&previous_usage);
+    }
+    if(r_framecount!=last_r_frame) {
+        last_r_frame=r_framecount;
+        frames++;
+        cpu_sum+=cpu_frame_ms;
+        if(cpu_frame_ms>cpu_max)cpu_max=cpu_frame_ms;
+        draw_calls+=NZP_GLES_DrawCalls();
+        if(last_render_timestamp && recorded<2048)
+            frame_time[recorded++]=1000.0*(now-last_render_timestamp)/frequency;
+        last_render_timestamp=now;
+    }
+    const double elapsed=(double)(now-last_report)/frequency;
+    if(elapsed<5.0)return;
+    qsort(frame_time,recorded,sizeof(frame_time[0]),perf_compare_desc);
+    const unsigned tail=(recorded>0)?(unsigned)fmax(0.0,ceil(recorded*0.01)-1):0;
+    const double low=recorded&&frame_time[tail]>0 ? 1000.0/frame_time[tail] : 0.0;
+    struct rusage usage;
+    getrusage(RUSAGE_SELF,&usage);
+    double cpu_seconds=(usage.ru_utime.tv_sec-previous_usage.ru_utime.tv_sec)+
+        (usage.ru_utime.tv_usec-previous_usage.ru_utime.tv_usec)*0.000001+
+        (usage.ru_stime.tv_sec-previous_usage.ru_stime.tv_sec)+
+        (usage.ru_stime.tv_usec-previous_usage.ru_stime.tv_usec)*0.000001;
+    previous_usage=usage;
+    SDL_Log("NZP_PERF fps=%.1f low_1pct_fps=%.1f cpu_ms_avg=%.2f "
+            "cpu_ms_max=%.2f draw_calls_per_frame=%.1f cpu_percent_one_core=%.1f "
+            "rss_peak_kb=%ld res=%dx%d thermal=%d fps_cap=%d",
+            frames/elapsed,low,frames?cpu_sum/frames:0.0,cpu_max,
+            frames?(double)draw_calls/frames:0.0,100.0*cpu_seconds/elapsed,
+            (long)usage.ru_maxrss,vid.width,vid.height,thermal,Android_FrameRate());
+    frames=draw_calls=recorded=0;cpu_sum=cpu_max=0.0;last_report=now;
+}
+
 void Android_DrawTouch(void){
     if(external_touch)return; // RetroTouch draws on a separate Android overlay view.
     if(!touch_visible||!host_initialized||key_dest!=key_game||cls.state!=ca_connected||LoadingScreen_IsWaiting())return;
