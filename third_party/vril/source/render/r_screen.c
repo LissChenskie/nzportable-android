@@ -374,9 +374,23 @@ SCR_DrawFPS(void)
             red  = green = 0;
             blue = 255;
         }
+#ifdef PLATFORM_ANDROID
+        /* Readable high-contrast counter independent of the 3D framebuffer.
+         * Draw last so HUD/map/menu layers cannot hide it. */
+        const float font = fmaxf(2.0f, vid.scale * 1.75f);
+        const int pad = 7 * vid.scale;
+        snprintf(st,sizeof(st),"FPS %.0f",lastfps);
+        const int width = getTextWidth(st,font);
+        const int x = (int)vid.width - width - 3 * pad;
+        const int y = 2 * vid.scale + pad;
+        Draw_FillByColor(x-pad,y-pad,width+pad*2,(int)(8*font)+pad*2,
+                         0,0,0,220);
+        Draw_ColoredString(x,y,st,red,green,blue,255,font);
+#else
         sprintf(st, "%4.0f fps", lastfps);
         Draw_ColoredString(vid.width - getTextWidth(st, vid.scale) - (4 * vid.scale),
           2 * vid.scale, st, red, green, blue, 255, vid.scale);
+#endif
     }
 } /* SCR_DrawFPS */
 
@@ -861,11 +875,11 @@ SCR_UpdateScreen(void)
     Draw_Set2D();
 
     if (!LoadingScreen_IsWaiting()) {
-        // muff - to show FPS on screen
-        SCR_DrawFPS();
         HUD_Draw();
         SCR_DrawConsole();
         Menu_Draw();
+        // Draw FPS above the 2D HUD and menu so it stays visible.
+        SCR_DrawFPS();
     }
 
     if (scr_loadscreen.value) {
