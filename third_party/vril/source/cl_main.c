@@ -238,11 +238,11 @@ void CL_EstablishConnection (char *host)
 	if (!cls.netcon) {
 #ifdef PLATFORM_ANDROID
         // Failed Wi-Fi/Hotspot join is recoverable, not a fatal engine error.
-        Con_Printf("LAN connection failed: %s\\n", host);
+        Con_Printf("LAN connection failed: %s\n", host);
         Menu_LAN_ConnectionFailed();
         return;
 #else
-        Host_Error("CL_Connect: connect failed\\n");
+        Host_Error("CL_Connect: connect failed\n");
 #endif
     }
 	//Con_DPrintf ("CL_EstablishConnection: connected to %s\n", host);
