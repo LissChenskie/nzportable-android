@@ -147,8 +147,11 @@ void Menu_ExitMap (void)
 {
 	// Stop sounds (especially looping!)
 	S_StopAllSounds (true);
-	// Disconnect from server
+	// Disconnect from server, and stop advertising a host that no longer
+    // runs a map. The queued commands execute in order on the engine thread.
 	Cbuf_AddText("disconnect\n");
+    if (svs.maxclients > 1)
+        Cbuf_AddText("maxplayers 1\nlisten 0\n");
 	// Unload textures
 	Hyena_DestroyTextures();
 	// Enter main menu
