@@ -1113,7 +1113,21 @@ static void _Datagram_SearchForHosts (qboolean xmit)
 		if (MSG_ReadByte() != CCREP_SERVER_INFO)
 			continue;
 
-		dfunc.GetAddrFromName(MSG_ReadString(), &readaddr);
+        /* Do not trust an advertised interface IP that is unreachable from
+         * the guest (e.g. cellular/VPN when the host runs Android Hotspot).
+         * Keep the advertised game port, but use the actual reply source IP. */
+        {
+            struct qsockaddr advertised;
+            struct qsockaddr source=readaddr;
+            char *endpoint=MSG_ReadString();
+            if(dfunc.GetAddrFromName(endpoint,&advertised)<0)continue;
+            if(dfunc.AddrCompare(&advertised,&source)<0) {
+                readaddr=source;
+                dfunc.SetSocketPort(&readaddr,dfunc.GetSocketPort(&advertised));
+            } else {
+                readaddr=advertised;
+            }
+        }
 		// search the cache for this server
 		for (n = 0; n < hostCacheCount; n++)
 			if (dfunc.AddrCompare(&readaddr, &hostcache[n].addr) == 0)
