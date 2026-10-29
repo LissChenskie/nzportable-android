@@ -4,6 +4,10 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
 import android.util.Log;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
+import android.text.InputType;
+import android.widget.EditText;
 import android.view.View;
 import android.view.WindowManager;
 import org.libsdl.app.SDLActivity;
@@ -16,6 +20,7 @@ public final class GameActivity extends SDLActivity {
     static native void nativeTouchMove(float x, float y);
     static native void nativeTouchLook(float dx, float dy);
     static native void nativeTouchNeutral();
+    static native void nativeLanInput(String text, boolean isName);
 
     @Override protected String[] getLibraries() { return new String[]{"SDL2", "SDL2_mixer", "main"}; }
     @Override protected String[] getArguments() {
@@ -41,6 +46,32 @@ public final class GameActivity extends SDLActivity {
             @Override public void run() { if(touch!=null) touch.setPlaying(playing); }
         });
     }
+    private void lanTextDialog(final boolean serverName) {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                if (isFinishing()) return;
+                final EditText input=new EditText(GameActivity.this);
+                input.setSingleLine(true);
+                input.setInputType(serverName ? InputType.TYPE_CLASS_TEXT :
+                    InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+                input.setText(serverName ? "NZP LAN" : "192.168.1.1:26000");
+                input.selectAll();
+                new AlertDialog.Builder(GameActivity.this)
+                    .setTitle(serverName ? "LAN server name" : "Connect by IPv4 address[:port]")
+                    .setView(input)
+                    .setPositiveButton(serverName ? "Save" : "Connect",
+                        new DialogInterface.OnClickListener() {
+                            @Override public void onClick(DialogInterface d,int which) {
+                                nativeLanInput(input.getText().toString(),serverName);
+                            }
+                        })
+                    .setNegativeButton("Cancel",null)
+                    .show();
+            }
+        });
+    }
+    public void promptLanAddress() { lanTextDialog(false); }
+    public void promptLanName() { lanTextDialog(true); }
     private void immersive(){getWindow().getDecorView().setSystemUiVisibility(
         View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY|View.SYSTEM_UI_FLAG_FULLSCREEN|View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
         |View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_LAYOUT_STABLE);}
