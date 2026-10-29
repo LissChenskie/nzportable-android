@@ -17,6 +17,7 @@ double gldepthmin,gldepthmax;
 qboolean isPermedia=true;
 static GLuint framebuffer,color,depth;
 static int drawable_w,drawable_h,swap_interval=-1;
+static int software_sync;
 
 static void delete_target(void){
     NZP_GLES_Flush();glBindFramebuffer(GL_FRAMEBUFFER,0);
@@ -63,6 +64,9 @@ void GL_EndRendering(void){
     Draw_Flush();Android_DrawTouch();Draw_Flush();NZP_GLES_Flush();
     glBindFramebuffer(GL_FRAMEBUFFER,0);NZP_GLES_Present(color,drawable_w,drawable_h);
     if(swap_interval!=(r_vsync.value!=0))VID_SetVSync(r_vsync.value!=0);
+    // Android emulator software GL can otherwise present stale/deferred buffers.
+    // Real device drivers keep the asynchronous rendering path.
+    if(software_sync)glFinish();
     SDL_GL_SwapWindow(sdl_window);
 }
 void GL_Init(void){
@@ -82,6 +86,8 @@ void VID_Init(unsigned char *palette){
     sdl_window=SDL_CreateWindow("NZPortable Android",0,0,1280,720,SDL_WINDOW_OPENGL|SDL_WINDOW_FULLSCREEN|SDL_WINDOW_ALLOW_HIGHDPI);
     if(!sdl_window)Sys_Error("Android window: %s",SDL_GetError());
     sdl_gl_context=SDL_GL_CreateContext(sdl_window);if(!sdl_gl_context)Sys_Error("Android GLES context: %s",SDL_GetError());
+    const char *renderer=(const char*)glGetString(GL_RENDERER);
+    software_sync=renderer&&(strstr(renderer,"Emulator")||strstr(renderer,"SwiftShader"));
     SDL_Log("GPU: %s / %s / %s",glGetString(GL_VENDOR),glGetString(GL_RENDERER),glGetString(GL_VERSION));
     vid.colormap=host_colormap;vid.fullbright=256-LittleLong(*((int*)vid.colormap+2048));vid.numpages=2;
     GL_Init();VID_SetVSync(true);VID_SDLResize();

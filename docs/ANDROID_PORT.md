@@ -88,3 +88,8 @@ rendered the Nacht der Untoten map and game HUD, and opened the pause/exit
 dialogs through Android back and touch input. That run caught the Android
 single-output audio requirement and the per-draw VBO storage churn; both were
 fixed before delivering the ARM64 test APK. These are functional checks only.
+
+The Android emulator software GL path waits once before presenting to avoid
+stale/corrupted menu frames observed on Android 10 SwiftShader. This workaround
+is selected by the GL renderer string; hardware drivers, including Mali, retain
+asynchronous submission. It does not establish hardware rendering correctness.
