@@ -81,6 +81,15 @@ enum {
 void NZP_GLES_GetFrameStats(nzp_render_stats_t *out) {
     if(out)*out=render_stats;
 }
+void NZP_GLES_RecordExternalUpload(GLenum target,size_t bytes) {
+    /* Called for Vril's static BSP buffers and dynamic world IBO uploads.
+     * Streamed immediate vertices are counted by upload() separately. */
+    ++render_stats.buffer_uploads;
+    if(target==GL_ELEMENT_ARRAY_BUFFER)
+        render_stats.index_upload_bytes+=(unsigned)bytes;
+    else
+        render_stats.vertex_upload_bytes+=(unsigned)bytes;
+}
 void NZP_GLES_InvalidateTextureState(void) {
     /* Native EGL/FBO code may bind a texture directly; the next wrapped
      * texture bind must restore our desired binding. */
