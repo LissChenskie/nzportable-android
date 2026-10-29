@@ -298,9 +298,16 @@ qboolean LoadingScreen_Key(int key, qboolean down)
 
 void LoadingScreen_Update(void)
 {
-	if (loading_waiting_for_input && LoadingScreen_ReadyToContinue() &&
-		!Music_IsPlaying())
+	if (!loading_waiting_for_input || !LoadingScreen_ReadyToContinue())
+		return;
+#ifdef PLATFORM_ANDROID
+	// A failed/stuck music completion callback must not hold a ready solo map forever.
+	if (!Music_IsPlaying() || Sys_FloatTime() - loadscreen_start_time >= 20.0)
 		LoadingScreen_ReleaseSpawn();
+#else
+	if (!Music_IsPlaying())
+		LoadingScreen_ReleaseSpawn();
+#endif
 }
 
 void LoadingScreen_Finish(void)
