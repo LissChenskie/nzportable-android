@@ -10,6 +10,6 @@ Write-Host "Start a map, play for $Seconds seconds, then keep this window open."
 Start-Sleep -Seconds $Seconds
 adb logcat -d -v threadtime | Out-File "$OutDir/logcat.txt" -Encoding utf8
 adb shell dumpsys thermalservice | Out-File "$OutDir/thermal.txt" -Encoding utf8
-adb shell dumpsys meminfo org.nzportable.android | Out-File "$OutDir/memory.txt" -Encoding utf8
+adb shell dumpsys meminfo org.nzportable.android:game | Out-File "$OutDir/memory.txt" -Encoding utf8
 adb shell dumpsys battery | Out-File "$OutDir/battery.txt" -Encoding utf8
 Write-Host "Saved device, game logs, thermal, memory and battery snapshots to $OutDir."
