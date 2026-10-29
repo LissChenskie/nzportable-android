@@ -20,21 +20,29 @@ static char lan_status[96] = "Create a game or search your local Wi-Fi.";
 static char lan_endpoint[64];
 #ifdef PLATFORM_ANDROID
 static const char *LAN_CurrentAddress(void) {
-    static char address[INET_ADDRSTRLEN];
+    static char address[INET_ADDRSTRLEN],fallback[INET_ADDRSTRLEN];
+    static Uint64 last_refresh;
+    Uint64 now=SDL_GetTicks64();
+    if(now-last_refresh<2000 && last_refresh) return address[0]?address:my_tcpip_address;
+    last_refresh=now;address[0]=fallback[0]=0;
     struct ifaddrs *list=NULL,*it;
-    address[0]=0;
     if(getifaddrs(&list)==0) {
         for(it=list;it;it=it->ifa_next) {
             if(!it->ifa_addr||it->ifa_addr->sa_family!=AF_INET||
-                !(it->ifa_flags & IFF_UP)||(it->ifa_flags & IFF_LOOPBACK)) continue;
+                !(it->ifa_flags & IFF_UP)||(it->ifa_flags & IFF_LOOPBACK))continue;
             const struct sockaddr_in *ip=(const struct sockaddr_in*)it->ifa_addr;
-            if(!inet_ntop(AF_INET,&ip->sin_addr,address,sizeof(address)))continue;
-            // Keep the first active non-loopback interface. Wi-Fi/Hotspot interfaces
-            // can be seen without location or Wi-Fi configuration permissions.
-            break;
+            char candidate[INET_ADDRSTRLEN];
+            if(!inet_ntop(AF_INET,&ip->sin_addr,candidate,sizeof(candidate)))continue;
+            if(!fallback[0])strncpy(fallback,candidate,sizeof(fallback)-1);
+            // Prefer Wi-Fi tethering interfaces over mobile rmnet/rmnet_data.
+            if(!strncmp(it->ifa_name,"wlan",4)||!strncmp(it->ifa_name,"ap",2)||
+               !strncmp(it->ifa_name,"swlan",5)||!strncmp(it->ifa_name,"eth",3)) {
+                strncpy(address,candidate,sizeof(address)-1);break;
+            }
         }
         freeifaddrs(list);
     }
+    if(!address[0]&&fallback[0])strncpy(address,fallback,sizeof(address)-1);
     return address[0]?address:my_tcpip_address;
 }
 #else
@@ -146,6 +154,11 @@ void Menu_LAN_Find_Set(void) {
 static void Menu_LAN_FindConnect(void) {
     int idx = current_menu.cursor;
     if (idx < 0 || idx >= hostCacheCount || idx >= 8) return;
+    if(hostcache[idx].name[0]=='*') {
+        snprintf(lan_status,sizeof(lan_status),"Incompatible LAN protocol version.");
+        Menu_LAN_Set();
+        return;
+    }
     // Hostcache holds the address from the actual Quake server response.
     Menu_LAN_ConnectAddress(hostcache[idx].cname);
 }
