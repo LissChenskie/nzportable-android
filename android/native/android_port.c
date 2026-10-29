@@ -3,6 +3,7 @@
 #include "menu/menu_defs.h"
 #include "platform/sdl/sdl_local.h"
 #include "android_port.h"
+#include "touch_gameplay.h"
 #include "menu/menu_defs.h"
 #include <SDL_mixer.h>
 #include <jni.h>
@@ -25,6 +26,9 @@ static int button_refs[BUTTONS], foreground=1, thermal, touch_visible=1;
 static float move_x,move_y,move_origin_x,move_origin_y,look_x,look_y;
 static jmethodID thermal_method, touch_method;
 static int external_touch, last_touch_mode=-1;
+static TouchSprintState touch_sprint;
+static int touch_pressed[BUTTONS];
+static cvar_t touch_auto_sprint={"touch_auto_sprint","1",true};
 enum { NZP_TOUCH_ACTION=0x4e5a10, NZP_TOUCH_MOVE=0x4e5a11,
        NZP_TOUCH_LOOK=0x4e5a12, NZP_TOUCH_NEUTRAL=0x4e5a13,
        NZP_LAN_CONNECT=0x4e5a14, NZP_LAN_NAME=0x4e5a15 };
@@ -34,6 +38,62 @@ static void push_touch(int code, intptr_t a, intptr_t b) {
     if (!SDL_WasInit(SDL_INIT_EVENTS)) return;
     SDL_Event e;SDL_zero(e);e.type=SDL_USEREVENT;e.user.code=code;
     e.user.data1=(void*)a;e.user.data2=(void*)b;SDL_PushEvent(&e);
+}
+/* Touch actions must use game commands, not keyboard bindings.
+ * The imported config.cfg may not bind E to +use (door / wall purchase).
+ * All actions run on the SDL engine thread after receiving the UI event.
+ */
+static const char *Android_ActionCommand(int key)
+{
+    switch(key) {
+    case K_MOUSE1: return Touch_ActionCommand("fire");
+    case K_MOUSE2: return Touch_ActionCommand("aim");
+    case ' ': return Touch_ActionCommand("jump");
+    case 'r': return Touch_ActionCommand("reload");
+    case 'e': return Touch_ActionCommand("use");
+    case 'q': return Touch_ActionCommand("swap");
+    case 'v': return Touch_ActionCommand("knife");
+    case 'g': return Touch_ActionCommand("nade");
+    default: return NULL;
+    }
+}
+static void Android_SendSprint(int impulse)
+{
+    if (impulse == 23) Cbuf_AddText("impulse 23\\n");
+    else if (impulse == 24) Cbuf_AddText("impulse 24\\n");
+}
+static void Android_UpdateSprint(void)
+{
+    int playing=(key_dest==key_game && cls.state==ca_connected &&
+                 cls.signon==SIGNONS && !cl.paused && foreground);
+    int impulse=TouchSprint_Update(&touch_sprint,move_x,move_y,
+                                   touch_auto_sprint.value!=0,playing);
+    Android_SendSprint(impulse);
+}
+static void Android_EmitTouchAction(int key,int down)
+{
+    if(key==K_ESCAPE) {
+        Key_Event(K_ESCAPE,down);
+        return;
+    }
+    if(key==K_SHIFT) {
+        touch_sprint.manual_requested=down;
+        Android_UpdateSprint();
+        return;
+    }
+    const char *command=Android_ActionCommand(key);
+    if(!command)return;
+    /* Commands carry a synthetic, per-action key id. Do not let
+     * simultaneous firing and +use share a KeyDown slot. */
+    int idx=key==K_MOUSE1?0:key==K_MOUSE2?1:key==' '?2:
+            key=='r'?3:key=='e'?4:key=='q'?5:key=='v'?6:7;
+    if(!!touch_pressed[idx]==!!down)return;
+    if(down && (key_dest!=key_game || cls.state!=ca_connected))return;
+    touch_pressed[idx]=down;
+    char line[56];
+    snprintf(line,sizeof(line),"%c%s %d\\n",
+             down?'+':'-',command+1,400+idx);
+    Cbuf_AddText(line);
 }
 static int touch_action_key(const char *id) {
     if (!strcmp(id,"fire"))return K_MOUSE1;
@@ -111,11 +171,19 @@ int Android_FrameRate(void){int cap=thermal>=4?15:thermal>=2?30:60;return cl_max
 int Android_Foreground(void){return foreground;}
 void Android_Init(void){
     Cvar_RegisterVariable(&touch_sensitivity);
+    Cvar_RegisterVariable(&touch_auto_sprint);
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS,"0");SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS,"0");
     SDL_Log("Android device profile: GLES2 / 1280x720 bounds / 128 MiB engine heap");
 }
 void Android_ResetTouch(void){
-    for(int i=0;i<BUTTONS;i++){if(button_refs[i])Key_Event(buttons[i].key,false);button_refs[i]=0;}
+    for(int i=0;i<BUTTONS;i++){
+        if(button_refs[i])Android_EmitTouchAction(buttons[i].key,false);
+        button_refs[i]=0;
+    }
+    const int keys[]={K_MOUSE1,K_MOUSE2,' ','r','e','q','v','g'};
+    for(unsigned i=0;i<sizeof(keys)/sizeof(keys[0]);i++)
+        if(touch_pressed[i])Android_EmitTouchAction(keys[i],false);
+    Android_SendSprint(TouchSprint_Stop(&touch_sprint));
     memset(fingers,0,sizeof(fingers));move_x=move_y=look_x=look_y=0;
 }
 static void reset_input(void){Android_ResetTouch();IN_ClearPendingInput();}
@@ -136,6 +204,7 @@ static void update_move(float x,float y){
     float aspect=(float)vid.width/fmaxf(1.f,vid.height);
     move_x=(x-move_origin_x)*aspect/.12f;move_y=(move_origin_y-y)/.12f;
     float length=sqrtf(move_x*move_x+move_y*move_y);if(length>1){move_x/=length;move_y/=length;}
+    Android_UpdateSprint();
 }
 static void touch(const SDL_TouchFingerEvent *event){
     // A loading screen is not gameplay. Do not generate movement/attack actions;
@@ -159,7 +228,7 @@ static void touch(const SDL_TouchFingerEvent *event){
             if(!Menu_MouseButton(event->x*vid.width,event->y*vid.height,true))Menu_ButtonPress();return;
         }
         int button=hit_button(event->x,event->y);
-        if(button>=0){f->role=button;if(button_refs[button]++==0)Key_Event(buttons[button].key,true);}
+        if(button>=0){f->role=button;if(button_refs[button]++==0)Android_EmitTouchAction(buttons[button].key,true);}
         else if(event->x<.45f&&!role_in_use(-1)){
             f->role=-1;move_origin_x=event->x;move_origin_y=event->y;update_move(event->x,event->y);
         }else if(event->x>=.45f&&!role_in_use(-2))f->role=-2;
@@ -167,8 +236,8 @@ static void touch(const SDL_TouchFingerEvent *event){
     }
     if(!f)return;
     if(event->type==SDL_FINGERUP){
-        if(f->role>=0&&button_refs[f->role]>0&&--button_refs[f->role]==0)Key_Event(buttons[f->role].key,false);
-        if(f->role==-1)move_x=move_y=0;
+        if(f->role>=0&&button_refs[f->role]>0&&--button_refs[f->role]==0)Android_EmitTouchAction(buttons[f->role].key,false);
+        if(f->role==-1){move_x=move_y=0;Android_UpdateSprint();}
         if(f->role==-3)Menu_MouseButton(event->x*vid.width,event->y*vid.height,false);
         f->active=0;return;
     }
@@ -184,11 +253,14 @@ int Android_Event(const SDL_Event *event){
         case SDL_USEREVENT:
             switch (event->user.code) {
                 case NZP_TOUCH_ACTION:
-                    Key_Event((int)(intptr_t)event->user.data1,
-                              (int)(intptr_t)event->user.data2);return 1;
+                    Android_EmitTouchAction((int)(intptr_t)event->user.data1,
+                                            (int)(intptr_t)event->user.data2);
+                    return 1;
                 case NZP_TOUCH_MOVE:
                     move_x=bits_float(event->user.data1);
-                    move_y=-bits_float(event->user.data2);return 1;
+                    move_y=-bits_float(event->user.data2);
+                    Android_UpdateSprint();
+                    return 1;
                 case NZP_TOUCH_LOOK: {
                     float dx=bits_float(event->user.data1),dy=bits_float(event->user.data2);
                     int width=0,height=0;SDL_GL_GetDrawableSize(sdl_window,&width,&height);
