@@ -53,7 +53,9 @@ void Menu_Video_ApplyParticles(void);
 void Menu_Video_ApplyTextureFiltering(void);
 void Menu_Video_ApplyDithering(void);
 void Menu_Video_ApplyUltrawide(void);
-extern cvar_t vid_render_scale,vid_ui_scale,r_vsync,nzp_profile;
+extern cvar_t vid_render_scale,vid_ui_scale,r_vsync,nzp_profile,vid_benchmark,vid_performance_mode;
+void VID_SetGraphicsAPIChoice(void);
+char *VID_GraphicsAPIName(void);
 extern int Android_FrameRate(void);
 extern void Host_WriteConfiguration(void);
 static int android_video_page;
@@ -85,6 +87,14 @@ static void Menu_Video_SetFPSLimit(void) {
     if(choices[next]==0 || choices[next]>60)Cvar_SetValue("r_vsync",0);
     Menu_Video_Save();
 }
+static void Menu_Video_PerformanceMode(void){
+    int mode=((int)vid_performance_mode.value+1)%3;
+    Cvar_SetValue("vid_performance_mode",mode);
+    Cvar_SetValue("cl_maxfps",mode==1?120:mode==2?30:60);
+    Cvar_SetValue("r_vsync",mode==1?0:1);Menu_Video_Save();
+}
+int VID_StartRendererBenchmark(void);
+static void Menu_Video_Benchmark(void){if(VID_StartRendererBenchmark()){key_dest=key_game;m_state=m_none;}}
 static void Menu_Video_ToggleProfiling(void) {
     Cvar_SetValue("nzp_profile",nzp_profile.value?0:1);
     Menu_Video_Save();
@@ -94,7 +104,7 @@ static void Menu_Video_SetVsyncAndroid(void) {
     Menu_Video_Save();
 }
 static void Menu_Video_NextPageAndroid(void) {
-    android_video_page=(android_video_page+1)%3;
+    android_video_page=(android_video_page+1)%4;
     Menu_ResetMenuButtons();
 }
 static void Menu_Video_BackAndroid(void) {
@@ -154,7 +164,7 @@ static void Menu_Video_DrawAndroid(void) {
         Menu_DrawButton(4,i++,"VSYNC","Sync to display refresh; toggle off for 120 FPS.",
             Menu_Video_SetVsyncAndroid);
         Menu_DrawOptionButton(4,r_vsync.value?"ENABLED":"DISABLED");
-    } else {
+    } else if(android_video_page==2) {
         Menu_DrawButton(1,i++,"PARTICLES","Keep original visual effects.",
             Menu_Video_ApplyParticles);
         Menu_DrawOptionButton(1,particles_string);
@@ -170,6 +180,13 @@ static void Menu_Video_DrawAndroid(void) {
             "Log FPS, 1% lows, CPU, draw calls and memory every 5 seconds.",
             Menu_Video_ToggleProfiling);
         Menu_DrawOptionButton(4,nzp_profile.value?"ENABLED":"DISABLED");
+    }
+    if(android_video_page==3){
+        Menu_DrawButton(1,i++,"GRAPHICS API","Auto / Vulkan / GLES2. Restart the app to apply.",VID_SetGraphicsAPIChoice);
+        Menu_DrawOptionButton(1,VID_GraphicsAPIName());
+        Menu_DrawButton(2,i++,"PERFORMANCE MODE","Balanced 60 / Maximum 120 / Battery 30. No quality changes.",Menu_Video_PerformanceMode);
+        Menu_DrawOptionButton(2,(int)vid_performance_mode.value==1?"MAXIMUM":(int)vid_performance_mode.value==2?"BATTERY SAVER":"BALANCED");
+        Menu_DrawButton(3,i++,"OFFSCREEN BENCHMARK","600 frames without presentation. See renderer-benchmark.csv; use a demo for repeatable load.",Menu_Video_Benchmark);
     }
     Menu_DrawButton(-2,i++,"NEXT PAGE","More video options.",
         Menu_Video_NextPageAndroid);

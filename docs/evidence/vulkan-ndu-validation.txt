@@ -1,0 +1,10 @@
+engine-single-smoke.log
+INFO: NZP_GRAPHICS preference=1 path=/workspace/scratch/17fa85ab9599/nzportable-android/build/game-smoke/data/nzp/graphics-api.txt
+INFO: NZP_VULKAN device=llvmpipe (LLVM 20.1.2, 256 bits) api=1.4 driver=104865800
+INFO: NZP_SCENE_BATCHES base=12 lightmap=2 base_indices=1329 lightmap_indices=198
+INFO: NZP_GRAPHICS clean shutdown backend=Vulkan
+engine-two-smoke.log
+INFO: NZP_GRAPHICS preference=1 path=/workspace/scratch/17fa85ab9599/nzportable-android/build/game-smoke/data/nzp/graphics-api.txt
+INFO: NZP_VULKAN device=llvmpipe (LLVM 20.1.2, 256 bits) api=1.4 driver=104865800
+INFO: NZP_SCENE_BATCHES base=10 lightmap=2 base_indices=1329 lightmap_indices=1329
+INFO: NZP_GRAPHICS clean shutdown backend=Vulkan

@@ -877,3 +877,13 @@ Hyena_UnmapBuffer(hyena_buffer_t * buffer)
 #endif
 }
 
+
+#ifdef NZP_VULKAN
+int Hyena_DrawWorldLightmapped(hyena_buffer_t *vertices,hyena_buffer_t *indices,int count,size_t offset,int lightmap){
+    const int stride=sizeof(world_vertex_t);
+    nzp_gpu_array a[3]={{vertices->object,(void*)(4*sizeof(float)),3,GL_FLOAT,stride},
+        {vertices->object,0,2,GL_FLOAT,stride},{0}};
+    nzp_gpu_array lm={vertices->object,(void*)(2*sizeof(float)),2,GL_FLOAT,stride};
+    return NZP_Render_DrawLightmappedGPU(a,&lm,indices->object,offset,count,hyena_texture_objects[lightmap]);
+}
+#endif

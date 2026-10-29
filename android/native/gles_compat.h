@@ -70,6 +70,7 @@ void NZP_GLES_AppendUIQuad(float x0,float y0,float x1,float y1,
 
 typedef struct {GLuint buffer;const void *offset;GLint size;GLenum type;GLsizei stride;} nzp_gpu_array;
 int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *arrays,GLuint index_buffer,size_t offset,int count);
+int NZP_Render_DrawLightmappedGPU(const nzp_gpu_array *arrays,const nzp_gpu_array *lightmap_uv,GLuint index_buffer,size_t offset,int count,GLuint lightmap_texture);
 void nzp_glBegin(GLenum mode);
 void nzp_glEnd(void);
 void nzp_glVertex3f(GLfloat x, GLfloat y, GLfloat z);
@@ -125,6 +126,28 @@ void nzp_glPolygonMode(GLenum face, GLenum mode);
 void nzp_glReadBuffer(GLenum buffer);
 void nzp_glDrawBuffer(GLenum buffer);
 
+#ifdef NZP_VULKAN
+void nzp_glGenTextures(int n,GLuint *ids);
+void nzp_glGenBuffers(int n,GLuint *ids);
+void nzp_glDeleteBuffers(int n,const GLuint *ids);
+void nzp_glBindBuffer(GLenum target,GLuint id);
+void nzp_glBufferData(GLenum target,GLsizeiptr bytes,const void *data,GLenum usage);
+void nzp_glPixelStorei(GLenum name,GLint value);
+void nzp_glGetIntegerv(GLenum name,GLint *value);
+void nzp_glClearColor(float r,float g,float b,float a);
+void nzp_glClearDepthf(float d);
+#ifndef NZP_GLES_IMPLEMENTATION
+#define glGenTextures nzp_glGenTextures
+#define glGenBuffers nzp_glGenBuffers
+#define glDeleteBuffers nzp_glDeleteBuffers
+#define glBindBuffer nzp_glBindBuffer
+#define glBufferData nzp_glBufferData
+#define glPixelStorei nzp_glPixelStorei
+#define glGetIntegerv nzp_glGetIntegerv
+#define glClearColor nzp_glClearColor
+#define glClearDepthf nzp_glClearDepthf
+#endif
+#endif
 #ifndef NZP_GLES_IMPLEMENTATION
 #define glBegin nzp_glBegin
 #define glEnd nzp_glEnd

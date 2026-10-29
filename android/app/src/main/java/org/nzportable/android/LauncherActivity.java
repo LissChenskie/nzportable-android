@@ -20,6 +20,27 @@ public final class LauncherActivity extends Activity {
         play=new Button(this);play.setText("Играть");box.addView(play);play.setOnClickListener(v->startActivity(new Intent(this,GameActivity.class)));
         importZip=new Button(this);importZip.setText("Импортировать игровые данные из ZIP");box.addView(importZip);
         importZip.setOnClickListener(v->{Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("application/zip");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,7);});
+        TextView graphicsLabel=new TextView(this);graphicsLabel.setText("Графический API (применяется при запуске)");graphicsLabel.setTextColor(Color.WHITE);graphicsLabel.setTextSize(17);box.addView(graphicsLabel);
+        Spinner graphics=new Spinner(this);
+        ArrayAdapter<String> choices=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,
+            new String[]{"Авто (проверенный OpenGL ES 2.0)","Vulkan 1.1 (тестовый)","OpenGL ES 2.0"});
+        graphics.setAdapter(choices);box.addView(graphics);
+        File preference=new File(getFilesDir(),"game/nzp/graphics-api.txt");
+        try(BufferedReader reader=new BufferedReader(new FileReader(preference))){
+            int selected=Integer.parseInt(reader.readLine().trim());if(selected>=0&&selected<3)graphics.setSelection(selected);
+        }catch(IOException|RuntimeException ignored){}
+        Button apply=new Button(this);apply.setText("Применить графический API");box.addView(apply);
+        apply.setOnClickListener(v->{
+            if(!DataInstaller.ready(new File(getFilesDir(),"game"))){status.setText("Сначала импортируйте игровые данные.");return;}
+            File temporary=new File(preference.getPath()+".tmp");
+            try(FileOutputStream output=new FileOutputStream(temporary)){
+                output.write((graphics.getSelectedItemPosition()+"\n").getBytes("UTF-8"));output.getFD().sync();
+            }catch(IOException error){status.setText("Не удалось сохранить API: "+error.getMessage());return;}
+            if(!temporary.renameTo(preference)){status.setText("Не удалось применить графический API.");return;}
+            new File(preference.getParentFile(),"vulkan-failed").delete();
+            new File(preference.getParentFile(),"vulkan-starting").delete();
+            status.setText("API сохранён. Нажмите «Играть». При ошибке Vulkan будет использован OpenGL ES 2.0.");
+        });
         setContentView(box);refresh();
         if(!DataInstaller.ready(new File(getFilesDir(),"game"))){
             try{InputStream packaged=getAssets().open("bootstrap/game-data.zip");install(packaged);}

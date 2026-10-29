@@ -3,6 +3,7 @@
 #include "sdl_local.h"
 #ifdef PLATFORM_ANDROID
 #include "android_port.h"
+#include "vulkan/renderer.h"
 #include <time.h>
 #endif
 
@@ -121,6 +122,9 @@ void Sys_CaptureScreenshot(void)
 	int row_size = width * 3;
 	int y;
 
+#ifdef PLATFORM_ANDROID
+	if(NZP_VK_Active()){NZP_VK_RequestCapture("capture.tga");return;}
+#endif
 	pixels = malloc((size_t)row_size * height);
 	if (!pixels) {
 		Con_Printf("Could not allocate screenshot buffer.\n");
@@ -363,8 +367,10 @@ int main(int argc, char **argv)
 	memset(&parms, 0, sizeof(parms));
 #ifdef PLATFORM_ANDROID
 	// Writable real paths: no shared-storage permission or cwd assumptions.
+#ifdef __ANDROID__
 	const char *android_dir = SDL_AndroidGetInternalStoragePath();
 	if (android_dir) chdir(android_dir);
+#endif
 	SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
 	SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
 	SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");

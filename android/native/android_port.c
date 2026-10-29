@@ -3,6 +3,7 @@
 #include "menu/menu_defs.h"
 #include "platform/sdl/sdl_local.h"
 #include "android_port.h"
+#include "vulkan/renderer.h"
 #include "touch_gameplay.h"
 #include "menu/menu_defs.h"
 #include <SDL_mixer.h>
@@ -278,7 +279,7 @@ int Android_Event(const SDL_Event *event){
                     return 1;
                 case NZP_TOUCH_LOOK: {
                     float dx=bits_float(event->user.data1),dy=bits_float(event->user.data2);
-                    int width=0,height=0;SDL_GL_GetDrawableSize(sdl_window,&width,&height);
+                    int width=vid.width,height=vid.height;
                     // RetroTouch builds report relative look, either normalized or pixels.
                     if(fabsf(dx)>1.f)dx/=fmaxf(1.f,(float)width);
                     if(fabsf(dy)>1.f)dy/=fmaxf(1.f,(float)height);
@@ -445,7 +446,7 @@ void Android_RecordFrame(double cpu_frame_ms) {
             "vbo_upload_kib_per_frame=%.2f ibo_upload_kib_per_frame=%.2f "
             "skipped_states_per_frame=%.2f "
             "cpu_percent_one_core=%.2f rss_peak_kb=%ld "
-            "native=%dx%d world=%dx%d thermal=%d fps_cap=%d gpu_ms=unavailable",
+            "native=%dx%d world=%dx%d thermal=%d fps_cap=%d backend=%s gpu_ms_last_completed=%.3f",
             frames/elapsed,low,
             recorded?frame_time[p50]:0.0,
             recorded?frame_time[p95]:0.0,
@@ -458,7 +459,8 @@ void Android_RecordFrame(double cpu_frame_ms) {
             totals.index_upload_bytes/(1024.0*f),
             totals.skipped_state_changes/f,
             100.0*cpu_seconds/elapsed,(long)usage.ru_maxrss,
-            vid.width,vid.height,world_width,world_height,thermal,Android_FrameRate());
+            vid.width,vid.height,world_width,world_height,thermal,Android_FrameRate(),
+            NZP_VK_Active()?"Vulkan":"GLES2",NZP_VK_Active()?NZP_VK_GPUTime():-1.0);
     frames=recorded=0;cpu_sum=cpu_max=0.0;
     memset(&totals,0,sizeof(totals));
     last_report=now;

@@ -4,13 +4,29 @@
 #define NZP_GLES_IMPLEMENTATION
 #include "gles_compat.h"
 #include "render_math.h"
+#include "vulkan/renderer.h"
+#ifndef NZP_VULKAN
+#define NZP_VK_Active() 0
+#define NZP_VK_Draw(...) ((void)0)
+#define NZP_VK_DrawBuffers(...) 0
+#define NZP_VK_Texture(...) ((void)0)
+#define NZP_VK_TextureFilter(...) ((void)0)
+#define NZP_VK_DeleteTexture(...) ((void)0)
+#define NZP_VK_Clear(...) ((void)0)
+#define NZP_VK_ReadPixels(...) 0
+#endif
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-typedef struct { float xyz[3], uv[2]; unsigned char color[4]; } nzp_vertex;
+typedef nzp_vk_vertex nzp_vertex;
 typedef struct { const unsigned char *data; int size, stride; GLenum type; int enabled; } nzp_array;
 enum { BATCH_CAPACITY=12288, MATRIX_DEPTH=32 };
+static int nzp_unpack_alignment=4;
+static float nzp_clear_color[4],nzp_clear_depth=1;
+#ifdef NZP_VULKAN
+static unsigned resource_id=1,vertex_buffer,index_buffer;
+#endif
 static nzp_vertex batch[BATCH_CAPACITY], current, first_vertex, previous[3];
 static int batch_count, primitive_count;
 static GLenum primitive, batch_mode=GL_TRIANGLES, matrix_mode=GL_MODELVIEW;
@@ -58,6 +74,7 @@ static void enable_vertex_attribute(int index,int enable) {
 static void bind_tex0(GLuint texture) {
     /* The Quake GLES2 backend uses texture unit 0. GPU API calls from
      * presentation/surface creation invalidate this cache explicitly. */
+    if(NZP_VK_Active()){driver_bound_texture=texture;driver_texture_valid=1;return;}
     glActiveTexture(GL_TEXTURE0);
     if(!driver_texture_valid || driver_bound_texture!=texture) {
         glBindTexture(GL_TEXTURE_2D,texture);
@@ -121,6 +138,26 @@ static GLuint shader(GLenum kind,const char *source) {
     GLuint s=glCreateShader(kind); GLint ok; glShaderSource(s,1,&source,NULL);glCompileShader(s);
     glGetShaderiv(s,GL_COMPILE_STATUS,&ok);if(!ok){char log[2048];glGetShaderInfoLog(s,sizeof(log),NULL,log);fail(log);}return s;
 }
+static nzp_vk_raster vk_raster(void) {
+    nzp_vk_raster s={0};
+    s.blend=raster_enabled[0];s.depth=raster_enabled[1];s.cull=raster_enabled[2];s.offset=raster_enabled[3];
+    s.blend_src=(driver_state.valid&DS_BLEND)?driver_state.blend_src:GL_ONE;
+    s.blend_dst=(driver_state.valid&DS_BLEND)?driver_state.blend_dst:GL_ZERO;
+    s.depth_func=(driver_state.valid&DS_DEPTHFUNC)?driver_state.depth_func:GL_LESS;
+    s.depth_write=(driver_state.valid&DS_DEPTHMASK)?driver_state.depth_mask:1;
+    s.cull_face=(driver_state.valid&DS_CULL)?driver_state.cull_face:GL_BACK;
+    s.depth_near=(driver_state.valid&DS_DEPTHRANGE)?driver_state.depth_near:0;
+    s.depth_far=(driver_state.valid&DS_DEPTHRANGE)?driver_state.depth_far:1;
+    s.offset_factor=driver_state.polygon_factor;s.offset_units=driver_state.polygon_units;
+    memcpy(s.viewport,driver_state.viewport,sizeof(s.viewport));return s;
+}
+static nzp_vk_uniform vk_uniform(void) {
+    nzp_vk_uniform u={0};memcpy(u.mvp,mvp_matrix(),64);
+    memcpy(u.mv,matrices[0][matrix_depth[0]],64);memcpy(u.tm,matrices[2][matrix_depth[2]],64);
+    u.fog[0]=fog_enabled?(fog_mode==GL_LINEAR?1.f:fog_mode==GL_EXP?2.f:3.f):0.f;
+    u.fog[1]=fog_start;u.fog[2]=fog_end;u.fog[3]=fog_density;memcpy(u.fogcolor,fog_color,16);
+    u.params[0]=textured;u.params[1]=replace_mode;u.params[2]=alpha_test?alpha_threshold:-1.f;return u;
+}
 void NZP_GLES_Init(void) {
     static const char *vs=
         "attribute vec3 a_position;attribute vec2 a_uv;attribute vec4 a_color;"
@@ -137,6 +174,13 @@ void NZP_GLES_Init(void) {
         "else if(u_fog.x==2.0)f=exp(-u_fog.w*v_depth);"
         "else if(u_fog.x==3.0){float d=u_fog.w*v_depth;f=exp(-d*d);}"
         "gl_FragColor=vec4(mix(u_fogcolor.rgb,c.rgb,clamp(f,0.0,1.0)),c.a);}";
+    if(NZP_VK_Active()) {
+        memset(&driver_state,0,sizeof(driver_state));
+        memset(&render_stats,0,sizeof(render_stats));memset(raster_enabled,0,sizeof(raster_enabled));
+        memset(matrix_depth,0,sizeof(matrix_depth));mvp_valid=0;batch_count=0;
+        for(int i=0;i<3;i++)nzp_identity(matrices[i][0]);
+        memset(current.color,255,4);return;
+    }
     GLuint v=shader(GL_VERTEX_SHADER,vs),f=shader(GL_FRAGMENT_SHADER,fs);GLint ok;
     program=glCreateProgram();glAttachShader(program,v);glAttachShader(program,f);
     glBindAttribLocation(program,0,"a_position");glBindAttribLocation(program,1,"a_uv");glBindAttribLocation(program,2,"a_color");
@@ -219,6 +263,7 @@ void NZP_GLES_BeginFrame(void){
     NZP_GLES_Flush();
     draw_calls_this_frame=0;
     memset(&render_stats,0,sizeof(render_stats));stream_index=(stream_index+1)%3;stream_offset=0;
+    if(NZP_VK_Active())return;
     glBindBuffer(GL_ARRAY_BUFFER,streams[stream_index]);
     // One orphan per frame, instead of allocating a new store per HUD glyph batch.
     glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
@@ -226,12 +271,19 @@ void NZP_GLES_BeginFrame(void){
 void NZP_GLES_Flush(void) {
     if(!batch_count)return;
     ++render_stats.nonempty_flushes;
+    if(NZP_VK_Active()) {
+        nzp_vk_uniform u=vk_uniform();nzp_vk_raster s=vk_raster();
+        NZP_VK_Draw(batch,batch_count,batch_mode,&u,&s,bound_texture);
+        ++draw_calls_this_frame;++render_stats.draw_calls;
+        render_stats.vertex_upload_bytes+=batch_count*sizeof(nzp_vertex);
+        batch_count=0;return;
+    }
     uniforms(mvp_matrix(),matrices[0][matrix_depth[0]],matrices[2][matrix_depth[2]],textured,replace_mode,
         alpha_test?alpha_threshold:-1.f,fog_enabled?(fog_mode==GL_LINEAR?1.f:fog_mode==GL_EXP?2.f:3.f):0.f);
     bind_tex0(bound_texture);upload(batch,batch_count,batch_mode);
     batch_count=0;
 }
-void NZP_GLES_Shutdown(void) { NZP_GLES_Flush();last_uniforms.valid=0;current_program=0;
+void NZP_GLES_Shutdown(void) { NZP_GLES_Flush();if(NZP_VK_Active())return;last_uniforms.valid=0;current_program=0;
     memset(filter_cache,0,sizeof(filter_cache));glDeleteBuffers(3,streams);glDeleteProgram(program);program=0;memset(streams,0,sizeof(streams)); }
 static void reserve(int count,GLenum mode) {
     if(batch_mode!=mode||batch_count+count>BATCH_CAPACITY)NZP_GLES_Flush();batch_mode=mode;
@@ -333,7 +385,7 @@ void nzp_glGetFloatv(GLenum name,float *v){int i=name==GL_PROJECTION_MATRIX?1:na
 static void enable(GLenum cap,int value){int *p=cap==GL_TEXTURE_2D?&textured:cap==GL_ALPHA_TEST?&alpha_test:cap==GL_FOG?&fog_enabled:NULL;
     if(p){if(*p!=value){NZP_GLES_Flush();*p=value;}}else {
         int i=cap==GL_BLEND?0:cap==GL_DEPTH_TEST?1:cap==GL_CULL_FACE?2:cap==GL_POLYGON_OFFSET_FILL?3:-1;
-        if(i<0||raster_enabled[i]!=value){NZP_GLES_Flush();if(i>=0)raster_enabled[i]=value;if(value)glEnable(cap);else glDisable(cap);}
+        if(i<0||raster_enabled[i]!=value){NZP_GLES_Flush();if(i>=0)raster_enabled[i]=value;if(!NZP_VK_Active()){if(value)glEnable(cap);else glDisable(cap);}}
     }}
 void nzp_glEnable(GLenum cap){enable(cap,1);}void nzp_glDisable(GLenum cap){enable(cap,0);}
 void nzp_glAlphaFunc(GLenum f,float threshold){if(f!=GL_GREATER)fail("unsupported alpha test");if(alpha_threshold!=threshold){NZP_GLES_Flush();alpha_threshold=threshold;}}
@@ -399,7 +451,8 @@ void nzp_glTexParameterf(GLenum t,GLenum n,float v){
             return;
         }
         NZP_GLES_Flush();
-        glTexParameterf(t,n,v);
+        if(NZP_VK_Active())NZP_VK_TextureFilter(bound_texture,n,(int)v);
+        else glTexParameterf(t,n,v);
         ++render_stats.texture_parameter_changes;
         if(filter_cache[slot].texture!=bound_texture) {
             filter_cache[slot].texture=bound_texture;
@@ -410,11 +463,11 @@ void nzp_glTexParameterf(GLenum t,GLenum n,float v){
         filter_cache[slot].valid|=mask;
         return;
     }
-    NZP_GLES_Flush();glTexParameterf(t,n,v);
+    NZP_GLES_Flush();if(NZP_VK_Active())NZP_VK_TextureFilter(bound_texture,n,(int)v);else glTexParameterf(t,n,v);
     ++render_stats.texture_parameter_changes;
 }
-void nzp_glTexImage2D(GLenum t,int l,int in,int w,int h,int b,GLenum f,GLenum type,const void *data){(void)in;NZP_GLES_Flush();glTexImage2D(t,l,f,w,h,b,f,type,data);}
-void nzp_glTexSubImage2D(GLenum t,int l,int x,int y,int w,int h,GLenum f,GLenum type,const void *data){NZP_GLES_Flush();glTexSubImage2D(t,l,x,y,w,h,f,type,data);}
+void nzp_glTexImage2D(GLenum t,int l,int in,int w,int h,int b,GLenum f,GLenum type,const void *data){(void)in;NZP_GLES_Flush();if(NZP_VK_Active())NZP_VK_Texture(bound_texture,l,0,0,w,h,f,type,data,1,nzp_unpack_alignment);else glTexImage2D(t,l,f,w,h,b,f,type,data);}
+void nzp_glTexSubImage2D(GLenum t,int l,int x,int y,int w,int h,GLenum f,GLenum type,const void *data){NZP_GLES_Flush();if(NZP_VK_Active())NZP_VK_Texture(bound_texture,l,x,y,w,h,f,type,data,0,nzp_unpack_alignment);else glTexSubImage2D(t,l,x,y,w,h,f,type,data);}
 void nzp_glDeleteTextures(int n,const GLuint *textures){
     NZP_GLES_Flush();
     for(int i=0;i<n;i++) {
@@ -424,38 +477,38 @@ void nzp_glDeleteTextures(int n,const GLuint *textures){
         if(filter_cache[slot].texture==id)
             filter_cache[slot].valid=0;
     }
-    glDeleteTextures(n,textures);
+    if(NZP_VK_Active()){for(int i=0;i<n;i++)NZP_VK_DeleteTexture(textures[i]);}else glDeleteTextures(n,textures);
     driver_texture_valid=0;
 }
 /* Only flush if a *real* GLES state mutation would affect queued draws. */
 void nzp_glBlendFunc(GLenum s,GLenum d){
     if((driver_state.valid&DS_BLEND)&&driver_state.blend_src==s &&
        driver_state.blend_dst==d){++render_stats.skipped_state_changes;return;}
-    NZP_GLES_Flush();glBlendFunc(s,d);
+    NZP_GLES_Flush();if(!NZP_VK_Active())glBlendFunc(s,d);
     driver_state.blend_src=s;driver_state.blend_dst=d;driver_state.valid|=DS_BLEND;
 }
 void nzp_glDepthFunc(GLenum f){
     if((driver_state.valid&DS_DEPTHFUNC)&&driver_state.depth_func==f)
        {++render_stats.skipped_state_changes;return;}
-    NZP_GLES_Flush();glDepthFunc(f);
+    NZP_GLES_Flush();if(!NZP_VK_Active())glDepthFunc(f);
     driver_state.depth_func=f;driver_state.valid|=DS_DEPTHFUNC;
 }
 void nzp_glDepthMask(GLboolean e){
     if((driver_state.valid&DS_DEPTHMASK)&&driver_state.depth_mask==e)
        {++render_stats.skipped_state_changes;return;}
-    NZP_GLES_Flush();glDepthMask(e);
+    NZP_GLES_Flush();if(!NZP_VK_Active())glDepthMask(e);
     driver_state.depth_mask=e;driver_state.valid|=DS_DEPTHMASK;
 }
 void nzp_glCullFace(GLenum f){
     if((driver_state.valid&DS_CULL)&&driver_state.cull_face==f)
        {++render_stats.skipped_state_changes;return;}
-    NZP_GLES_Flush();glCullFace(f);
+    NZP_GLES_Flush();if(!NZP_VK_Active())glCullFace(f);
     driver_state.cull_face=f;driver_state.valid|=DS_CULL;
 }
 void nzp_glPolygonOffset(float f,float u){
     if((driver_state.valid&DS_POLYGON)&&driver_state.polygon_factor==f &&
        driver_state.polygon_units==u){++render_stats.skipped_state_changes;return;}
-    NZP_GLES_Flush();glPolygonOffset(f,u);
+    NZP_GLES_Flush();if(!NZP_VK_Active())glPolygonOffset(f,u);
     driver_state.polygon_factor=f;driver_state.polygon_units=u;
     driver_state.valid|=DS_POLYGON;
 }
@@ -482,22 +535,31 @@ void nzp_glViewport(int x,int y,int w,int h) {
         ++render_stats.skipped_state_changes;return;
     }
     NZP_GLES_Flush();
-    glViewport(rect[0],rect[1],rect[2],rect[3]);
+    if(!NZP_VK_Active())glViewport(rect[0],rect[1],rect[2],rect[3]);
     memcpy(driver_state.viewport,rect,sizeof(rect));
     driver_state.valid|=DS_VIEWPORT;
 }
 unsigned NZP_GLES_DrawCalls(void) { return draw_calls_this_frame; }
-#define FLUSH_CALL(name,args,call) void nzp_##name args { NZP_GLES_Flush();name call; }
-FLUSH_CALL(glClear,(GLbitfield mask),(mask))
-FLUSH_CALL(glReadPixels,(int x,int y,int w,int h,GLenum f,GLenum t,void *p),(x,y,w,h,f,t,p))
-FLUSH_CALL(glFinish,(void),())
-#undef FLUSH_CALL
+void nzp_glClear(GLbitfield mask){NZP_GLES_Flush();if(NZP_VK_Active())NZP_VK_Clear(mask,nzp_clear_color,nzp_clear_depth);else glClear(mask);}
+void nzp_glReadPixels(int x,int y,int w,int h,GLenum f,GLenum t,void *p){NZP_GLES_Flush();
+    if(NZP_VK_Active()) {if(f!=GL_RGBA||t!=GL_UNSIGNED_BYTE||!NZP_VK_ReadPixels(x,y,w,h,p))fail("Vulkan readback unavailable");}
+    else if(f==GL_RGB && t==GL_UNSIGNED_BYTE){
+        unsigned char *rgba=malloc((size_t)w*h*4);if(!rgba)fail("screenshot allocation failed");
+        GLint alignment=4;glGetIntegerv(GL_PACK_ALIGNMENT,&alignment);
+        glReadPixels(x,y,w,h,GL_RGBA,t,rgba);
+        size_t stride=((size_t)w*3+alignment-1)/alignment*alignment;
+        for(int j=0;j<h;j++)for(int i=0;i<w;i++)memcpy((unsigned char*)p+j*stride+i*3,rgba+((size_t)j*w+i)*4,3);
+        free(rgba);
+    } else glReadPixels(x,y,w,h,f,t,p);
+}
+void nzp_glFinish(void){NZP_GLES_Flush();if(!NZP_VK_Active())glFinish();}
+
 void nzp_glDepthRange(double n,double f){
     if((driver_state.valid&DS_DEPTHRANGE)&&driver_state.depth_near==(float)n &&
        driver_state.depth_far==(float)f) {
         ++render_stats.skipped_state_changes;return;
     }
-    NZP_GLES_Flush();glDepthRangef((float)n,(float)f);
+    NZP_GLES_Flush();if(!NZP_VK_Active())glDepthRangef((float)n,(float)f);
     driver_state.depth_near=(float)n;driver_state.depth_far=(float)f;
     driver_state.valid|=DS_DEPTHRANGE;
 }
@@ -508,6 +570,14 @@ void nzp_glReadBuffer(GLenum b){(void)b;}void nzp_glDrawBuffer(GLenum b){(void)b
 int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *a,GLuint index_buffer,size_t offset,int count){
     if(!a[0].buffer||mode==GL_QUADS||mode==GL_POLYGON||(flat_shading&&a[2].buffer))return 0;
     NZP_GLES_Flush();
+    if(NZP_VK_Active()) {
+        nzp_vk_array va[3];for(int i=0;i<3;i++){
+            va[i]=(nzp_vk_array){a[i].buffer,(size_t)a[i].offset,a[i].size,a[i].type,a[i].stride};
+        }
+        nzp_vk_uniform u=vk_uniform();nzp_vk_raster s=vk_raster();
+        int result=NZP_VK_DrawBuffers(va,index_buffer,offset,count,mode,&u,&s,bound_texture,current.uv,current.color);
+        if(result){++draw_calls_this_frame;++render_stats.draw_calls;}return result;
+    }
     uniforms(mvp_matrix(),matrices[0][matrix_depth[0]],matrices[2][matrix_depth[2]],textured,replace_mode,
         alpha_test?alpha_threshold:-1.f,fog_enabled?(fog_mode==GL_LINEAR?1.f:fog_mode==GL_EXP?2.f:3.f):0.f);
     bind_tex0(bound_texture);
@@ -543,4 +613,35 @@ void NZP_GLES_Present(GLuint texture,int width,int height){
     bind_tex0(texture);upload(quad,6,GL_TRIANGLES);
     bind_tex0(bound_texture);
     if(depth)glEnable(GL_DEPTH_TEST);if(blend)glEnable(GL_BLEND);if(cull)glEnable(GL_CULL_FACE);if(offset)glEnable(GL_POLYGON_OFFSET_FILL);
+}
+
+#ifdef NZP_VULKAN
+void nzp_glGenTextures(int n,GLuint *ids){if(NZP_VK_Active()){while(n--)*ids++=resource_id++;}else glGenTextures(n,ids);}
+void nzp_glGenBuffers(int n,GLuint *ids){if(NZP_VK_Active()){while(n--)*ids++=resource_id++;}else glGenBuffers(n,ids);}
+void nzp_glDeleteBuffers(int n,const GLuint *ids){NZP_GLES_Flush();if(NZP_VK_Active()){for(int i=0;i<n;i++)NZP_VK_DeleteBuffer(ids[i]);}else glDeleteBuffers(n,ids);}
+void nzp_glBindBuffer(GLenum target,GLuint id){if(NZP_VK_Active()){if(target==GL_ARRAY_BUFFER)vertex_buffer=id;else index_buffer=id;}else glBindBuffer(target,id);}
+void nzp_glBufferData(GLenum target,GLsizeiptr bytes,const void *data,GLenum usage){
+    if(NZP_VK_Active()){NZP_GLES_Flush();NZP_VK_Buffer(target==GL_ARRAY_BUFFER?vertex_buffer:index_buffer,bytes,data,usage==GL_STATIC_DRAW);}
+    else glBufferData(target,bytes,data,usage);
+}
+void nzp_glPixelStorei(GLenum name,GLint value){if(name==GL_UNPACK_ALIGNMENT)nzp_unpack_alignment=value;if(!NZP_VK_Active())glPixelStorei(name,value);}
+void nzp_glGetIntegerv(GLenum name,GLint *value){
+    if(NZP_VK_Active()){if(name==GL_UNPACK_ALIGNMENT)*value=nzp_unpack_alignment;else if(name==GL_MAX_TEXTURE_SIZE)*value=NZP_VK_MaxTextureSize();else fail("unsupported Vulkan integer query");}
+    else glGetIntegerv(name,value);
+}
+void nzp_glClearColor(float r,float g,float b,float a){nzp_clear_color[0]=r;nzp_clear_color[1]=g;nzp_clear_color[2]=b;nzp_clear_color[3]=a;if(!NZP_VK_Active())glClearColor(r,g,b,a);}
+void nzp_glClearDepthf(float d){nzp_clear_depth=d;if(!NZP_VK_Active())glClearDepthf(d);}
+#endif
+
+int NZP_Render_DrawLightmappedGPU(const nzp_gpu_array *a,const nzp_gpu_array *lm,GLuint ib,size_t offset,int count,GLuint lmtex){
+#ifdef NZP_VULKAN
+    if(!NZP_VK_Active())return 0;
+    NZP_GLES_Flush();nzp_vk_array va[3],vlm={lm->buffer,(size_t)lm->offset,lm->size,lm->type,lm->stride};
+    for(int i=0;i<3;i++)va[i]=(nzp_vk_array){a[i].buffer,(size_t)a[i].offset,a[i].size,a[i].type,a[i].stride};
+    nzp_vk_uniform u=vk_uniform();nzp_vk_raster s=vk_raster();
+    int ok=NZP_VK_DrawLightmappedBuffers(va,&vlm,ib,offset,count,&u,&s,bound_texture,lmtex,current.uv,current.color);
+    if(ok){++draw_calls_this_frame;++render_stats.draw_calls;}return ok;
+#else
+    (void)a;(void)lm;(void)ib;(void)offset;(void)count;(void)lmtex;return 0;
+#endif
 }

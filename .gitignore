@@ -12,3 +12,10 @@ android/local.properties
 android/app/src/main/assets/bootstrap/*.zip
 *.keystore
 __pycache__/
+
+# Pinned downloads; only reviewed Vulkan source headers are vendored.
+third_party/volk/
+third_party/VulkanMemoryAllocator/
+android/app/libs/retrotouch.aar
+capture.bmp
+capture.tga

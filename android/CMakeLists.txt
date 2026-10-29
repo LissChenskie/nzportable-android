@@ -33,7 +33,7 @@ file(GLOB PLATFORM CONFIGURE_DEPENDS "${ENGINE}/platform/sdl/*.c" "${ENGINE}/pla
 list(FILTER PLATFORM EXCLUDE REGEX "/gl_vidsdl\\.c$")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/_build_info.h"
     "#define GIT_HASH \"7a31c3d-android\"\n#define GIT_BRANCH \"android\"\n#define BUILD_DATE \"2026-10-29\"\n")
-add_library(main SHARED ${CORE} ${PLATFORM} native/gles_compat.c native/video_android.c native/android_port.c)
+add_library(main SHARED ${CORE} ${PLATFORM} native/gles_compat.c native/video_android.c native/android_port.c native/vulkan/renderer.cpp native/vulkan/vendor/volk.c)
 target_include_directories(main PRIVATE "${ENGINE}" native "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_definitions(main PRIVATE GLQUAKE PLATFORM_SDL PLATFORM_ANDROID PLATFORM_CONFIRM_IS_ENTER
     PLATFORM_DIRECTORY=sdl PLATFORM_RENDERER=gl MAX_AI_COUNT=24 PLATFORM_USES_GENERIC_GLYPHS
@@ -43,3 +43,25 @@ target_compile_options(main PRIVATE -O2 -fno-strict-aliasing -fvisibility=hidden
 set_source_files_properties("${ENGINE}/platform/sdl/sys_sdl.c" PROPERTIES COMPILE_OPTIONS "-fvisibility=default")
 target_link_options(main PRIVATE "-Wl,-z,max-page-size=16384" "-Wl,--no-undefined")
 target_link_libraries(main PRIVATE SDL2::SDL2 SDL2_mixer::SDL2_mixer GLESv2 android log m)
+
+# SPIR-V is compiled by the pinned NDK on the build host; no runtime GLSL compiler.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+if(CMAKE_HOST_WIN32)
+    set(NZP_SHADER_HOST windows-x86_64)
+elseif(CMAKE_HOST_APPLE)
+    set(NZP_SHADER_HOST darwin-x86_64)
+else()
+    set(NZP_SHADER_HOST linux-x86_64)
+endif()
+find_program(GLSLC NAMES glslc glslc.exe
+    PATHS "${ANDROID_NDK}/shader-tools/${NZP_SHADER_HOST}" NO_DEFAULT_PATH REQUIRED)
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/vulkan_shaders.h"
+    COMMAND ${Python3_EXECUTABLE} "${ROOT}/scripts/compile_vulkan_shaders.py"
+        --compiler "${GLSLC}" --out "${CMAKE_CURRENT_BINARY_DIR}/vulkan_shaders.h"
+    DEPENDS "${ROOT}/scripts/compile_vulkan_shaders.py"
+        native/vulkan/shaders/vril.vert native/vulkan/shaders/vril.frag
+    VERBATIM)
+target_sources(main PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_shaders.h")
+target_compile_definitions(main PRIVATE NZP_VULKAN VK_NO_PROTOTYPES)
+set_source_files_properties(native/vulkan/renderer.cpp PROPERTIES COMPILE_OPTIONS "-std=c++17;-Wno-missing-field-initializers;-Wno-unused-parameter")
+target_link_libraries(main PRIVATE dl)

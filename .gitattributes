@@ -1,0 +1,2 @@
+# Preserve reviewed upstream vendor files byte-for-byte.
+android/native/vulkan/vendor/* -whitespace

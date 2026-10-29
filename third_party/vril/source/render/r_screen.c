@@ -20,6 +20,9 @@
 
 // screen.c -- master for refresh, status bar, console, chat, notify, etc
 
+#ifdef PLATFORM_ANDROID
+#include "vulkan/renderer.h"
+#endif
 #include "../nzportable_def.h"
 #include "r_fov.h"
 #include "r_alias_lerp.h"
@@ -505,6 +508,12 @@ SCR_ScreenShot_f(void)
     }
 
 
+#ifdef PLATFORM_ANDROID
+    if(NZP_VK_Active()) {
+        NZP_VK_RequestCapture(checkname);
+        Con_Printf("Screenshot queued: %s\n",pcxname);return;
+    }
+#endif
     buffer = malloc(glwidth * glheight * 3 + 18);
     if (!buffer)
         Sys_Error("SCR_ScreenShot_f: out of memory");
