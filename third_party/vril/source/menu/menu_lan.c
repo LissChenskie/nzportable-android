@@ -119,7 +119,7 @@ void Menu_LAN_HostStart(void) {
     // A player in signon cannot safely start the shared zombie simulation.
     for(int i=0;i<svs.maxclients;i++) {
         if(svs.clients[i].active && !svs.clients[i].spawned) {
-            Con_Printf("LAN: player %d is still loading\\n",i+1);
+            Con_Printf("LAN: player %d is still loading\n",i+1);
             return;
         }
     }
