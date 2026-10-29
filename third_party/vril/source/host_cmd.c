@@ -368,9 +368,10 @@ void Host_Connect_f (void)
 		CL_StopPlayback ();
 		CL_Disconnect ();
 	}
-	strcpy (name, Cmd_Argv(1));
+	Q_strncpyz (name, Cmd_Argv(1), sizeof(name));
 	CL_EstablishConnection (name);
-	Host_Reconnect_f ();
+    if (cls.state == ca_connected)
+	    Host_Reconnect_f ();
 }
 
 
