@@ -26,6 +26,7 @@ static int drawable_w,drawable_h,world_w,world_h;
 static int active_percent=-1,swap_interval=-1,software_sync,has_world_target;
 static int hud_active;
 static unsigned render_rebuilds;
+static int max_texture_size;
 
 static void delete_target(void){
     NZP_GLES_Flush();
@@ -37,7 +38,7 @@ static void delete_target(void){
     world_framebuffer=world_color=world_depth=0;
     has_world_target=0;
 }
-static void create_target(int w,int h,GLuint *fbo,GLuint *tex,GLuint *depth,
+static int create_target(int w,int h,GLuint *fbo,GLuint *tex,GLuint *depth,
                           int linear)
 {
     glGenTextures(1,tex);
@@ -55,8 +56,13 @@ static void create_target(int w,int h,GLuint *fbo,GLuint *tex,GLuint *depth,
     glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,*tex,0);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,*depth);
     GLenum status=glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if(status!=GL_FRAMEBUFFER_COMPLETE)
-        Sys_Error("Android GLES FBO %dx%d failed: 0x%x",w,h,(unsigned)status);
+    if(status!=GL_FRAMEBUFFER_COMPLETE) {
+        SDL_LogError(SDL_LOG_CATEGORY_VIDEO,
+            "Optional 3D FBO %dx%d unsupported (0x%x): falling back to native",
+            w,h,(unsigned)status);
+        return 0;
+    }
+    return 1;
 }
 static int render_percent(void) {
     int percent=(int)(vid_render_scale.value+0.5f);
@@ -91,9 +97,20 @@ void VID_SDLResize(void) {
     drawable_w=width;drawable_h=height;
     world_w=target_w;world_h=target_h;
     active_percent=percent;
-    if(percent!=100){
-        create_target(target_w,target_h,&world_framebuffer,&world_color,&world_depth,1);
-        has_world_target=1;
+    if(percent!=100 && (max_texture_size<=0 ||
+                        (target_w<=max_texture_size&&target_h<=max_texture_size))) {
+        if(create_target(target_w,target_h,
+                         &world_framebuffer,&world_color,&world_depth,1)) {
+            has_world_target=1;
+        } else {
+            delete_target();
+            world_w=width;world_h=height;
+        }
+    } else if(percent!=100) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_VIDEO,
+            "Optional 3D %dx%d exceeds GLES texture max %d: keeping native quality",
+            target_w,target_h,max_texture_size);
+        world_w=width;world_h=height;
     }
     glBindTexture(GL_TEXTURE_2D,0);
     Hyena_InvalidateTextureBinding();
@@ -175,6 +192,7 @@ void VID_Init(unsigned char *palette){
        SDL_WINDOW_OPENGL|SDL_WINDOW_FULLSCREEN|SDL_WINDOW_ALLOW_HIGHDPI);
     if(!sdl_window)Sys_Error("Android window: %s",SDL_GetError());
     sdl_gl_context=SDL_GL_CreateContext(sdl_window);if(!sdl_gl_context)Sys_Error("Android GLES context: %s",SDL_GetError());
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE,&max_texture_size);
     const char *renderer=(const char*)glGetString(GL_RENDERER);
     software_sync=renderer&&(strstr(renderer,"Emulator")||strstr(renderer,"SwiftShader"));
     SDL_Log("GPU: %s / %s / %s",glGetString(GL_VENDOR),glGetString(GL_RENDERER),glGetString(GL_VERSION));
