@@ -56,3 +56,61 @@ jobs:
           name: nzportable-android-${{ matrix.abi }}
           path: build/nzportable-android-${{ matrix.abi }}.apk
           if-no-files-found: error
+
+  # Publish only when an explicitly marked release commit reaches main.
+  # GitHub release assets come from the SAME tested workflow run.
+  publish-android-release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release-apk]')
+    needs: [host-tests, vulkan-tests, apk]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested ARM64 APK
+        uses: actions/download-artifact@v4
+        with:
+          name: nzportable-android-arm64-v8a
+          path: release
+      - name: Download tested ARMv7 APK
+        uses: actions/download-artifact@v4
+        with:
+          name: nzportable-android-armeabi-v7a
+          path: release
+      - name: Verify APK files
+        run: |
+          set -euo pipefail
+          test -s release/nzportable-android-arm64-v8a.apk
+          test -s release/nzportable-android-armeabi-v7a.apk
+          sha256sum release/*.apk | tee release/SHA256SUMS.txt
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.0-android-20261029
+          name: NZPortable Android - 2026-10-29 (experimental)
+          target_commitish: ${{ github.sha }}
+          draft: false
+          prerelease: true
+          fail_on_unmatched_files: true
+          body: |
+            Experimental Android port build for testing on Samsung Galaxy A51 and compatible phones.
+            
+            Includes Vulkan lightmapped BSP fog correction, LAN co-op player nickname,
+            touch-friendly scrolling map selection, and CPU/RAM improvements.
+            
+            **ARM64 (arm64-v8a):** Recommended for Samsung Galaxy A51.
+            **ARMv7 (armeabi-v7a):** For compatible 32-bit devices.
+            
+            Graphics API: GLES2 remains the Auto/default renderer because Vulkan
+            performance and stability on Galaxy A51 still require physical testing.
+            No automatic resolution or graphic quality reduction is introduced.
+            
+            APKs are signed with a DEVELOPMENT/TEST key and are NOT production releases.
+            Game data are not embedded; import a compatible NZPortable game-data ZIP
+            using the launcher when needed. 
+            
+            The build and host/Vulkan tests passed in the same CI run as this release.
+            Real-device FPS, fog and LAN behavior still require validation.
+          files: |
+            release/nzportable-android-arm64-v8a.apk
+            release/nzportable-android-armeabi-v7a.apk
+            release/SHA256SUMS.txt
