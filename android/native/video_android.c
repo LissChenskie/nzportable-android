@@ -26,6 +26,10 @@ static int drawable_w,drawable_h,world_w,world_h;
 static int active_percent=-1,swap_interval=-1,software_sync,has_world_target;
 static int hud_active;
 static unsigned render_rebuilds;
+void VID_GetWorldResolution(int *w,int *h) {
+    if(w)*w=world_w;
+    if(h)*h=world_h;
+}
 static int max_texture_size;
 
 static void delete_target(void){
