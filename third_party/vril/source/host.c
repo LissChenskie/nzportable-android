@@ -534,13 +534,11 @@ qboolean Host_FilterTime (float time)
 	realtime += (double)time;
 #ifndef __WII__
 #ifdef PLATFORM_ANDROID
-    /* 0 means UNLIMITED, not an implicit downgrade to 30fps.
-     * The SDL main loop sleeps between capped frames. Simulation still uses
-     * actual wall-clock delta, so fps does not alter QuakeC timings. */
-    if (!cls.timedemo && cl_maxfps.value > 0.0f &&
-        realtime-oldrealtime <
-        (1.0/(double)cl_maxfps.value -
-         fmin(0.001,0.1/(double)cl_maxfps.value)))
+    /* Android pacing belongs to SDL's single render loop, not this
+     * second timer. Keeping both gates caused skipped frames and jitter
+     * when SDL woke just before the configured deadline. The simulation
+     * still uses real elapsed time below. */
+    if(!cls.timedemo && realtime<=oldrealtime)
         return false;
 #else
     if(cl_maxfps.value < 1) Cvar_SetValue("cl_maxfps",30);
