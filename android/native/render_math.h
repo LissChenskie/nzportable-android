@@ -21,3 +21,18 @@ static inline void nzp_render_size(int w, int h, int max_w, int max_h, int *rw, 
     if (*rw>1) *rw &= ~1; if (*rh>1) *rh &= ~1;
     if (*rw<1) *rw=1; if (*rh<1) *rh=1;
 }
+
+/* Optional quality setting. Native 100% is exact — do not force even
+ * dimensions or clamp to an arbitrary 720p ceiling. Both axes receive the
+ * same factor, avoiding an aspect-ratio stretch. */
+static inline void nzp_render_percent(int surface_w,int surface_h,int percent,
+                                      int *world_w,int *world_h) {
+    if(surface_w<1)surface_w=1;
+    if(surface_h<1)surface_h=1;
+    if(percent<60)percent=60;
+    if(percent>100)percent=100;
+    *world_w=(int)lroundf((float)surface_w*(float)percent/100.f);
+    *world_h=(int)lroundf((float)surface_h*(float)percent/100.f);
+    if(*world_w<1)*world_w=1;
+    if(*world_h<1)*world_h=1;
+}
