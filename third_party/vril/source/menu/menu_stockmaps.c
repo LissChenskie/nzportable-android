@@ -38,7 +38,10 @@ void Menu_StockMaps_SetRandomMap (void)
     Menu_Lobby_Set();
 }
 
-void Menu_StockMaps_SetMainMenu (void) { if (menu_is_solo) {Menu_Main_Set();} };
+void Menu_StockMaps_SetMainMenu (void) {
+    if (menu_is_solo) Menu_Main_Set();
+    else Menu_LAN_Set();
+}
 
 /*
 =======================
