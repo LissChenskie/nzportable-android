@@ -428,8 +428,13 @@ int main(int argc, char **argv)
 #ifdef PLATFORM_ANDROID
 		// Sleep through the unused frame budget; include swap time in it.
 		double elapsed = (double)(SDL_GetPerformanceCounter() - frame_start) / SDL_GetPerformanceFrequency();
-		double remaining = 1.0 / Android_FrameRate() - elapsed;
-		if (remaining > 0) SDL_Delay((Uint32)ceil(remaining * 1000.0));
+        int max_fps=Android_FrameRate();
+        if(max_fps>0) {
+            double remaining=(1.0/max_fps)-elapsed;
+            // SDL_Delay yields CPU to the OS, never spins for sub-ms precision.
+            if(remaining>=0.001)
+                SDL_Delay((Uint32)(remaining*1000.0));
+        }
 #endif
 	}
 	if (host_initialized)
