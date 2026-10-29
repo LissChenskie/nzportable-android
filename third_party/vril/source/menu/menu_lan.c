@@ -16,6 +16,7 @@
 
 static int lan_slots = 4;
 static int lan_join_pending;
+static int lan_last_host_count=-1;
 static char lan_status[96] = "Create a game or search your local Wi-Fi.";
 static char lan_endpoint[64];
 #ifdef PLATFORM_ANDROID
@@ -153,6 +154,7 @@ void Menu_LAN_Find_Set(void) {
     key_dest = key_menu;
     m_state = m_lanfind;
     m_previous_state = m_lan;
+    lan_last_host_count=-1;
     slistSilent = true;
     slistLocal = false;  // no local loopback results in remote LAN search.
     NET_Slist_f();
@@ -266,6 +268,12 @@ static void Menu_LAN_Create_Draw(void) {
 
 static void Menu_LAN_Find_Draw(void) {
     int count = hostCacheCount < 8 ? hostCacheCount : 8;
+    // Search results arrive asynchronously. A previously rendered REFRESH row
+    // can occupy the new server row unless the button callback array is rebuilt.
+    if(count != lan_last_host_count) {
+        Menu_ResetMenuButtons();
+        lan_last_host_count=count;
+    }
     Menu_DrawCustomBackground(true);
     Menu_DrawTitle("FIND LAN GAMES",MENU_COLOR_WHITE);
     Menu_DrawMapPanel();
