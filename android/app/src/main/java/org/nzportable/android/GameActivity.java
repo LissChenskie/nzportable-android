@@ -5,6 +5,9 @@ import android.os.Bundle;
 import android.os.PowerManager;
 import android.util.Log;
 import android.view.View;
+import android.app.AlertDialog;
+import android.widget.EditText;
+import android.text.InputType;
 import android.view.WindowManager;
 import org.libsdl.app.SDLActivity;
 
@@ -16,6 +19,8 @@ public final class GameActivity extends SDLActivity {
     static native void nativeTouchMove(float x, float y);
     static native void nativeTouchLook(float dx, float dy);
     static native void nativeTouchNeutral();
+    static native void nativeLanConnect(String address);
+    static native void nativeLanSetName(String name);
 
     @Override protected String[] getLibraries() { return new String[]{"SDL2", "SDL2_mixer", "main"}; }
     @Override protected String[] getArguments() {
@@ -39,6 +44,34 @@ public final class GameActivity extends SDLActivity {
     public void setTouchControlsVisible(final boolean playing) {
         runOnUiThread(new Runnable() {
             @Override public void run() { if(touch!=null) touch.setPlaying(playing); }
+        });
+    }
+    // Called by the SDL engine, dialogs run on Android's UI thread.
+    public void openLanAddressDialog() {
+        runOnUiThread(() -> {
+            EditText field = new EditText(this);
+            field.setSingleLine(true);
+            field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+            field.setHint("192.168.1.10:26000");
+            new AlertDialog.Builder(this)
+                .setTitle("CONNECT TO LAN SERVER")
+                .setView(field)
+                .setPositiveButton("CONNECT", (dialog, which) ->
+                    nativeLanConnect(field.getText().toString().trim()))
+                .setNegativeButton("CANCEL", null).show();
+        });
+    }
+    public void openLanServerNameDialog() {
+        runOnUiThread(() -> {
+            EditText field = new EditText(this);
+            field.setSingleLine(true);
+            field.setHint("NZPortable LAN");
+            new AlertDialog.Builder(this)
+                .setTitle("LAN SERVER NAME")
+                .setView(field)
+                .setPositiveButton("SAVE", (dialog, which) ->
+                    nativeLanSetName(field.getText().toString().trim()))
+                .setNegativeButton("CANCEL", null).show();
         });
     }
     private void immersive(){getWindow().getDecorView().setSystemUiVisibility(
