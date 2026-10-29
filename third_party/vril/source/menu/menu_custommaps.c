@@ -53,7 +53,11 @@ static int num_listed_maps = 0;
 int maps_start_position = 0;
 
 #define MAX_SETTINGS_LINES 12
+#ifdef PLATFORM_ANDROID
+#define MAX_MAP_PER_PAGE 4
+#else
 #define MAX_MAP_PER_PAGE 8
+#endif
 #define MAP_DESC_LINES 8
 
 #ifdef PLATFORM_GAMEFILES_IN_PAK
@@ -448,19 +452,27 @@ void Menu_CustomMaps_Draw (void)
 		custommap_items++;
 	}
 
-	Menu_DrawDivider(9);
 
-	if (maps_on_page + maps_start_position < num_listed_maps) {
-		Menu_DrawButton(9, custommap_items++, "NEXT PAGE", "Advance to next User Map page.", Menu_CustomMaps_NextPage);
-	} else {
-		Menu_DrawGreyButton(9, "NEXT PAGE");
-	}
+#ifdef PLATFORM_ANDROID
+    // The original eight-row PSP layout overflows the taller Android UI.
+    const int next_order=5,previous_order=6;
+#else
+    const int next_order=9,previous_order=10;
+#endif
+    if(maps_on_page + maps_start_position < num_listed_maps)
+        Menu_DrawButton(next_order, custommap_items++, "NEXT PAGE", "Swipe up for more maps.", Menu_CustomMaps_NextPage);
+    else Menu_DrawGreyButton(next_order, "NEXT PAGE");
 
-	if (user_maps_page != 0) {
-		Menu_DrawButton(10, custommap_items++, "PREVIOUS PAGE", "Return to last User Map page.", Menu_CustomMaps_PrevPage);
-	} else {
-		Menu_DrawGreyButton(10, "PREVIOUS PAGE");
-	}
+    if(user_maps_page!=0)
+        Menu_DrawButton(previous_order, custommap_items++, "PREVIOUS PAGE", "Swipe down for previous maps.", Menu_CustomMaps_PrevPage);
+    else Menu_DrawGreyButton(previous_order, "PREVIOUS PAGE");
+
+#ifdef PLATFORM_ANDROID
+    char page[48];
+    snprintf(page,sizeof(page),"USER MAPS %d/%d",user_maps_page+1,custom_map_pages?custom_map_pages:1);
+    UI_SetAlignment(UI_ANCHOR_LEFT,UI_ANCHOR_TOP);
+    Menu_DrawString(153,158,page,255,255,0,255,vid.scale,0);
+#endif
 
     Menu_DrawButton(-1, custommap_items, "BACK", "Return to Stock Map selection.", Menu_StockMaps_Set);
 }
