@@ -15,7 +15,7 @@ int sdl_window_width=1,sdl_window_height=1;
 cvar_t vid_width={"vid_width","0",true},vid_height={"vid_height","0",true};
 extern cvar_t android_profile;
 cvar_t vid_render_scale={"vid_render_scale","100",true};
-cvar_t vid_ui_scale={"vid_ui_scale","100",true};
+cvar_t vid_ui_scale={"vid_ui_scale","125",true};
 cvar_t vid_fullscreen={"vid_fullscreen","1",true},r_vsync={"r_vsync","1",true};
 cvar_t gl_ztrick={"gl_ztrick","0"};
 unsigned d_8to24table[256];unsigned char d_15to8table[65536];
@@ -178,6 +178,10 @@ void VID_Init(unsigned char *palette) {
     int native_width=640,native_height=480;
     if(SDL_GetCurrentDisplayMode(0,&mode)==0) {
         native_width=mode.w;native_height=mode.h;
+        // Do not request more FPS than a genuinely low-refresh screen.
+        // Archived config.cfg, when present, is applied after VID_Init.
+        if(mode.refresh_rate>0&&mode.refresh_rate<55)
+            Cvar_SetValue("cl_maxfps",30);
     }
     sdl_window=SDL_CreateWindow("NZPortable Android",SDL_WINDOWPOS_UNDEFINED,
         SDL_WINDOWPOS_UNDEFINED,native_width,native_height,
