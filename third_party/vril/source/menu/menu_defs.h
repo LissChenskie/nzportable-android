@@ -334,6 +334,7 @@ int Menu_LAN_Slots(void);
 void Menu_LAN_ConnectAddress(const char *addr);
 void Menu_LAN_SetName(const char *name);
 void Menu_LAN_ConnectionFailed(void);
+void Menu_LAN_ShowError(const char *message);
 void Menu_LAN_Connected(void);
 int Menu_LAN_ValidEndpoint(const char *addr);
 void Menu_GameSettings_Set(void);
