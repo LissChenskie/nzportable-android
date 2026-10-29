@@ -15,6 +15,7 @@
 
 
 static int lan_slots = 4;
+static int lan_join_pending;
 static char lan_status[96] = "Create a game or search your local Wi-Fi.";
 static char lan_endpoint[64];
 #ifdef PLATFORM_ANDROID
@@ -191,9 +192,19 @@ void Menu_LAN_ConnectAddress(const char *value) {
         return;
     }
     snprintf(cmd, sizeof(cmd), "connect %s\n", value);
+    lan_join_pending=1;
     Cbuf_AddText(cmd);
     key_dest=key_game;
     m_state=m_none;
+}
+void Menu_LAN_Connected(void) { lan_join_pending=0; }
+void Menu_LAN_ConnectionFailed(void) {
+    if(!lan_join_pending)return;
+    lan_join_pending=0;
+    extern char m_return_reason[32];
+    const char *reason=m_return_reason[0]?m_return_reason:"No response from server";
+    snprintf(lan_status,sizeof(lan_status),"LAN join failed: %.63s",reason);
+    Menu_LAN_Set();
 }
 void Menu_LAN_SetName(const char *value) {
     char name[32]; int n=0;
