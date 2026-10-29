@@ -17,6 +17,21 @@ static GLenum primitive, batch_mode=GL_TRIANGLES, matrix_mode=GL_MODELVIEW;
 static nzp_array arrays[3];
 static float matrices[3][MATRIX_DEPTH][16];
 static int matrix_depth[3];
+/* Recalculate projection*modelview only when either matrix actually changes.
+ * HUD glyph batches frequently reuse both matrices for dozens of flushes. */
+static float cached_mvp[16];
+static int mvp_valid;
+static const float *mvp_matrix(void) {
+    if(!mvp_valid) {
+        nzp_multiply(cached_mvp,matrices[1][matrix_depth[1]],
+                    matrices[0][matrix_depth[0]]);
+        mvp_valid=1;
+    }
+    return cached_mvp;
+}
+static void mark_matrix_changed(int i) {
+    if(i!=2)mvp_valid=0; /* Texture matrix does not affect MVP. */
+}
 static int textured=1, alpha_test, fog_enabled, replace_mode, flat_shading;
 static float alpha_threshold=.666f, fog_start, fog_end=1.f, fog_density=1.f, fog_color[4];
 static int fog_mode=GL_LINEAR;
@@ -120,6 +135,7 @@ void NZP_GLES_Init(void) {
     memset(filter_cache,0,sizeof(filter_cache));
     current_program=0;
     driver_texture_valid=0;
+    mvp_valid=0;
     glGenBuffers(3,streams);
     glBindBuffer(GL_ARRAY_BUFFER,streams[0]);glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
     for(int i=0;i<3;i++)nzp_identity(matrices[i][0]);
@@ -189,8 +205,7 @@ void NZP_GLES_BeginFrame(void){
 void NZP_GLES_Flush(void) {
     if(!batch_count)return;
     ++render_stats.nonempty_flushes;
-    float mvp[16];nzp_multiply(mvp,matrices[1][matrix_depth[1]],matrices[0][matrix_depth[0]]);
-    uniforms(mvp,matrices[0][matrix_depth[0]],matrices[2][matrix_depth[2]],textured,replace_mode,
+    uniforms(mvp_matrix(),matrices[0][matrix_depth[0]],matrices[2][matrix_depth[2]],textured,replace_mode,
         alpha_test?alpha_threshold:-1.f,fog_enabled?(fog_mode==GL_LINEAR?1.f:fog_mode==GL_EXP?2.f:3.f):0.f);
     bind_tex0(bound_texture);upload(batch,batch_count,batch_mode);
     batch_count=0;
@@ -255,12 +270,14 @@ void nzp_glLoadIdentity(void){
         ++render_stats.skipped_state_changes; return;
     }
     NZP_GLES_Flush();memcpy(matrix(),identity,sizeof(identity));
+    mark_matrix_changed(matrix_index());
 }
 void nzp_glLoadMatrixf(const float *m){
     if(!memcmp(matrix(),m,16*sizeof(float))) {
         ++render_stats.skipped_state_changes;return;
     }
     NZP_GLES_Flush();memcpy(matrix(),m,16*sizeof(float));
+    mark_matrix_changed(matrix_index());
 }
 void nzp_glPushMatrix(void){int i=matrix_index();if(matrix_depth[i]+1>=MATRIX_DEPTH)fail("matrix stack overflow");memcpy(matrices[i][matrix_depth[i]+1],matrix(),16*sizeof(float));matrix_depth[i]++;}
 void nzp_glPopMatrix(void){
@@ -270,6 +287,7 @@ void nzp_glPopMatrix(void){
               16*sizeof(float))) NZP_GLES_Flush();
     else ++render_stats.skipped_state_changes;
     matrix_depth[i]--;
+    mark_matrix_changed(i);
 }
 static void multiply(const float *m){
     float identity[16];nzp_identity(identity);
@@ -277,6 +295,7 @@ static void multiply(const float *m){
         ++render_stats.skipped_state_changes;return;
     }
     NZP_GLES_Flush();nzp_multiply(matrix(),matrix(),m);
+    mark_matrix_changed(matrix_index());
 }
 void nzp_glTranslatef(float x,float y,float z){float m[16];nzp_identity(m);m[12]=x;m[13]=y;m[14]=z;multiply(m);}
 void nzp_glScalef(float x,float y,float z){float m[16];nzp_identity(m);m[0]=x;m[5]=y;m[10]=z;multiply(m);}
@@ -467,8 +486,8 @@ void nzp_glReadBuffer(GLenum b){(void)b;}void nzp_glDrawBuffer(GLenum b){(void)b
 
 int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *a,GLuint index_buffer,size_t offset,int count){
     if(!a[0].buffer||mode==GL_QUADS||mode==GL_POLYGON||(flat_shading&&a[2].buffer))return 0;
-    NZP_GLES_Flush();float mvp[16];nzp_multiply(mvp,matrices[1][matrix_depth[1]],matrices[0][matrix_depth[0]]);
-    uniforms(mvp,matrices[0][matrix_depth[0]],matrices[2][matrix_depth[2]],textured,replace_mode,
+    NZP_GLES_Flush();
+    uniforms(mvp_matrix(),matrices[0][matrix_depth[0]],matrices[2][matrix_depth[2]],textured,replace_mode,
         alpha_test?alpha_threshold:-1.f,fog_enabled?(fog_mode==GL_LINEAR?1.f:fog_mode==GL_EXP?2.f:3.f):0.f);
     bind_tex0(bound_texture);
     for(int i=0;i<3;i++){
