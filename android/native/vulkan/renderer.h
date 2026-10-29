@@ -25,6 +25,10 @@ typedef struct {
     unsigned draws,pipeline_binds,viewport_sets,scissor_sets,depth_bias_sets;
     unsigned uniform_uploads,uniform_reuses,descriptor_binds;
 } nzp_vk_command_stats;
+/* CPU-side API blocking durations only. Excludes GPU execution and display. */
+typedef struct {
+    double fence_wait_ms,acquire_ms,queue_submit_ms,present_ms;
+} nzp_vk_frame_timings;
 int NZP_VK_Init(struct SDL_Window *window,const char *cache_directory,int validation);
 void NZP_VK_Shutdown(void);
 int NZP_VK_Active(void);
@@ -58,6 +62,7 @@ unsigned NZP_VK_MaxTextureSize(void);
 double NZP_VK_GPUTime(void);
 unsigned NZP_VK_ValidationErrors(void);
 void NZP_VK_GetCommandStats(nzp_vk_command_stats *out);
+void NZP_VK_GetFrameTimings(nzp_vk_frame_timings *out);
 #ifdef __cplusplus
 }
 #endif
