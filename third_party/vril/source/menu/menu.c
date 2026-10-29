@@ -225,6 +225,12 @@ void Menu_Draw (void)
 	case m_stockmaps:
 		Menu_StockMaps_Draw ();
 		break;
+    case m_lan:
+        Menu_LAN_Draw();
+        break;
+    case m_lanbrowser:
+        Menu_LAN_BrowserDraw();
+        break;
 
 	case m_custommaps:
 		Menu_CustomMaps_Draw ();
