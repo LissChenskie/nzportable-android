@@ -206,6 +206,8 @@ void Menu_LAN_ConnectAddress(const char *value) {
     }
     snprintf(cmd, sizeof(cmd), "connect %s\n", value);
     lan_join_pending=1;
+    // Client-side local cvars should reflect the server's cooperative rules.
+    Cbuf_AddText("coop 1\ndeathmatch 0\n");
     Cbuf_AddText(cmd);
     key_dest=key_game;
     m_state=m_none;
