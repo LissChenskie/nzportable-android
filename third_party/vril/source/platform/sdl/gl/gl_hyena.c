@@ -569,6 +569,7 @@ Hyena_UpdateBuffer(hyena_buffer_t * buffer, const void * data, size_t size)
     if (!buffer->object) glGenBuffers(1, &buffer->object);
     glBindBuffer(target, buffer->object);
     glBufferData(target, size, data, buffer->owned ? GL_STATIC_DRAW : GL_STREAM_DRAW);
+    NZP_GLES_RecordExternalUpload(target,size);
     glBindBuffer(target, 0);
 #endif
 }
@@ -869,6 +870,7 @@ Hyena_UnmapBuffer(hyena_buffer_t * buffer)
     GLenum target = buffer->target == HYE_ARRAY_BUFFER ? GL_ARRAY_BUFFER : GL_ELEMENT_ARRAY_BUFFER;
     glBindBuffer(target, buffer->object);
     glBufferData(target, buffer->size, buffer->data, buffer->owned ? GL_STATIC_DRAW : GL_STREAM_DRAW);
+    NZP_GLES_RecordExternalUpload(target,buffer->size);
     glBindBuffer(target, 0);
 #else
     (void) buffer;
