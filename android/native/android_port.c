@@ -59,8 +59,8 @@ static const char *Android_ActionCommand(int key)
 }
 static void Android_SendSprint(int impulse)
 {
-    if (impulse == 23) Cbuf_AddText("impulse 23\\n");
-    else if (impulse == 24) Cbuf_AddText("impulse 24\\n");
+    if (impulse == 23) Cbuf_AddText("impulse 23\n");
+    else if (impulse == 24) Cbuf_AddText("impulse 24\n");
 }
 static void Android_UpdateSprint(void)
 {
@@ -91,7 +91,7 @@ static void Android_EmitTouchAction(int key,int down)
     if(down && (key_dest!=key_game || cls.state!=ca_connected))return;
     touch_pressed[idx]=down;
     char line[56];
-    snprintf(line,sizeof(line),"%c%s %d\\n",
+    snprintf(line,sizeof(line),"%c%s %d\n",
              down?'+':'-',command+1,400+idx);
     Cbuf_AddText(line);
 }
