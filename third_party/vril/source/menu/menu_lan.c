@@ -192,6 +192,44 @@ void Menu_LAN_RequestIp(void) {
 #endif
 }
 
+/* The player nickname is distinct from the advertised server hostname. */
+void Menu_LAN_RequestPlayerName(void) {
+#ifdef PLATFORM_ANDROID
+    JNIEnv *env=SDL_AndroidGetJNIEnv();
+    jobject activity=SDL_AndroidGetActivity();
+    if(env && activity){
+        jclass cls=(*env)->GetObjectClass(env,activity);
+        jmethodID method=(*env)->GetMethodID(env,cls,"promptLanPlayerName","(Ljava/lang/String;)V");
+        if(method){
+            jstring current=(*env)->NewStringUTF(env,cl_name.string?cl_name.string:"player");
+            if(current){
+                (*env)->CallVoidMethod(env,activity,method,current);
+                (*env)->DeleteLocalRef(env,current);
+            }
+        }
+        if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env,cls);
+        (*env)->DeleteLocalRef(env,activity);
+    }
+#else
+    Con_Printf("Use console command: name \"Your Nickname\"\n");
+#endif
+}
+void Menu_LAN_SetPlayerName(const char *value){
+    char name[16],command[32];int n=0;
+    if(!value)return;
+    // Host_Name_f truncates to 15 characters. Reject command separators
+    // rather than letting an Android dialog inject arbitrary console code.
+    while(value[n] && n<15){
+        unsigned char c=(unsigned char)value[n];
+        if(c<32 || c>126 || c=='"' || c==';' || c=='\\')return;
+        name[n]=(char)c;++n;
+    }
+    if(!n)return;
+    name[n]='\0';
+    snprintf(command,sizeof(command),"name \"%s\"\n",name);
+    Cbuf_AddText(command);
+}
 void Menu_LAN_RequestName(void) {
 #ifdef PLATFORM_ANDROID
     JNIEnv *env = SDL_AndroidGetJNIEnv();
@@ -255,14 +293,17 @@ static void Menu_LAN_Create_Draw(void) {
     Menu_DrawTitle("CREATE LAN GAME",MENU_COLOR_WHITE);
     Menu_DrawMapPanel();
     Menu_DrawButton(1,0,"SERVER NAME","Edit the name advertised on LAN.",Menu_LAN_RequestName);
-    Menu_DrawButton(2,1,"MAX PLAYERS","Supports 2 to 4 total players.",Menu_LAN_CycleSlots);
-    Menu_DrawButton(3,2,"DIFFICULTY","Change zombie difficulty.",Menu_LAN_CycleDifficulty);
-    Menu_DrawButton(4,3,"START ROUND","Set initial round.",Menu_LAN_CycleRound);
-    Menu_DrawButton(5,4,"SELECT MAP","Choose a map then create the server.",Menu_LAN_MapSelect);
-    Menu_DrawButton(-1,5,"BACK","Return to LAN menu.",Menu_LAN_Set);
+    Menu_DrawButton(2,1,"PLAYER NICK","Set your visible co-op player name.",Menu_LAN_RequestPlayerName);
+    Menu_DrawButton(3,2,"MAX PLAYERS","Supports 2 to 4 total players.",Menu_LAN_CycleSlots);
+    Menu_DrawButton(4,3,"DIFFICULTY","Change zombie difficulty.",Menu_LAN_CycleDifficulty);
+    Menu_DrawButton(5,4,"START ROUND","Set initial round.",Menu_LAN_CycleRound);
+    Menu_DrawButton(6,5,"SELECT MAP","Choose a map then create the server.",Menu_LAN_MapSelect);
+    Menu_DrawButton(-1,6,"BACK","Return to LAN menu.",Menu_LAN_Set);
     UI_SetAlignment(UI_ANCHOR_LEFT,UI_ANCHOR_TOP);
     snprintf(lan_line,sizeof(lan_line),"Name: %.28s",Cvar_VariableString("hostname"));
     Menu_DrawString(153,45,lan_line,255,255,255,255,vid.scale,0);
+    snprintf(lan_line,sizeof(lan_line),"Nick: %.15s",cl_name.string);
+    Menu_DrawString(153,55,lan_line,255,255,0,255,vid.scale,0);
     snprintf(lan_line,sizeof(lan_line),"Players: %d / 4",lan_slots);
     Menu_DrawString(153,65,lan_line,255,255,255,255,vid.scale,0);
     snprintf(lan_line,sizeof(lan_line),"Difficulty: %d | Round: %d",(int)sv_difficulty.value,(int)sv_startround.value);
@@ -333,7 +374,10 @@ void Menu_LAN_Draw(void) {
     Menu_DrawButton(1,0,"CREATE LAN GAME","Host on this phone over Wi-Fi.",Menu_LANCreate_Set);
     Menu_DrawButton(2,1,"FIND LAN GAMES","Search local Quake servers.",Menu_LAN_Find_Set);
     Menu_DrawButton(3,2,"CONNECT BY IP","Manual address for filtered Hotspot networks.",Menu_LAN_RequestIp);
-    Menu_DrawButton(-1,3,"BACK","Return to main menu.",Menu_Main_Set);
+    Menu_DrawButton(4,3,"PLAYER NICK","Choose your player name for LAN co-op.",Menu_LAN_RequestPlayerName);
+    Menu_DrawButton(-1,4,"BACK","Return to main menu.",Menu_Main_Set);
     UI_SetAlignment(UI_ANCHOR_LEFT,UI_ANCHOR_TOP);
     Menu_DrawString(153,70,lan_status,255,255,255,255,vid.scale,0);
+    snprintf(lan_line,sizeof(lan_line),"Player: %.15s",cl_name.string);
+    Menu_DrawString(153,87,lan_line,255,255,0,255,vid.scale,0);
 }
