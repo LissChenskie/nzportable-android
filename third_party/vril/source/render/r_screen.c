@@ -874,6 +874,12 @@ SCR_UpdateScreen(void)
         V_RenderView();
     }
 
+#ifdef PLATFORM_ANDROID
+    /* Composite the world to full native surface BEFORE drawing HUD/menu text.
+     * This keeps controls crisp even with user-selected <100% 3D resolution. */
+    extern void VID_BeginNativeUI(void);
+    VID_BeginNativeUI();
+#endif
     Draw_Set2D();
 
     if (!LoadingScreen_IsWaiting()) {
