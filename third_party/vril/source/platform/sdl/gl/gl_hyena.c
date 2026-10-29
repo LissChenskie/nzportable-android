@@ -175,6 +175,7 @@ Hyena_Draw2DQuads(const hyena_2d_quad_t * quads, int count, int texture, unsigne
     if (!count)
         return;
 
+#ifndef PLATFORM_ANDROID
     Hyena_Reserve2DVertices(vertex_count);
     for (i = 0; i < vertex_count; ++i) {
         const hyena_2d_quad_t * q = &quads[i / 6];
@@ -189,6 +190,7 @@ Hyena_Draw2DQuads(const hyena_2d_quad_t * quads, int count, int texture, unsigne
         hyena_2d_colors[i * 4 + 2]    = q->b;
         hyena_2d_colors[i * 4 + 3]    = q->a;
     }
+#endif
     if (flags & HYE_2D_TEXTURED) {
         Hyena_BindTexture(texture);
         glEnable(GL_TEXTURE_2D);
@@ -205,6 +207,15 @@ Hyena_Draw2DQuads(const hyena_2d_quad_t * quads, int count, int texture, unsigne
         glDisable(GL_BLEND);
     }
     glDisable(GL_ALPHA_TEST);
+#ifdef PLATFORM_ANDROID
+    /* Preserve original six-corner order, blending and texture state. */
+    for(i=0;i<count;i++) {
+        const hyena_2d_quad_t *q=&quads[i];
+        NZP_GLES_AppendUIQuad(q->x0,q->y0,q->x1,q->y1,
+                              q->u0,q->v0,q->u1,q->v1,
+                              q->r,q->g,q->b,q->a);
+    }
+#else
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
     glVertexPointer(3, GL_FLOAT, 0, hyena_2d_positions);
@@ -218,6 +229,7 @@ Hyena_Draw2DQuads(const hyena_2d_quad_t * quads, int count, int texture, unsigne
         glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glDisableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);
+#endif
     glColor4f(1, 1, 1, 1);
     glEnable(GL_TEXTURE_2D);
     glDisable(GL_BLEND);
@@ -557,6 +569,7 @@ Hyena_UpdateBuffer(hyena_buffer_t * buffer, const void * data, size_t size)
     if (!buffer->object) glGenBuffers(1, &buffer->object);
     glBindBuffer(target, buffer->object);
     glBufferData(target, size, data, buffer->owned ? GL_STATIC_DRAW : GL_STREAM_DRAW);
+    NZP_GLES_RecordExternalUpload(target,size);
     glBindBuffer(target, 0);
 #endif
 }
@@ -857,9 +870,20 @@ Hyena_UnmapBuffer(hyena_buffer_t * buffer)
     GLenum target = buffer->target == HYE_ARRAY_BUFFER ? GL_ARRAY_BUFFER : GL_ELEMENT_ARRAY_BUFFER;
     glBindBuffer(target, buffer->object);
     glBufferData(target, buffer->size, buffer->data, buffer->owned ? GL_STATIC_DRAW : GL_STREAM_DRAW);
+    NZP_GLES_RecordExternalUpload(target,buffer->size);
     glBindBuffer(target, 0);
 #else
     (void) buffer;
 #endif
 }
 
+
+#ifdef NZP_VULKAN
+int Hyena_DrawWorldLightmapped(hyena_buffer_t *vertices,hyena_buffer_t *indices,int count,size_t offset,int lightmap){
+    const int stride=sizeof(world_vertex_t);
+    nzp_gpu_array a[3]={{vertices->object,(void*)(4*sizeof(float)),3,GL_FLOAT,stride},
+        {vertices->object,0,2,GL_FLOAT,stride},{0}};
+    nzp_gpu_array lm={vertices->object,(void*)(2*sizeof(float)),2,GL_FLOAT,stride};
+    return NZP_Render_DrawLightmappedGPU(a,&lm,indices->object,offset,count,hyena_texture_objects[lightmap]);
+}
+#endif

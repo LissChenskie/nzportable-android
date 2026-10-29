@@ -64,6 +64,105 @@ int main(void){
     glDeleteFramebuffers(1,&fbo);glDeleteTextures(1,&target);
     glDisableClientState(GL_COLOR_ARRAY);glDisableClientState(GL_VERTEX_ARRAY);glDisable(GL_TEXTURE_2D);
     glMatrixMode(GL_PROJECTION);glLoadIdentity();glMatrixMode(GL_MODELVIEW);glLoadIdentity();
+    // Android optional 3D scale: world is rendered to a 32x32 FBO while
+    // the gameplay HUD is drawn at the full 64x64 native surface resolution.
+    GLuint world_tex,world_fbo,world_depth;
+    glGenTextures(1,&world_tex);glBindTexture(GL_TEXTURE_2D,world_tex);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,32,32,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glGenRenderbuffers(1,&world_depth);glBindRenderbuffer(GL_RENDERBUFFER,world_depth);
+    glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT16,32,32);
+    glGenFramebuffers(1,&world_fbo);glBindFramebuffer(GL_FRAMEBUFFER,world_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,world_tex,0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,world_depth);
+    assert(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE);
+    NZP_GLES_SetWorldViewport(32,32,64,64);
+    glViewport(0,0,64,64);glClearColor(0,0,1,1);clear();
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    NZP_GLES_SetNativeViewport();
+    NZP_GLES_Present(world_tex,64,64);
+    glViewport(0,0,64,64);
+    glDisable(GL_TEXTURE_2D);glDisable(GL_FOG);glDisable(GL_ALPHA_TEST);
+    glMatrixMode(GL_PROJECTION);glLoadIdentity();glOrtho(0,64,64,0,-1,1);
+    glMatrixMode(GL_MODELVIEW);glLoadIdentity();glColor4f(1,1,0,1);
+    quad(0,0,16,16);NZP_GLES_Flush();
+    pixel(8,56,255,255,0); // native-resolution HUD overlay
+    pixel(32,32,0,0,255); // independently rasterized 3D background
+    glDeleteFramebuffers(1,&world_fbo);glDeleteRenderbuffers(1,&world_depth);
+    glDeleteTextures(1,&world_tex);glClearColor(0,0,0,1);
+    glMatrixMode(GL_PROJECTION);glLoadIdentity();glMatrixMode(GL_MODELVIEW);glLoadIdentity();
+    // Exact pixel regression: old client-array 2D quads vs direct packed HUD.
+    // Partial alpha and overlap check draw order as well as geometry and color.
+    {
+        unsigned char reference[64*64*4],optimized[64*64*4];
+        const float red_pos[]={0,0,0,48,0,0,48,48,0,0,0,0,48,48,0,0,48,0};
+        const float blue_pos[]={16,16,0,64,16,0,64,64,0,16,16,0,64,64,0,16,64,0};
+        unsigned char red_col[24],blue_col[24];
+        for(int i=0;i<6;i++){
+            red_col[i*4]=220;red_col[i*4+1]=35;red_col[i*4+2]=20;red_col[i*4+3]=150;
+            blue_col[i*4]=35;blue_col[i*4+1]=80;blue_col[i*4+2]=210;blue_col[i*4+3]=120;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER,0);
+        glDisable(GL_FOG);glDisable(GL_ALPHA_TEST);glDisable(GL_TEXTURE_2D);
+        glDisable(GL_DEPTH_TEST);glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+        glMatrixMode(GL_PROJECTION);glLoadIdentity();glOrtho(0,64,64,0,-1,1);
+        glMatrixMode(GL_MODELVIEW);glLoadIdentity();
+        clear();
+        glEnableClientState(GL_VERTEX_ARRAY);glEnableClientState(GL_COLOR_ARRAY);
+        glVertexPointer(3,GL_FLOAT,0,red_pos);glColorPointer(4,GL_UNSIGNED_BYTE,0,red_col);
+        glDrawArrays(GL_TRIANGLES,0,6);
+        glVertexPointer(3,GL_FLOAT,0,blue_pos);glColorPointer(4,GL_UNSIGNED_BYTE,0,blue_col);
+        glDrawArrays(GL_TRIANGLES,0,6);
+        glDisableClientState(GL_COLOR_ARRAY);glDisableClientState(GL_VERTEX_ARRAY);
+        NZP_GLES_Flush();
+        glReadPixels(0,0,64,64,GL_RGBA,GL_UNSIGNED_BYTE,reference);
+        clear();
+        NZP_GLES_AppendUIQuad(0,0,48,48,0,0,1,1,220,35,20,150);
+        NZP_GLES_AppendUIQuad(16,16,64,64,0,0,1,1,35,80,210,120);
+        NZP_GLES_Flush();
+        glReadPixels(0,0,64,64,GL_RGBA,GL_UNSIGNED_BYTE,optimized);
+        for(unsigned i=0;i<sizeof(reference);i++)
+            if(abs((int)reference[i]-(int)optimized[i])>1){
+                fprintf(stderr,"HUD pixel regression byte %u: %u != %u\\n",
+                        i,reference[i],optimized[i]);abort();
+            }
+        printf("HUD reference: pixel-equivalent under ordered alpha blending\\n");
+        // State changes to the same value must not force a new batch.
+        nzp_render_stats_t stats0,stats1;
+        glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_TRUE);glDepthMask(GL_TRUE);
+        glViewport(0,0,64,64);glViewport(0,0,64,64);
+        glMatrixMode(GL_MODELVIEW);glLoadIdentity();glLoadIdentity();
+        NZP_GLES_GetFrameStats(&stats0);
+        glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_TRUE);
+        glViewport(0,0,64,64);glLoadIdentity();
+        NZP_GLES_GetFrameStats(&stats1);
+        assert(stats1.skipped_state_changes>=stats0.skipped_state_changes+4);
+        assert(stats1.nonempty_flushes==stats0.nonempty_flushes);
+        // The same filter request must not trigger another driver state
+        // mutation; changing the value still must reach GLES.
+        GLuint cached_tex;
+        glGenTextures(1,&cached_tex);glBindTexture(GL_TEXTURE_2D,cached_tex);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+        glTexParameterf(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        NZP_GLES_GetFrameStats(&stats0);
+        glTexParameterf(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        NZP_GLES_GetFrameStats(&stats1);
+        assert(stats1.texture_parameter_changes==stats0.texture_parameter_changes);
+        glTexParameterf(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+        GLint actual_filter=0;
+        glGetTexParameteriv(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,&actual_filter);
+        assert(actual_filter==GL_LINEAR);
+        NZP_GLES_GetFrameStats(&stats1);
+        assert(stats1.texture_parameter_changes==stats0.texture_parameter_changes+1);
+        glDeleteTextures(1,&cached_tex);
+        glDisable(GL_BLEND);
+        glMatrixMode(GL_PROJECTION);glLoadIdentity();
+        glMatrixMode(GL_MODELVIEW);glLoadIdentity();
+    }
     // Rotate all three frame arenas and cross the streaming capacity boundary.
     for(int frame=0;frame<4;frame++){
         NZP_GLES_BeginFrame();clear();glColor4f(1,0,0,1);quad(-1,-1,0,1);
@@ -71,6 +170,24 @@ int main(void){
         glColor4f(0,0,1,1);quad(0,-1,1,1);pixel(10,32,255,0,0);pixel(50,32,0,0,255);
     }
     int rw,rh;nzp_render_size(2400,1080,1280,720,&rw,&rh);assert(rw==1280&&rh==576);nzp_render_size(1280,720,1024,576,&rw,&rh);assert(rw==1024&&rh==576);
+    // Native 100% must never be clipped, rounded down or tied to device model.
+    nzp_render_percent(2400,1080,100,&rw,&rh);assert(rw==2400&&rh==1080);
+    nzp_render_percent(2341,1031,100,&rw,&rh);assert(rw==2341&&rh==1031);
+    nzp_render_percent(2400,1080,90,&rw,&rh);assert(rw==2160&&rh==972);
+    nzp_render_percent(2400,1080,80,&rw,&rh);assert(rw==1920&&rh==864);
+    nzp_render_percent(2400,1080,75,&rw,&rh);assert(rw==1800&&rh==810);
+    nzp_render_percent(2400,1080,60,&rw,&rh);assert(rw==1440&&rh==648);
+    nzp_render_percent(1080,2400,100,&rw,&rh);assert(rw==1080&&rh==2400);
+    NZP_GLES_SetWorldViewport(32,32,64,64);
+    glViewport(0,0,64,64);
+    GLint viewport[4];glGetIntegerv(GL_VIEWPORT,viewport);
+    assert(viewport[2]==32&&viewport[3]==32);
+    NZP_GLES_SetNativeViewport();
+    glViewport(0,0,64,64);
+    glGetIntegerv(GL_VIEWPORT,viewport);
+    assert(viewport[2]==64&&viewport[3]==64);
+    assert(glGetError()==GL_NO_ERROR);
+
     NZP_GLES_Shutdown();eglMakeCurrent(d,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);eglDestroyContext(d,c);eglDestroySurface(d,s);eglTerminate(d);
     puts("GLES pixel, batching, matrices, topology, fog and size tests passed");return 0;
 }

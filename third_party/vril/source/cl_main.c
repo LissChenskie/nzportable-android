@@ -20,6 +20,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // cl_main.c  -- client main loop
 
 #include "nzportable_def.h"
+#ifdef PLATFORM_ANDROID
+#include "menu/menu_defs.h"
+#endif
 #include "cl_slist.h"
 
 // we need to declare some mouse variables here, because the menu system
@@ -232,8 +235,16 @@ void CL_EstablishConnection (char *host)
 	CL_Disconnect ();
 
 	cls.netcon = NET_Connect (host);
-	if (!cls.netcon)
-		Host_Error ("CL_Connect: connect failed\n");
+	if (!cls.netcon) {
+#ifdef PLATFORM_ANDROID
+        // Failed Wi-Fi/Hotspot join is recoverable, not a fatal engine error.
+        Con_Printf("LAN connection failed: %s\n", host);
+        Menu_LAN_ConnectionFailed();
+        return;
+#else
+        Host_Error("CL_Connect: connect failed\n");
+#endif
+    }
 	//Con_DPrintf ("CL_EstablishConnection: connected to %s\n", host);
 	Con_Printf ("CL_EstablishConnection: connected to %s\n", host);
 

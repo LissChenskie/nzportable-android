@@ -3,6 +3,8 @@
 #include "sdl_local.h"
 #ifdef PLATFORM_ANDROID
 #include "android_port.h"
+#include "vulkan/renderer.h"
+#include <time.h>
 #endif
 
 #include <errno.h>
@@ -120,6 +122,9 @@ void Sys_CaptureScreenshot(void)
 	int row_size = width * 3;
 	int y;
 
+#ifdef PLATFORM_ANDROID
+	if(NZP_VK_Active()){NZP_VK_RequestCapture("capture.tga");return;}
+#endif
 	pixels = malloc((size_t)row_size * height);
 	if (!pixels) {
 		Con_Printf("Could not allocate screenshot buffer.\n");
@@ -362,8 +367,10 @@ int main(int argc, char **argv)
 	memset(&parms, 0, sizeof(parms));
 #ifdef PLATFORM_ANDROID
 	// Writable real paths: no shared-storage permission or cwd assumptions.
+#ifdef __ANDROID__
 	const char *android_dir = SDL_AndroidGetInternalStoragePath();
 	if (android_dir) chdir(android_dir);
+#endif
 	SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
 	SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
 	SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
@@ -416,16 +423,41 @@ int main(int argc, char **argv)
 			continue;
 		}
 		Android_Frame();
+        const int profiling=Android_ProfileEnabled();
+        struct timespec cpu_start={0},cpu_end={0};
+        if(profiling)clock_gettime(CLOCK_THREAD_CPUTIME_ID,&cpu_start);
 #endif
 		double now = Sys_FloatTime();
 		Host_Frame(now - oldtime);
 		music_update();
 		oldtime = now;
 #ifdef PLATFORM_ANDROID
-		// Sleep through the unused frame budget; include swap time in it.
-		double elapsed = (double)(SDL_GetPerformanceCounter() - frame_start) / SDL_GetPerformanceFrequency();
-		double remaining = 1.0 / Android_FrameRate() - elapsed;
-		if (remaining > 0) SDL_Delay((Uint32)ceil(remaining * 1000.0));
+		if(profiling)clock_gettime(CLOCK_THREAD_CPUTIME_ID,&cpu_end);
+        const double cpu_thread_ms=profiling ?
+           (cpu_end.tv_sec-cpu_start.tv_sec)*1000.0+
+           (cpu_end.tv_nsec-cpu_start.tv_nsec)*0.000001 : 0.0;
+        Android_RecordFrame(cpu_thread_ms);
+#endif
+#ifdef PLATFORM_ANDROID
+		// Wait without CPU spinning. Zero means explicit UNLIMITED.
+        // Rendering work/SDL swap and sleeping never change simulation dt.
+        const int fps_limit=Android_FrameRate();
+        if(fps_limit>0) {
+            double elapsed=(double)(SDL_GetPerformanceCounter()-frame_start)/
+                           (double)SDL_GetPerformanceFrequency();
+            double remaining=1.0/(double)fps_limit-elapsed;
+            if(remaining>0.00001) {
+                /* Sub-millisecond tail remains an OS sleep: no polling
+                 * loop or second Host_FilterTime cap. Nanosleep is
+                 * interruptible and uses measured wall time. */
+                struct timespec req;
+                req.tv_sec=(time_t)remaining;
+                req.tv_nsec=(long)((remaining-(double)req.tv_sec)*1000000000.0);
+                if(req.tv_nsec>999999999)req.tv_nsec=999999999;
+                if(req.tv_nsec<0)req.tv_nsec=0;
+                while(nanosleep(&req,&req)<0 && errno==EINTR) {}
+            }
+        }
 #endif
 	}
 	if (host_initialized)

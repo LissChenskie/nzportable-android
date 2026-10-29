@@ -11,3 +11,5 @@ void Android_TouchLook(void);
 void Android_ResetTouch(void);
 int Android_ThermalStatus(void);
 int Android_FrameRate(void);
+int Android_ProfileEnabled(void);
+void Android_RecordFrame(double cpu_frame_ms);

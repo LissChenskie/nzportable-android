@@ -18,6 +18,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 #include "../nzportable_def.h"
 #include "menu_defs.h"
+extern cvar_t coop;
+extern int net_hostport;
 
 //=============================================================================
 /* PAUSE MENU */
@@ -44,7 +46,7 @@ void Menu_Pause_EnterSubMenu(void)
 
 void Menu_Pause_Yes(void)
 {
-    if (menu_paus_submenu == 1) {
+    if (menu_paus_submenu == 1 && sv.active) {
 		// User is restarting the map
 		menu_paus_submenu = 0;
 		key_dest = key_game;
@@ -56,7 +58,8 @@ void Menu_Pause_Yes(void)
 		}
 
 		SV_RestartServer ();
-	} else if (menu_paus_submenu == 3) {
+	} else if (menu_paus_submenu == 3 ||
+               (menu_paus_submenu == 2 && !sv.active && coop.value)) {
 		// User is returning to Main Menu
 		menu_paus_submenu = 0;
 		// Exit the map
@@ -103,26 +106,53 @@ void Menu_Pause_Draw (void)
 
 	// Header
 	Menu_DrawTitle ("PAUSED", MENU_COLOR_WHITE);
+    if (coop.value && cls.state == ca_connected) {
+        char entry[100];
+        UI_SetAlignment(UI_ANCHOR_LEFT,UI_ANCHOR_TOP);
+        if (sv.active) {
+            snprintf(entry,sizeof(entry),"LAN HOST  %s:%d",Menu_LAN_Address(),net_hostport);
+            Menu_DrawString(175,44,entry,255,255,150,255,vid.scale,0);
+            int shown=0;
+            for(int i=0;i<svs.maxclients&&shown<4;i++) {
+                if(!svs.clients[i].active)continue;
+                snprintf(entry,sizeof(entry),"PLAYER %d: %.24s",shown+1,svs.clients[i].name);
+                Menu_DrawString(175,62+shown*13,entry,255,255,255,255,vid.scale,0);
+                shown++;
+            }
+            snprintf(entry,sizeof(entry),"%d/%d CONNECTED",shown,svs.maxclients);
+            Menu_DrawString(175,122,entry,255,255,150,255,vid.scale,0);
+        }else {
+            Menu_DrawString(175,44,"LAN CLIENT - CONNECTED",255,255,150,255,vid.scale,0);
+        }
+    }
 
 	if (menu_paus_submenu == 0) {
 		// Resume
 		Menu_DrawButton (1, 0, "RESUME CARNAGE", "Return to Game.", Menu_Resume);
 		// Restart
-		Menu_DrawButton (2, 1, "RESTART LEVEL", "Tough luck? Give things another go.", Menu_Pause_EnterSubMenu);
+		if(!sv.active && coop.value)
+            Menu_DrawButton(2,1,"OPTIONS","Tweak game options.",Menu_Configuration);
+        else
+            Menu_DrawButton (2, 1, "RESTART LEVEL", "Tough luck? Give things another go.", Menu_Pause_EnterSubMenu);
 		// Options
-		Menu_DrawButton (3, 2, "OPTIONS", "Tweak Game related Options.", Menu_Configuration);
+		if(!sv.active && coop.value)
+            Menu_DrawButton(3,2,"LEAVE LAN GAME","Disconnect from server.",Menu_Pause_EnterSubMenu);
+        else
+            Menu_DrawButton (3, 2, "OPTIONS", "Tweak Game related Options.", Menu_Configuration);
 		// End game
-		Menu_DrawButton (4, 3, "END GAME", "Return to Main Menu.", Menu_Pause_EnterSubMenu);
+		if(sv.active || !coop.value)
+            Menu_DrawButton (4, 3, "END GAME", "Return to Main Menu.", Menu_Pause_EnterSubMenu);
 	} else {
 		Menu_DrawGreyButton (1,"RESUME CARNAGE");
-		Menu_DrawGreyButton (2, "RESTART LEVEL");
-		Menu_DrawGreyButton (3, "OPTIONS");
-		Menu_DrawGreyButton (4, "END GAME");
+		Menu_DrawGreyButton (2, !sv.active && coop.value ? "OPTIONS" : "RESTART LEVEL");
+		Menu_DrawGreyButton (3, !sv.active && coop.value ? "LEAVE LAN GAME" : "OPTIONS");
+		if(sv.active || !coop.value)Menu_DrawGreyButton (4, "END GAME");
 
 		// Draw Sub Menu
-		if (menu_paus_submenu == 1) {
+		if (menu_paus_submenu == 1 && sv.active) {
 			Menu_DrawSubMenu("Are you sure you want to restart?", "You will lose any progress that you have made.");
-		} else if (menu_paus_submenu == 3) {
+		} else if (menu_paus_submenu == 3 ||
+                   (menu_paus_submenu == 2 && !sv.active && coop.value)) {
 			Menu_DrawSubMenu("Are you sure you want to quit?", "You will lose any progress that you have made.");
 		}
     

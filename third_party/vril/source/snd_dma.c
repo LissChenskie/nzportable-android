@@ -71,7 +71,13 @@ cvar_t bgmvolume = {"bgmvolume", "1", true};
 cvar_t volume = {"volume", "0.7", true};
 
 cvar_t nosound = {"nosound", "0"};
+// Defer WAV decoding on Android to avoid long synchronous load stalls and
+// excess temporary cache pressure during the initial map signon.
+#ifdef PLATFORM_ANDROID
+cvar_t precache = {"precache", "0"};
+#else
 cvar_t precache = {"precache", "1"};
+#endif
 cvar_t loadas8bit = {"loadas8bit", "0"};
 cvar_t bgmbuffer = {"bgmbuffer", "4096"};
 cvar_t ambient_level = {"ambient_level", "0.3", true}; // Baker 3.60 - Save to config

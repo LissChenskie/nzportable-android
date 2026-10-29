@@ -2,7 +2,17 @@
 set -eu
 cd "$(dirname "$0")/.."
 mkdir -p build/host-tests
+python3 tests/test_compare_perf.py
+cc -std=c99 -Wall -Wextra -Werror tests/test_lan_network.c -o build/host-tests/test_lan_network
+cc -std=c99 -Wall -Wextra -Werror tests/test_touch_gameplay.c -o build/host-tests/test_touch_gameplay -lm
+build/host-tests/test_touch_gameplay
+build/host-tests/test_lan_network
 cc -std=gnu99 -Iandroid/native tests/gles_test.c android/native/gles_compat.c -o build/host-tests/gles_test -lEGL -lGLESv2 -lm
 EGL_PLATFORM=surfaceless LIBGL_ALWAYS_SOFTWARE=1 build/host-tests/gles_test
+cc -std=c99 -Wall -Wextra -Werror -Iandroid/native tests/lan_endpoint_test.c android/native/lan_endpoint.c -o build/host-tests/lan_endpoint_test
+build/host-tests/lan_endpoint_test
+python3 -m unittest discover -s tests -p 'test_lan_udp_transport.py' -v
+cc -std=c99 -Wall -Wextra -Werror tests/test_native_resolution.c -lm -o build/host-tests/test_native_resolution
+build/host-tests/test_native_resolution
 javac -d build/host-tests android/app/src/main/java/org/nzportable/android/DataInstaller.java tests/DataInstallerTest.java
 java -cp build/host-tests DataInstallerTest "$@"

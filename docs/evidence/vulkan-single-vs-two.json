@@ -1,0 +1,6 @@
+{
+  "max_channel_difference": 1,
+  "mean_channel_difference": 0.0004320987654320988,
+  "pixels_difference_gt1": 0,
+  "excluded": "FPS overlay x<250 y<70"
+}

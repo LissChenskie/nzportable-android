@@ -39,8 +39,38 @@ void NZP_GLES_BeginFrame(void);
 void NZP_GLES_Shutdown(void);
 void NZP_GLES_Flush(void);
 void NZP_GLES_Present(GLuint texture, int width, int height);
+void NZP_GLES_SetWorldViewport(int world_width,int world_height,int surface_width,int surface_height);
+void NZP_GLES_SetNativeViewport(void);
+unsigned NZP_GLES_DrawCalls(void);
+/* Graphics API-neutral frame telemetry (no GPU readbacks or allocations).
+ * Can also be populated by a future Vulkan backend without exposing GL.
+ */
+typedef struct nzp_render_stats_s {
+    unsigned draw_calls;
+    unsigned nonempty_flushes;
+    unsigned texture_binds;
+    unsigned texture_parameter_changes;
+    unsigned shader_switches;
+    unsigned uniform_updates;
+    unsigned buffer_uploads;
+    unsigned vertex_upload_bytes;
+    unsigned index_upload_bytes;
+    unsigned skipped_state_changes;
+} nzp_render_stats_t;
+void NZP_GLES_GetFrameStats(nzp_render_stats_t *out);
+void NZP_GLES_RecordExternalUpload(GLenum target,size_t bytes);
+void NZP_GLES_InvalidateTextureState(void);
+/* Android Hyena 2D batches: emit interleaved GPU-ready vertices without
+ * three temporary position/UV/color arrays or per-vertex float conversion. */
+void NZP_GLES_AppendUIQuad(float x0,float y0,float x1,float y1,
+                            float u0,float v0,float u1,float v1,
+                            unsigned char r,unsigned char g,
+                            unsigned char b,unsigned char a);
+
+
 typedef struct {GLuint buffer;const void *offset;GLint size;GLenum type;GLsizei stride;} nzp_gpu_array;
 int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *arrays,GLuint index_buffer,size_t offset,int count);
+int NZP_Render_DrawLightmappedGPU(const nzp_gpu_array *arrays,const nzp_gpu_array *lightmap_uv,GLuint index_buffer,size_t offset,int count,GLuint lightmap_texture);
 void nzp_glBegin(GLenum mode);
 void nzp_glEnd(void);
 void nzp_glVertex3f(GLfloat x, GLfloat y, GLfloat z);
@@ -96,6 +126,28 @@ void nzp_glPolygonMode(GLenum face, GLenum mode);
 void nzp_glReadBuffer(GLenum buffer);
 void nzp_glDrawBuffer(GLenum buffer);
 
+#ifdef NZP_VULKAN
+void nzp_glGenTextures(int n,GLuint *ids);
+void nzp_glGenBuffers(int n,GLuint *ids);
+void nzp_glDeleteBuffers(int n,const GLuint *ids);
+void nzp_glBindBuffer(GLenum target,GLuint id);
+void nzp_glBufferData(GLenum target,GLsizeiptr bytes,const void *data,GLenum usage);
+void nzp_glPixelStorei(GLenum name,GLint value);
+void nzp_glGetIntegerv(GLenum name,GLint *value);
+void nzp_glClearColor(float r,float g,float b,float a);
+void nzp_glClearDepthf(float d);
+#ifndef NZP_GLES_IMPLEMENTATION
+#define glGenTextures nzp_glGenTextures
+#define glGenBuffers nzp_glGenBuffers
+#define glDeleteBuffers nzp_glDeleteBuffers
+#define glBindBuffer nzp_glBindBuffer
+#define glBufferData nzp_glBufferData
+#define glPixelStorei nzp_glPixelStorei
+#define glGetIntegerv nzp_glGetIntegerv
+#define glClearColor nzp_glClearColor
+#define glClearDepthf nzp_glClearDepthf
+#endif
+#endif
 #ifndef NZP_GLES_IMPLEMENTATION
 #define glBegin nzp_glBegin
 #define glEnd nzp_glEnd

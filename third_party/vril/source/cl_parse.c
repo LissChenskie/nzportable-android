@@ -20,6 +20,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // cl_parse.c  -- parse a message received from the server
 
 #include "nzportable_def.h"
+#ifdef PLATFORM_ANDROID
+#include "menu/menu_defs.h"
+#endif
+#ifdef PLATFORM_ANDROID
+#include <SDL_log.h>
+#endif
 
 extern double hud_maxammo_starttime;
 extern double hud_maxammo_endtime;
@@ -446,6 +452,15 @@ void CL_ParseServerInfo (void)
 	for (i=1 ; i<nummodels ; i++)
 	{
 		cl.model_precache[i] = Mod_ForName (model_precache[i], false);
+#ifdef PLATFORM_ANDROID
+        // World BSP cannot be substituted by the missing-model placeholder.
+        // Reject incompatible game assets before R_NewMap dereferences world geometry.
+        if (i == 1 && !cl.model_precache[i] && !sv.active) {
+            Menu_LAN_ShowError("Required server map is missing");
+            Host_EndGame("Missing LAN map %s",model_precache[i]);
+            return;
+        }
+#endif
 
 		// rbaldwin2 -- At last resort use a missing model
 		if (cl.model_precache[i] == NULL)
@@ -476,12 +491,19 @@ void CL_ParseServerInfo (void)
 
 	loading_step = 4;
 	LoadingScreen_BeginProgressPhase(0.80f, 0.98f, numsounds - 1);
+#ifdef PLATFORM_ANDROID
+	SDL_Log("NZP_LEVEL_LOAD: sound precache start (%d sounds)", numsounds - 1);
+#endif
 	CL_UpdateLoadingScreen(true);
 
 	S_BeginPrecaching ();
 	//Con_Printf("Loaded Sounds: ");
 	for (i=1 ; i<numsounds ; i++)
 	{
+#ifdef PLATFORM_ANDROID
+		if ((i & 7) == 1)
+			SDL_Log("NZP_LEVEL_LOAD: sound %d/%d: %s", i, numsounds - 1, sound_precache[i]);
+#endif
 		cl.sound_precache[i] = S_PrecacheSound (sound_precache[i]);
 		CL_KeepaliveMessage ();
 		loading_cur_step++;
@@ -491,11 +513,21 @@ void CL_ParseServerInfo (void)
 	}
 	S_EndPrecaching ();
 
+#ifdef PLATFORM_ANDROID
+	SDL_Log("NZP_LEVEL_LOAD: sound precache complete");
+#endif
+
 	//Con_Printf("...\n");
 	//Con_Printf("Total Sounds Loaded: %i\n",numsounds);
 	CL_UpdateLoadingScreen(true);
 
 	LoadingScreen_CompleteProgress();
+
+#ifdef PLATFORM_ANDROID
+	// Show complete progress before slow GPU initialization, if any.
+	CL_UpdateLoadingScreen(true);
+	SDL_Log("NZP_LEVEL_LOAD: renderer initialization start");
+#endif
 
 // local state
 	cl_entities[0].model = cl.worldmodel = cl.model_precache[1];
@@ -503,9 +535,16 @@ void CL_ParseServerInfo (void)
 	if (!vid_headless)
 		R_NewMap ();
 
+#ifdef PLATFORM_ANDROID
+	SDL_Log("NZP_LEVEL_LOAD: renderer initialization complete");
+#endif
+
 	Hunk_Check ();		// make sure nothing is hurt
 	if (!vid_headless)
 		HUD_NewMap ();
+#ifdef PLATFORM_ANDROID
+	SDL_Log("NZP_LEVEL_LOAD: HUD initialization complete");
+#endif
 	LoadingScreen_MarkPrecacheComplete();
 
 	noclip_anglehack = false;		// noclip is turned off at start

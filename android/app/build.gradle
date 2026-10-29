@@ -23,3 +23,11 @@ android {
     androidResources { noCompress 'zip', 'pak', 'pk3' }
     compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
 }
+
+tasks.register('prepareRetroTouch', Exec) {
+    workingDir rootProject.projectDir.parentFile
+    commandLine 'python3', 'scripts/fetch_retrotouch.py'
+}
+tasks.named('preBuild') { dependsOn 'prepareRetroTouch' }
+android.sourceSets.main.java.srcDirs += ['build/generated/nzp']
+dependencies { implementation files('libs/retrotouch.aar') }

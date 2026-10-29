@@ -160,12 +160,12 @@ void Menu_Lobby_Draw (void)
     // Background
 	Menu_DrawCustomBackground (true);
     // Title
-    Menu_DrawTitle("PRE-GAME", MENU_COLOR_WHITE);
+    Menu_DrawTitle(menu_is_solo ? "PRE-GAME" : "CREATE LAN GAME", MENU_COLOR_WHITE);
     // Map panel makes the background darker
     Menu_DrawMapPanel();
 
     if (menu_lobby_countdown == 0) {
-        Menu_DrawButton (1, 0, "START GAME", "Face the Horde!", Menu_Lobby_SetCountdown);    
+        Menu_DrawButton (1, 0, menu_is_solo ? "START GAME" : "OPEN LAN LOBBY", "Face the Horde!", Menu_Lobby_SetCountdown);    
     } else {
         Menu_DrawButton (1, 0, "CANCEL", "..Take it back!", Menu_Lobby_StopCountdown);
     }
@@ -202,7 +202,13 @@ void Menu_Lobby_Draw (void)
         }
     } else if (lobby_delta < 0 && menu_lobby_countdown != 0) {
         // Start a match!
+        if (!menu_is_solo) {
+            Menu_LAN_PrepareHost();
+        }
         Menu_LoadMap(current_selected_bsp);
+        if (!menu_is_solo) {
+            Cbuf_AddText("lan_host_lobby\n");
+        }
         Menu_Lobby_StopCountdown();
     }
 }

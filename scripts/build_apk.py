@@ -6,6 +6,7 @@ import pathlib
 import shutil
 import subprocess
 import zipfile
+import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -28,18 +29,22 @@ def build(abi, sdk, java, jobs):
     android_jar = sdk / "platforms/android-35/android.jar"
     classes = out / "classes"
     classes.mkdir(exist_ok=True)
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from fetch_retrotouch import fetch
+    retrotouch_jar, retrotouch_java = fetch()
     sources = sorted((ROOT / "android/app/src/main/java").rglob("*.java"))
+    sources.append(retrotouch_java)
     sources += sorted((ROOT / "third_party/SDL/android-project/app/src/main/java").rglob("*.java"))
     # Java argument files avoid command line length limits and keep paths with spaces safe.
     argfile = out / "java-sources.txt"
     argfile.write_text("\n".join('"' + str(s).replace('\\', '\\\\') + '"' for s in sources))
-    run(java / "javac", "-encoding", "UTF-8", "--release", "8", "-classpath", android_jar,
+    run(java / "javac", "-encoding", "UTF-8", "--release", "8", "-classpath", os.pathsep.join([str(android_jar), str(retrotouch_jar)]),
         "-d", classes, "@" + str(argfile))
     jar = out / "classes.jar"
     run(java / "jar", "cf", jar, "-C", classes, ".")
     dex = out / "dex"
     dex.mkdir(exist_ok=True)
-    run(java / "java", "-cp", tools / "lib/d8.jar", "com.android.tools.r8.D8", "--release", "--min-api", "26", "--lib", android_jar, "--output", dex, jar)
+    run(java / "java", "-cp", tools / "lib/d8.jar", "com.android.tools.r8.D8", "--release", "--min-api", "26", "--lib", android_jar, "--output", dex, jar, retrotouch_jar)
     # Fully qualify manifest classes: aapt2's --rename-manifest-package does not
     # provide AGP's namespace injection for a manifest without a package attribute.
     manifest = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text()

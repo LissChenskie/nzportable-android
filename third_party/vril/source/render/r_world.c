@@ -19,6 +19,10 @@
 // r_world.c -- Texture-sorted BSP traversal and lightmap passes
 
 #include "../nzportable_def.h"
+#ifdef NZP_VULKAN
+#include "vulkan/renderer.h"
+int Hyena_DrawWorldLightmapped(hyena_buffer_t *,hyena_buffer_t *,int,size_t,int);
+#endif
 
 static r_world_layout_t world_layout;
 static qboolean world_separate_arrays, world_hardware_clipping;
@@ -301,6 +305,9 @@ typedef struct {
     int first_index;
     int base_group;
     int lightmap_group;
+#ifdef NZP_VULKAN
+    int single_group;
+#endif
 } world_surface_cache_t;
 
 typedef struct {
@@ -311,6 +318,21 @@ typedef struct {
     msurface_t * surface;
 } world_batch_group_t;
 
+#ifdef NZP_VULKAN
+typedef struct {
+    world_batch_group_t batch;
+    int page,texture,lightmap;
+} world_single_group_t;
+static world_single_group_t *world_single_groups;
+static unsigned short *world_single_indices;
+static int world_single_count;
+extern cvar_t vk_single_pass;
+static int R_UseSinglePass(void){
+    return vk_single_pass.value && NZP_VK_Active() && !r_fullbright.value &&
+        !(world_layout.lightmap_debug && world_layout.lightmap_debug->value) &&
+        !(world_layout.wireframe && world_layout.wireframe->value);
+}
+#endif
 static msurface_t * lightmap_chains[MAX_LIGHTMAPS];
 static world_surface_cache_t * world_surfaces;
 static world_batch_group_t * world_base_groups;
@@ -344,6 +366,10 @@ static void
 R_DestroyWorldBatch(void)
 {
     R_DestroyWorldCache();
+#ifdef NZP_VULKAN
+    free(world_single_groups);free(world_single_indices);
+    world_single_groups=NULL;world_single_indices=NULL;world_single_count=0;
+#endif
     free(world_surfaces);
     free(world_base_groups);
     free(world_lightmap_groups);
@@ -394,8 +420,12 @@ R_BuildWorldBatch(const r_world_layout_t * layout)
     world_surfaces       = calloc(world_cache_surfaces, sizeof(*world_surfaces));
     if (!world_surfaces)
         Sys_Error("R_BuildWorldBatch: out of surface memory\n");
-    for (i = 0; i < world_cache_surfaces; ++i)
+    for (i = 0; i < world_cache_surfaces; ++i){
         world_surfaces[i].page = -1;
+#ifdef NZP_VULKAN
+        world_surfaces[i].single_group = -1;
+#endif
+    }
 
     for (i = 0; i < world_cache_surfaces; ++i) {
         surface = cl.worldmodel->surfaces + i;
@@ -492,6 +522,26 @@ R_BuildWorldBatch(const r_world_layout_t * layout)
         R_UploadWorldCachePage(page, vertices, page_vertices[page]);
         free(vertices);
     }
+#ifdef NZP_VULKAN
+    if(NZP_VK_Active() && world_separate_arrays){
+        world_single_groups=calloc(world_cache_surfaces,sizeof(*world_single_groups));
+        world_single_indices=malloc(surface_indices*sizeof(*world_single_indices));
+        if(!world_single_groups||!world_single_indices)Sys_Error("Vulkan BSP material allocation failed");
+        for(i=0;i<world_cache_surfaces;i++){
+            cached=world_surfaces+i;surface=cl.worldmodel->surfaces+i;
+            if(cached->page<0||cached->lightmap_group<0||surface->texinfo->texture->name[0]=='{')continue;
+            int lm=surface->lightmaptexturenum,tex=cached->base_group%world_cache_textures,g;
+            for(g=0;g<world_single_count;g++){
+                world_single_group_t *candidate=world_single_groups+g;
+                if(candidate->page==cached->page&&candidate->texture==tex&&candidate->lightmap==lm)break;
+            }
+            world_single_group_t *sg=world_single_groups+g;
+            if(g==world_single_count){++world_single_count;sg->page=cached->page;sg->texture=tex;sg->lightmap=lm;sg->batch.surface=surface;}
+            cached->single_group=g;sg->batch.capacity+=(cached->num_vertices-2)*3;
+        }
+        int offset=0;for(i=0;i<world_single_count;i++){world_single_groups[i].batch.offset=offset;offset+=world_single_groups[i].batch.capacity;}
+    }
+#endif
     free(page_vertices);
 } /* R_BuildWorldBatch */
 
@@ -500,6 +550,9 @@ R_ClearWorldBatches(void)
 {
     int i;
 
+#ifdef NZP_VULKAN
+    for(i=0;i<world_single_count;i++)world_single_groups[i].batch.count=0;
+#endif
     world_base_draws        = world_lightmap_draws = 0;
     world_base_draw_indices = world_lightmap_draw_indices = 0;
     for (i = 0; i < world_cache_pages * world_cache_textures; ++i)
@@ -541,6 +594,12 @@ R_QueueWorldSurface(msurface_t * surface)
     if (cached->page < 0)
         return false;
 
+#ifdef NZP_VULKAN
+    if(cached->single_group>=0 && R_UseSinglePass()){
+        R_AppendWorldSurface(&world_single_groups[cached->single_group].batch,world_single_indices,cached);
+        R_UpdateSurfaceLightmap(surface);++c_brush_polys;return true;
+    }
+#endif
     R_AppendWorldSurface(world_base_groups + cached->base_group, world_base_indices, cached);
     if (cached->lightmap_group >= 0 && !r_fullbright.value) {
         R_AppendWorldSurface(
@@ -562,8 +621,11 @@ R_DrawWorldBatches(void)
         group = world_base_groups + i;
         if (!group->count)
             continue;
-        memmove(world_base_indices + count, world_base_indices + group->offset,
-          group->count * sizeof(*world_base_indices));
+        /* The group is already in the compact destination for common
+         * contiguous visibility patterns; avoid redundant index copies. */
+        if(group->offset!=count)
+            memmove(world_base_indices + count, world_base_indices + group->offset,
+              group->count * sizeof(*world_base_indices));
         group->draw_offset = count;
         count += group->count;
     }
@@ -588,6 +650,29 @@ R_DrawWorldBatches(void)
     }
 } /* R_DrawWorldBatches */
 
+#ifdef NZP_VULKAN
+static void R_DrawWorldSinglePass(void){
+    int count=0;
+    for(int i=0;i<world_single_count;i++){
+        world_batch_group_t *g=&world_single_groups[i].batch;if(!g->count)continue;
+        if(g->offset!=count)memmove(world_single_indices+count,world_single_indices+g->offset,g->count*sizeof(*world_single_indices));
+        g->draw_offset=count;count+=g->count;
+    }
+    if(!count)return;
+    R_BeginWorldIndices(world_single_indices,count);
+    // All visible dynamic/animated lightmaps were updated during traversal;
+    // upload each atlas once before any of the combined material draws.
+    for(int i=0;i<world_single_count;i++)if(world_single_groups[i].batch.count)R_UploadLightmap(world_single_groups[i].lightmap);
+    for(int i=0;i<world_single_count;i++){
+        world_single_group_t *sg=world_single_groups+i;world_batch_group_t *g=&sg->batch;if(!g->count)continue;
+        texture_t *texture=R_TextureAnimation(g->surface->texinfo->texture);Hyena_BindTexture(texture->gl_texturenum);
+        if(!Hyena_DrawWorldLightmapped(world_pages[sg->page].vertices,world_indices,g->count,g->draw_offset*sizeof(unsigned short),R_UploadLightmap(sg->lightmap)))
+            Sys_Error("Vulkan combined BSP draw failed");
+        ++world_base_draws;world_base_draw_indices+=g->count;g->count=0;
+    }
+}
+#endif
+
 static void
 R_DrawWorldLightmapBatches(void)
 {
@@ -598,8 +683,9 @@ R_DrawWorldLightmapBatches(void)
         group = world_lightmap_groups + i;
         if (!group->count)
             continue;
-        memmove(world_lightmap_indices + count, world_lightmap_indices + group->offset,
-          group->count * sizeof(*world_lightmap_indices));
+        if(group->offset!=count)
+            memmove(world_lightmap_indices + count, world_lightmap_indices + group->offset,
+              group->count * sizeof(*world_lightmap_indices));
         group->draw_offset = count;
         count += group->count;
     }
@@ -819,6 +905,9 @@ R_DrawTextureChains(void)
         texture->texturechain = NULL;
     }
     R_DrawWorldBatches();
+#ifdef NZP_VULKAN
+    R_DrawWorldSinglePass();
+#endif
     R_EndWorldSurfaces();
 } /* R_DrawTextureChains */
 

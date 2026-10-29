@@ -3,9 +3,14 @@
 #include "menu/menu_defs.h"
 #include "platform/sdl/sdl_local.h"
 #include "android_port.h"
+#include "vulkan/renderer.h"
+#include "touch_gameplay.h"
+#include "menu/menu_defs.h"
 #include <SDL_mixer.h>
 #include <jni.h>
 #include <unistd.h>
+#include <stdint.h>
+#include <sys/resource.h>
 
 typedef struct {float x,y,r;int key;const char *label;} touch_button;
 // Coordinates normalized to the rendered area, with radii relative to height.
@@ -21,22 +26,180 @@ typedef struct {SDL_FingerID id;int active,role;float x,y;} touch_finger;
 static touch_finger fingers[FINGERS];
 static int button_refs[BUTTONS], foreground=1, thermal, touch_visible=1;
 static float move_x,move_y,move_origin_x,move_origin_y,look_x,look_y;
-static jmethodID thermal_method;
+static jmethodID thermal_method, touch_method;
+static int external_touch, last_touch_mode=-1;
+static TouchSprintState touch_sprint;
+static int touch_pressed[BUTTONS];
+static cvar_t touch_auto_sprint={"touch_auto_sprint","1",true};
+enum { NZP_TOUCH_ACTION=0x4e5a10, NZP_TOUCH_MOVE=0x4e5a11,
+       NZP_TOUCH_LOOK=0x4e5a12, NZP_TOUCH_NEUTRAL=0x4e5a13,
+       NZP_LAN_CONNECT=0x4e5a14, NZP_LAN_NAME=0x4e5a15 };
+static intptr_t float_bits(float f) { uint32_t bits; memcpy(&bits,&f,sizeof(bits)); return (intptr_t)bits; }
+static float bits_float(const void *p) { uint32_t bits=(uint32_t)(uintptr_t)p;float f;memcpy(&f,&bits,sizeof(f));return f; }
+static void push_touch(int code, intptr_t a, intptr_t b) {
+    if (!SDL_WasInit(SDL_INIT_EVENTS)) return;
+    SDL_Event e;SDL_zero(e);e.type=SDL_USEREVENT;e.user.code=code;
+    e.user.data1=(void*)a;e.user.data2=(void*)b;SDL_PushEvent(&e);
+}
+/* Touch actions must use game commands, not keyboard bindings.
+ * The imported config.cfg may not bind E to +use (door / wall purchase).
+ * All actions run on the SDL engine thread after receiving the UI event.
+ */
+static const char *Android_ActionCommand(int key)
+{
+    switch(key) {
+    case K_MOUSE1: return Touch_ActionCommand("fire");
+    case K_MOUSE2: return Touch_ActionCommand("aim");
+    case ' ': return Touch_ActionCommand("jump");
+    case 'r': return Touch_ActionCommand("reload");
+    case 'e': return Touch_ActionCommand("use");
+    case 'q': return Touch_ActionCommand("swap");
+    case 'v': return Touch_ActionCommand("knife");
+    case 'g': return Touch_ActionCommand("nade");
+    default: return NULL;
+    }
+}
+static void Android_SendSprint(int impulse)
+{
+    if (impulse == 23) Cbuf_AddText("impulse 23\n");
+    else if (impulse == 24) Cbuf_AddText("impulse 24\n");
+}
+static void Android_UpdateSprint(void)
+{
+    int playing=(key_dest==key_game && cls.state==ca_connected &&
+                 cls.signon==SIGNONS && !cl.paused && foreground);
+    int impulse=TouchSprint_Update(&touch_sprint,move_x,move_y,
+                                   touch_auto_sprint.value!=0,playing);
+    Android_SendSprint(impulse);
+}
+static void Android_EmitTouchAction(int key,int down)
+{
+    if(key==K_ESCAPE) {
+        Key_Event(K_ESCAPE,down);
+        return;
+    }
+    if(key==K_SHIFT) {
+        touch_sprint.manual_requested=down;
+        Android_UpdateSprint();
+        return;
+    }
+    const char *command=Android_ActionCommand(key);
+    if(!command)return;
+    /* Commands carry a synthetic, per-action key id. Do not let
+     * simultaneous firing and +use share a KeyDown slot. */
+    int idx=key==K_MOUSE1?0:key==K_MOUSE2?1:key==' '?2:
+            key=='r'?3:key=='e'?4:key=='q'?5:key=='v'?6:7;
+    if(!!touch_pressed[idx]==!!down)return;
+    if(down && (key_dest!=key_game || cls.state!=ca_connected))return;
+    touch_pressed[idx]=down;
+    char line[56];
+    snprintf(line,sizeof(line),"%c%s %d\n",
+             down?'+':'-',command+1,400+idx);
+    Cbuf_AddText(line);
+}
+static int touch_action_key(const char *id) {
+    if (!strcmp(id,"fire"))return K_MOUSE1;
+    if (!strcmp(id,"aim"))return K_MOUSE2;
+    if (!strcmp(id,"jump"))return ' ';
+    if (!strcmp(id,"reload"))return 'r';
+    if (!strcmp(id,"use"))return 'e';
+    if (!strcmp(id,"swap"))return 'q';
+    if (!strcmp(id,"run"))return K_SHIFT;
+    if (!strcmp(id,"knife"))return 'v';
+    if (!strcmp(id,"nade"))return 'g';
+    if (!strcmp(id,"menu"))return K_ESCAPE;
+    return 0;
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchAction(
+        JNIEnv *env,jclass unused,jstring name,jboolean down) {
+    (void)unused;if(!name)return;const char *s=(*env)->GetStringUTFChars(env,name,NULL);if(!s)return;
+    int key=touch_action_key(s);(*env)->ReleaseStringUTFChars(env,name,s);
+    if(key)push_touch(NZP_TOUCH_ACTION,key,down?1:0);
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchMove(
+        JNIEnv *env,jclass unused,jfloat x,jfloat y) {
+    (void)env;(void)unused;push_touch(NZP_TOUCH_MOVE,float_bits(x),float_bits(y));
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchLook(
+        JNIEnv *env,jclass unused,jfloat x,jfloat y) {
+    (void)env;(void)unused;push_touch(NZP_TOUCH_LOOK,float_bits(x),float_bits(y));
+}
+static void Android_LanDialog(const char *method) {
+    JNIEnv *env=SDL_AndroidGetJNIEnv();
+    jobject activity=SDL_AndroidGetActivity();
+    if(!env || !activity)return;
+    jclass cls=(*env)->GetObjectClass(env,activity);
+    jmethodID mid=(*env)->GetMethodID(env,cls,method,"()V");
+    if(mid)(*env)->CallVoidMethod(env,activity,mid);
+    if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
+    (*env)->DeleteLocalRef(env,cls);
+    (*env)->DeleteLocalRef(env,activity);
+}
+void Android_RequestLANAddress(void) {Android_LanDialog("openLanAddressDialog");}
+void Android_RequestLANName(void) {Android_LanDialog("openLanServerNameDialog");}
+static void Android_QueueLanString(JNIEnv *env,jstring value,int code) {
+    if(!value)return;
+    const char *bytes=(*env)->GetStringUTFChars(env,value,NULL);
+    if(!bytes)return;
+    size_t len=strlen(bytes);
+    char *copy=malloc(len+1);
+    if(copy)memcpy(copy,bytes,len+1);
+    (*env)->ReleaseStringUTFChars(env,value,bytes);
+    if(!copy)return;
+    SDL_Event event;SDL_zero(event);event.type=SDL_USEREVENT;
+    event.user.code=code;event.user.data1=copy;
+    if(SDL_PushEvent(&event)<0)free(copy);
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeLanConnect(
+    JNIEnv *env,jclass unused,jstring value) {
+    (void)unused;Android_QueueLanString(env,value,NZP_LAN_CONNECT);
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeLanSetName(
+    JNIEnv *env,jclass unused,jstring value) {
+    (void)unused;Android_QueueLanString(env,value,NZP_LAN_NAME);
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchNeutral(
+        JNIEnv *env,jclass unused) {
+    (void)env;(void)unused;push_touch(NZP_TOUCH_NEUTRAL,0,0);
+}
+
 static cvar_t touch_sensitivity={"touch_sensitivity","1.0",true};
+cvar_t nzp_profile={"nzp_profile","0",true};
 extern cvar_t cl_maxfps;
 extern void Host_WriteConfiguration(void);
 extern void SNDDMA_SetPaused(int paused);
 
 int Android_ThermalStatus(void){return thermal;}
-int Android_FrameRate(void){int cap=thermal>=4?15:thermal>=2?30:60;return cl_maxfps.value>=1&&cl_maxfps.value<cap?(int)cl_maxfps.value:cap;}
+/* No thermal FPS or quality downgrade. 0 = explicit unlimited. */
+int Android_FrameRate(void) {
+    /* Android THERMAL_STATUS_CRITICAL=4, EMERGENCY=5, SHUTDOWN=6.
+     * Preserve FULL native resolution and all effects. Only when hardware
+     * declares a critical thermal emergency, temporarily pace frames more
+     * slowly. Never enforce a secret 30/45 FPS cap at normal temperatures. */
+    int user_limit=cl_maxfps.value<1.f?0:(int)cl_maxfps.value;
+    if(user_limit>500)user_limit=500;
+    int safety_limit=thermal>=5?30:thermal>=4?45:0;
+    if(safety_limit && (!user_limit || user_limit>safety_limit))
+        return safety_limit;
+    return user_limit;
+}
 int Android_Foreground(void){return foreground;}
 void Android_Init(void){
     Cvar_RegisterVariable(&touch_sensitivity);
+    Cvar_RegisterVariable(&touch_auto_sprint);
+    Cvar_RegisterVariable(&nzp_profile);
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS,"0");SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS,"0");
-    SDL_Log("Android device profile: GLES2 / 1280x720 bounds / 128 MiB engine heap");
+    SDL_Log("Android device profile: native drawable + user-selected 3D scale");
 }
 void Android_ResetTouch(void){
-    for(int i=0;i<BUTTONS;i++){if(button_refs[i])Key_Event(buttons[i].key,false);button_refs[i]=0;}
+    for(int i=0;i<BUTTONS;i++){
+        if(button_refs[i])Android_EmitTouchAction(buttons[i].key,false);
+        button_refs[i]=0;
+    }
+    const int keys[]={K_MOUSE1,K_MOUSE2,' ','r','e','q','v','g'};
+    for(unsigned i=0;i<sizeof(keys)/sizeof(keys[0]);i++)
+        if(touch_pressed[i])Android_EmitTouchAction(keys[i],false);
+    Android_SendSprint(TouchSprint_Stop(&touch_sprint));
     memset(fingers,0,sizeof(fingers));move_x=move_y=look_x=look_y=0;
 }
 static void reset_input(void){Android_ResetTouch();IN_ClearPendingInput();}
@@ -57,8 +220,18 @@ static void update_move(float x,float y){
     float aspect=(float)vid.width/fmaxf(1.f,vid.height);
     move_x=(x-move_origin_x)*aspect/.12f;move_y=(move_origin_y-y)/.12f;
     float length=sqrtf(move_x*move_x+move_y*move_y);if(length>1){move_x/=length;move_y/=length;}
+    Android_UpdateSprint();
 }
 static void touch(const SDL_TouchFingerEvent *event){
+    // A loading screen is not gameplay. Do not generate movement/attack actions;
+    // tap to continue only after its precache and intro have finished.
+    if (LoadingScreen_IsWaiting()) {
+        if (event->type == SDL_FINGERDOWN) {
+            Key_Event(K_ENTER, true);
+            Key_Event(K_ENTER, false);
+        }
+        return;
+    }
     touch_finger *f=NULL;
     for(int i=0;i<FINGERS;i++)if(fingers[i].active&&fingers[i].id==event->fingerId){f=&fingers[i];break;}
     if(event->type==SDL_FINGERDOWN){
@@ -71,7 +244,7 @@ static void touch(const SDL_TouchFingerEvent *event){
             if(!Menu_MouseButton(event->x*vid.width,event->y*vid.height,true))Menu_ButtonPress();return;
         }
         int button=hit_button(event->x,event->y);
-        if(button>=0){f->role=button;if(button_refs[button]++==0)Key_Event(buttons[button].key,true);}
+        if(button>=0){f->role=button;if(button_refs[button]++==0)Android_EmitTouchAction(buttons[button].key,true);}
         else if(event->x<.45f&&!role_in_use(-1)){
             f->role=-1;move_origin_x=event->x;move_origin_y=event->y;update_move(event->x,event->y);
         }else if(event->x>=.45f&&!role_in_use(-2))f->role=-2;
@@ -79,8 +252,8 @@ static void touch(const SDL_TouchFingerEvent *event){
     }
     if(!f)return;
     if(event->type==SDL_FINGERUP){
-        if(f->role>=0&&button_refs[f->role]>0&&--button_refs[f->role]==0)Key_Event(buttons[f->role].key,false);
-        if(f->role==-1)move_x=move_y=0;
+        if(f->role>=0&&button_refs[f->role]>0&&--button_refs[f->role]==0)Android_EmitTouchAction(buttons[f->role].key,false);
+        if(f->role==-1){move_x=move_y=0;Android_UpdateSprint();}
         if(f->role==-3)Menu_MouseButton(event->x*vid.width,event->y*vid.height,false);
         f->active=0;return;
     }
@@ -93,6 +266,41 @@ static void touch(const SDL_TouchFingerEvent *event){
 }
 int Android_Event(const SDL_Event *event){
     switch(event->type){
+        case SDL_USEREVENT:
+            switch (event->user.code) {
+                case NZP_TOUCH_ACTION:
+                    Android_EmitTouchAction((int)(intptr_t)event->user.data1,
+                                            (int)(intptr_t)event->user.data2);
+                    return 1;
+                case NZP_TOUCH_MOVE:
+                    move_x=bits_float(event->user.data1);
+                    move_y=-bits_float(event->user.data2);
+                    Android_UpdateSprint();
+                    return 1;
+                case NZP_TOUCH_LOOK: {
+                    float dx=bits_float(event->user.data1),dy=bits_float(event->user.data2);
+                    int width=vid.width,height=vid.height;
+                    // RetroTouch builds report relative look, either normalized or pixels.
+                    if(fabsf(dx)>1.f)dx/=fmaxf(1.f,(float)width);
+                    if(fabsf(dy)>1.f)dy/=fmaxf(1.f,(float)height);
+                    look_x+=dx;look_y+=dy;return 1;
+                }
+                case NZP_TOUCH_NEUTRAL:Android_ResetTouch();return 1;
+                case NZP_LAN_CONNECT: {
+                    char *ip=(char *)event->user.data1;
+                    Menu_LAN_ConnectAddress(ip);
+                    free(ip);
+                    return 1;
+                }
+                case NZP_LAN_NAME: {
+                    char *name=(char *)event->user.data1;
+                    Menu_LAN_SetName(name);
+                    free(name);
+                    return 1;
+                }
+                default:break;
+            }
+            break;
         case SDL_FINGERDOWN:case SDL_FINGERUP:case SDL_FINGERMOTION:touch(&event->tfinger);return 1;
         case SDL_APP_WILLENTERBACKGROUND:if(foreground)suspend_game();return 1;
         case SDL_APP_DIDENTERFOREGROUND:if(!foreground)resume_game();return 1;
@@ -117,21 +325,150 @@ void Android_TouchLook(void){
     }look_x=look_y=0;
 }
 void Android_Frame(void){
-    static Uint64 poll_time,last_hot;Uint64 now=SDL_GetTicks64();
-    if(now-poll_time>=1000){
-        poll_time=now;JNIEnv *env=SDL_AndroidGetJNIEnv();jobject activity=SDL_AndroidGetActivity();
-        if(env&&activity){jclass cls=(*env)->GetObjectClass(env,activity);
-            if(!thermal_method)thermal_method=(*env)->GetMethodID(env,cls,"getThermalStatus","()I");
-            if(thermal_method){int value=(*env)->CallIntMethod(env,activity,thermal_method);if(!(*env)->ExceptionCheck(env)){
-                if(value>=thermal){thermal=value;last_hot=now;}else if(now-last_hot>=30000){thermal=value;last_hot=now;}
+    static Uint64 thermal_poll,ui_poll,last_hot;Uint64 now=SDL_GetTicks64();
+    /* Thermal monitoring is diagnostic only: never changes resolution/FPS.
+     * Poll less often so JNI and main-thread wakeups cost less power. */
+    int need_thermal=now-thermal_poll>=5000;
+    int need_ui=now-ui_poll>=1000;
+    if(!need_thermal&&!need_ui)return;
+    JNIEnv *env=SDL_AndroidGetJNIEnv();jobject activity=SDL_AndroidGetActivity();
+    if(!env||!activity)return;
+    jclass activity_class=(*env)->GetObjectClass(env,activity);
+    if(need_thermal) {
+        thermal_poll=now;
+        if(!thermal_method)thermal_method=(*env)->GetMethodID(env,activity_class,"getThermalStatus","()I");
+        if(thermal_method){int value=(*env)->CallIntMethod(env,activity,thermal_method);
+            if(!(*env)->ExceptionCheck(env)){
+                if(value>=thermal){thermal=value;last_hot=now;}
+                else if(now-last_hot>=30000){thermal=value;last_hot=now;}
             }}
-            if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
-            (*env)->DeleteLocalRef(env,cls);(*env)->DeleteLocalRef(env,activity);
+    }
+    if(need_ui) {
+        ui_poll=now;
+        int playing=host_initialized && key_dest==key_game && cls.state==ca_connected &&
+                    cls.signon==SIGNONS && !cl.paused && !LoadingScreen_IsActive();
+        // Re-evaluate controllers on the Java side, without reallocating the overlay.
+        if(!touch_method)touch_method=(*env)->GetMethodID(env,activity_class,
+            "setTouchControlsVisible","(Z)V");
+        if(touch_method && last_touch_mode!=playing) {
+            /* UI thread work only on a real menu/game transition.
+             * No periodic overlay redraws while the touch mode is unchanged. */
+            (*env)->CallVoidMethod(env,activity,touch_method,playing?JNI_TRUE:JNI_FALSE);
+            external_touch=1;last_touch_mode=playing;
         }
     }
+    if((*env)->ExceptionCheck(env)){
+        (*env)->ExceptionDescribe(env);(*env)->ExceptionClear(env);
+    }
+    (*env)->DeleteLocalRef(env,activity_class);(*env)->DeleteLocalRef(env,activity);
 }
+/* On-demand metrics. With profiling disabled, there are no allocations,
+ * sorting or periodic logcat writes in the frame loop. FPS is counted from
+ * actual rendered frames rather than CPU iterations rejected by Host_FilterTime. */
+static int perf_compare_desc(const void *a,const void *b) {
+    double v=*(const double*)a, w=*(const double*)b;
+    return (v<w)?1:(v>w)?-1:0;
+}
+int Android_ProfileEnabled(void) { return nzp_profile.value>0.f; }
+void Android_RecordFrame(double cpu_frame_ms) {
+    static Uint64 last_report,last_render_timestamp;
+    static double frame_time[2048],cpu_sum,cpu_max;
+    static unsigned recorded,frames;
+    static int last_r_frame;
+    static nzp_render_stats_t totals;
+    static struct rusage previous_usage;
+    if(!Android_ProfileEnabled()) {
+        last_report=last_render_timestamp=0;
+        last_r_frame=r_framecount;
+        recorded=frames=0;
+        memset(&totals,0,sizeof(totals));
+        cpu_sum=cpu_max=0.0;
+        return;
+    }
+    Uint64 now=SDL_GetPerformanceCounter();
+    double frequency=(double)SDL_GetPerformanceFrequency();
+    if(!last_report) {
+        last_report=now;
+        getrusage(RUSAGE_SELF,&previous_usage);
+    }
+    if(r_framecount!=last_r_frame) {
+        last_r_frame=r_framecount;
+        frames++;
+        cpu_sum+=cpu_frame_ms;
+        if(cpu_frame_ms>cpu_max)cpu_max=cpu_frame_ms;
+        nzp_render_stats_t sample;
+        NZP_GLES_GetFrameStats(&sample);
+        totals.draw_calls+=sample.draw_calls;
+        totals.nonempty_flushes+=sample.nonempty_flushes;
+        totals.texture_binds+=sample.texture_binds;
+        totals.texture_parameter_changes+=sample.texture_parameter_changes;
+        totals.shader_switches+=sample.shader_switches;
+        totals.uniform_updates+=sample.uniform_updates;
+        totals.buffer_uploads+=sample.buffer_uploads;
+        totals.vertex_upload_bytes+=sample.vertex_upload_bytes;
+        totals.index_upload_bytes+=sample.index_upload_bytes;
+        totals.skipped_state_changes+=sample.skipped_state_changes;
+        if(last_render_timestamp&&recorded<2048)
+            frame_time[recorded++]=1000.0*(now-last_render_timestamp)/frequency;
+        last_render_timestamp=now;
+    }
+    double elapsed=(double)(now-last_report)/frequency;
+    if(elapsed<5.0)return;
+    /* Descending sort: worst frame times first. No allocations and only
+     * once every five seconds while the optional profiler is enabled. */
+    qsort(frame_time,recorded,sizeof(frame_time[0]),perf_compare_desc);
+    unsigned n1=recorded?(unsigned)ceil((double)recorded*0.01):0;
+    if(n1<1&&recorded)n1=1;
+    unsigned p99=n1?n1-1:0;
+    unsigned p95=recorded?(unsigned)ceil(recorded*0.05)-1:0;
+    unsigned p50=recorded?(unsigned)ceil(recorded*0.50)-1:0;
+    if(recorded && p50>=recorded)p50=recorded-1;
+    double worst_sum=0;
+    for(unsigned i=0;i<n1;i++)worst_sum+=frame_time[i];
+    double low=n1&&worst_sum>0?1000.0*n1/worst_sum:0.0;
+    struct rusage usage;
+    getrusage(RUSAGE_SELF,&usage);
+    double cpu_seconds=(usage.ru_utime.tv_sec-previous_usage.ru_utime.tv_sec)+
+        (usage.ru_utime.tv_usec-previous_usage.ru_utime.tv_usec)*0.000001+
+        (usage.ru_stime.tv_sec-previous_usage.ru_stime.tv_sec)+
+        (usage.ru_stime.tv_usec-previous_usage.ru_stime.tv_usec)*0.000001;
+    previous_usage=usage;
+    int world_width=0,world_height=0;
+    extern void VID_GetWorldResolution(int *w,int *h);
+    VID_GetWorldResolution(&world_width,&world_height);
+    double f=frames?(double)frames:1.0;
+    SDL_Log("NZP_PERF fps=%.2f low_1pct_fps=%.2f frame_p50_ms=%.3f "
+            "frame_p95_ms=%.3f frame_p99_ms=%.3f cpu_ms_avg=%.3f "
+            "cpu_ms_max=%.3f draw_calls_per_frame=%.2f "
+            "flushes_per_frame=%.2f texture_binds_per_frame=%.2f "
+            "texture_params_per_frame=%.2f shader_switches_per_frame=%.2f "
+            "uniform_updates_per_frame=%.2f vbo_uploads_per_frame=%.2f "
+            "vbo_upload_kib_per_frame=%.2f ibo_upload_kib_per_frame=%.2f "
+            "skipped_states_per_frame=%.2f "
+            "cpu_percent_one_core=%.2f rss_peak_kb=%ld "
+            "native=%dx%d world=%dx%d thermal=%d fps_cap=%d backend=%s gpu_ms_last_completed=%.3f",
+            frames/elapsed,low,
+            recorded?frame_time[p50]:0.0,
+            recorded?frame_time[p95]:0.0,
+            recorded?frame_time[p99]:0.0,
+            cpu_sum/f,cpu_max,totals.draw_calls/f,
+            totals.nonempty_flushes/f,totals.texture_binds/f,
+            totals.texture_parameter_changes/f,totals.shader_switches/f,
+            totals.uniform_updates/f,totals.buffer_uploads/f,
+            totals.vertex_upload_bytes/(1024.0*f),
+            totals.index_upload_bytes/(1024.0*f),
+            totals.skipped_state_changes/f,
+            100.0*cpu_seconds/elapsed,(long)usage.ru_maxrss,
+            vid.width,vid.height,world_width,world_height,thermal,Android_FrameRate(),
+            NZP_VK_Active()?"Vulkan":"GLES2",NZP_VK_Active()?NZP_VK_GPUTime():-1.0);
+    frames=recorded=0;cpu_sum=cpu_max=0.0;
+    memset(&totals,0,sizeof(totals));
+    last_report=now;
+}
+
 void Android_DrawTouch(void){
-    if(!touch_visible||!host_initialized||key_dest!=key_game||cls.state!=ca_connected)return;
+    if(external_touch)return; // RetroTouch draws on a separate Android overlay view.
+    if(!touch_visible||!host_initialized||key_dest!=key_game||cls.state!=ca_connected||LoadingScreen_IsWaiting())return;
     for(int i=0;i<BUTTONS;i++){
         int r=buttons[i].r*vid.height,x=buttons[i].x*vid.width,y=buttons[i].y*vid.height;
         Draw_FillByColor(x-r,y-r,r*2,r*2,button_refs[i]?180:32,button_refs[i]?110:40,50,button_refs[i]?170:95);

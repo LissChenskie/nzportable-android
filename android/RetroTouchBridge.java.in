@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Compiled with pinned RetroTouch 1.0.0-beta.7 (MIT; see third_party/retrotouch-LICENSE.txt).
+package org.nzportable.android;
+
+import android.view.View;
+import android.widget.FrameLayout;
+import java.util.ArrayList;
+import java.util.List;
+// __RETROTOUCH_IMPORTS__
+
+/** SDL gameplay stays native; the open-source touch overlay supplies UI and normalized input. */
+final class RetroTouchBridge {
+    private final GameActivity game;
+    private final RetroTouchView overlay;
+    private int lastMode = -1;
+    RetroTouchBridge(GameActivity activity) {
+        game = activity;
+        overlay = new RetroTouchView(activity);
+        overlay.registerAction("fire", "Fire");
+        overlay.registerAction("aim", "Aim");
+        overlay.registerAction("jump", "Jump");
+        overlay.registerAction("reload", "Reload");
+        overlay.registerAction("use", "Use");
+        overlay.registerAction("swap", "Swap");
+        overlay.registerAction("run", "Run");
+        overlay.registerAction("knife", "Knife");
+        overlay.registerAction("nade", "Nade");
+        overlay.registerAction("menu", "Menu");
+        List<RetroTouchControl> controls = new ArrayList<RetroTouchControl>();
+        // Larger Android landscape controls; action buttons take precedence over the
+        // camera zone. New saved-layout ID applies these defaults on upgrade.
+        // Look remains usable while firing.
+        controls.add(RetroTouchControl.lookZone("look", .73f, .47f, .54f, .87f));
+        controls.add(RetroTouchControl.moveStick("move", .17f, .75f, .33f));
+        controls.add(RetroTouchControl.button("fire_button", "fire", "FIRE", .90f, .59f, .21f));
+        controls.add(RetroTouchControl.button("aim_button", "aim", "AIM", .75f, .55f, .15f));
+        controls.add(RetroTouchControl.button("jump_button", "jump", "JUMP", .91f, .85f, .16f));
+        controls.add(RetroTouchControl.button("reload_button", "reload", "RELOAD", .75f, .89f, .14f));
+        controls.add(RetroTouchControl.button("use_button", "use", "USE", .60f, .79f, .19f));
+        controls.add(RetroTouchControl.button("swap_button", "swap", "SWAP", .60f, .55f, .12f));
+        controls.add(RetroTouchControl.button("run_button", "run", "RUN", .37f, .82f, .12f));
+        controls.add(RetroTouchControl.button("knife_button", "knife", "KNIFE", .90f, .31f, .13f));
+        controls.add(RetroTouchControl.button("nade_button", "nade", "NADE", .75f, .30f, .12f));
+        controls.add(RetroTouchControl.button("menu_button", "menu", "MENU", .93f, .10f, .13f));
+        overlay.setGameplayLayout(new RetroTouchLayout("nzportable_android_v2_large", controls));
+        overlay.setLookWhileHoldingAction("fire", true);
+        overlay.setListener(new RetroTouchAdapter() {
+            @Override public void onAction(String id, boolean down) {
+                GameActivity.nativeTouchAction(id, down);
+            }
+            @Override public void onMove(float x, float y) {
+                GameActivity.nativeTouchMove(x, y);
+            }
+            @Override public void onLook(float dx, float dy) {
+                GameActivity.nativeTouchLook(dx, dy);
+            }
+            @Override public void onEditorStateChanged(boolean editing) {
+                if (editing) GameActivity.nativeTouchNeutral();
+            }
+        });
+        overlay.setMode(RetroTouchMode.OFF);
+        FrameLayout content = (FrameLayout) activity.findViewById(android.R.id.content);
+        content.addView(overlay, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+    }
+    void setPlaying(boolean playing) {
+        boolean show = playing && !RetroTouchControllers.isControllerConnected();
+        int mode = show ? 1 : 0;
+        if (mode == lastMode) return;
+        overlay.resetInputState();
+        overlay.setMode(show ? RetroTouchMode.GAMEPLAY : RetroTouchMode.OFF);
+        overlay.setVisibility(show ? View.VISIBLE : View.GONE);
+        lastMode = mode;
+    }
+    void reset() { overlay.resetInputState(); }
+}

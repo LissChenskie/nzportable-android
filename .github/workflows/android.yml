@@ -17,6 +17,18 @@ jobs:
           java-version: '17'
       - run: sudo apt-get update && sudo apt-get install -y libegl1-mesa-dev libgles2-mesa-dev
       - run: sh tests/run_host_tests.sh
+  vulkan-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers glslang-tools libgles2-mesa-dev xvfb
+      - run: sh tests/run_vulkan_tests.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vulkan-test-evidence
+          path: build/host-tests/
   apk:
     runs-on: ubuntu-24.04
     strategy:

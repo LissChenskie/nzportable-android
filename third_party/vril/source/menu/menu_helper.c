@@ -21,6 +21,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 qboolean		menu_is_solo;
 
+#ifdef PLATFORM_ANDROID
+/* Keep 3D resolution low, but make the original 320x240 menu touch-friendly. */
+static int Menu_RowStep(void) { return 23; }
+static float Menu_AndroidFontScale(void) { return (float)vid.scale * 1.55f; }
+#else
+static int Menu_RowStep(void) { return 15; }
+static float Menu_AndroidFontScale(void) { return (float)vid.scale; }
+#endif
 int 			big_bar_height = 25;
 int 			small_bar_height = 2;
 
@@ -147,8 +155,11 @@ void Menu_ExitMap (void)
 {
 	// Stop sounds (especially looping!)
 	S_StopAllSounds (true);
-	// Disconnect from server
+	// Disconnect from server, and stop advertising a host that no longer
+    // runs a map. The queued commands execute in order on the engine thread.
 	Cbuf_AddText("disconnect\n");
+    if (svs.maxclients > 1)
+        Cbuf_AddText("maxplayers 1\nlisten 0\n");
 	// Unload textures
 	Hyena_DestroyTextures();
 	// Enter main menu
@@ -283,13 +294,17 @@ Menu_DrawDivider
 */
 void Menu_DrawDivider (float order)
 {
-	int y_factor = 15;
+	int y_factor = Menu_RowStep();
 	int y_pos = 0;
 	int x_length = 140;
 	int y_length = 1;
 
 	if (order < 0) {
 		y_pos = big_bar_height + ((order*-1)*y_factor);
+#ifdef PLATFORM_ANDROID
+        // Keep footer buttons below the four large touch rows.
+        y_pos = 5 + (-order)*20;
+#endif
 		UI_SetAlignment (UI_ANCHOR_LEFT, UI_ANCHOR_BOTTOM);
 	} else {
 		y_pos = 30 + (order*y_factor) - (_CHAR_HEIGHT/2);
@@ -303,7 +318,7 @@ void Menu_DrawSocialBadge (int order, int which)
 {
 	UI_SetAlignment (UI_ANCHOR_RIGHT, UI_ANCHOR_BOTTOM);
 
-	int y_factor = 15;
+	int y_factor = Menu_RowStep();
 	int y_pos = ((big_bar_height + small_bar_height) + 5) + (order*y_factor);
 	int x_pos = 20;
 	float coord_size = 0.5f;
@@ -367,6 +382,9 @@ void Menu_DrawSelectionBox (int x_pos, int y_pos)
 	int vertical_border_width = 1;
 	int border_height = (horizontal_border_height*2) + (_CHAR_HEIGHT);
 	int border_width = 140 + vertical_border_width;
+#ifdef PLATFORM_ANDROID
+    border_height = 19; border_width = 225;
+#endif
 
 	// Draw selection box
 	// Done in 4 parts
@@ -543,12 +561,19 @@ Menu_DrawButton
 */
 void Menu_DrawButton (int order, int button_index, char* button_name, char* button_summary, void *on_activate)
 {
-	int y_factor = 15;
+	int y_factor = Menu_RowStep();
 	int x_pos = 140;
+#ifdef PLATFORM_ANDROID
+    x_pos = 225;
+#endif
 	int y_pos = 0;
 
 	if (order < 0) {
 		y_pos = big_bar_height + ((order*-1)*y_factor);
+#ifdef PLATFORM_ANDROID
+        // Keep footer buttons below the four large touch rows.
+        y_pos = 5 + (-order)*20;
+#endif
 		UI_SetAlignment (UI_ANCHOR_LEFT, UI_ANCHOR_BOTTOM);
 	} else {
 		y_pos = 30 + (order*y_factor);
@@ -563,6 +588,10 @@ void Menu_DrawButton (int order, int button_index, char* button_name, char* butt
 	current_menu.button[button_index].x = 0;
 	current_menu.button[button_index].width = UI_W(141);
 	current_menu.button[button_index].height = UI_H(_CHAR_HEIGHT + 8);
+#ifdef PLATFORM_ANDROID
+    current_menu.button[button_index].width = UI_W(231);
+    current_menu.button[button_index].height = UI_H(23);
+#endif
 	if (order < 0)
 		current_menu.button[button_index].y = vid.height - UI_Y(y_pos + _CHAR_HEIGHT + 4);
 	else
@@ -577,7 +606,7 @@ void Menu_DrawButton (int order, int button_index, char* button_name, char* butt
 		Menu_DrawSelectionBox (x_pos, y_pos);
 
 		// Draw button string
-		Menu_DrawString (x_pos, y_pos, button_name, 255, 0, 0, 255, vid.scale, UI_FLIPTEXTPOS);
+		Menu_DrawString (x_pos, y_pos, button_name, 255, 0, 0, 255, Menu_AndroidFontScale(), UI_FLIPTEXTPOS);
 
 		// Draw the bottom screen text for selected button 
 		UI_SetAlignment (UI_ANCHOR_CENTER, UI_ANCHOR_BOTTOM);
@@ -589,7 +618,7 @@ void Menu_DrawButton (int order, int button_index, char* button_name, char* butt
 		} else {
 			UI_SetAlignment (UI_ANCHOR_LEFT, UI_ANCHOR_TOP);
 		}
-		Menu_DrawString (x_pos, y_pos, button_name, 255, 255, 255, 255, vid.scale, UI_FLIPTEXTPOS);
+		Menu_DrawString (x_pos, y_pos, button_name, 255, 255, 255, 255, Menu_AndroidFontScale(), UI_FLIPTEXTPOS);
 	}
 }
 
@@ -600,19 +629,26 @@ Menu_DrawGreyButton
 */
 void Menu_DrawGreyButton (int order, char* button_name)
 {
-	int y_factor = 15;
+	int y_factor = Menu_RowStep();
 	int x_pos = 140;
+#ifdef PLATFORM_ANDROID
+    x_pos = 225;
+#endif
 	int y_pos = 0;
 
 	if (order < 0) {
 		y_pos = big_bar_height + ((order*-1)*y_factor);
+#ifdef PLATFORM_ANDROID
+        // Keep footer buttons below the four large touch rows.
+        y_pos = 5 + (-order)*20;
+#endif
 		UI_SetAlignment (UI_ANCHOR_LEFT, UI_ANCHOR_BOTTOM);
 	} else {
 		y_pos = 30 + (order*y_factor);
 		UI_SetAlignment (UI_ANCHOR_LEFT, UI_ANCHOR_TOP);
 	}
 
-	Menu_DrawString (x_pos, y_pos, button_name, 128, 128, 128, 255, vid.scale, UI_FLIPTEXTPOS);
+	Menu_DrawString (x_pos, y_pos, button_name, 128, 128, 128, 255, Menu_AndroidFontScale(), UI_FLIPTEXTPOS);
 }
 
 /*
@@ -752,12 +788,15 @@ void Menu_DrawMapButton (int order, int button_index, int usermap_index, int map
 
 void Menu_DrawOptionButton(int order, char* selection_name)
 {
-	int y_factor = 15;
-	int x_pos = 165; 
+	int y_factor = Menu_RowStep();
+	int x_pos = 165;
+#ifdef PLATFORM_ANDROID
+    x_pos = 250;
+#endif 
 	int y_pos = 30 + (order*y_factor);
 
 	UI_SetAlignment (UI_ANCHOR_LEFT, UI_ANCHOR_TOP);
-	Menu_DrawString(x_pos, y_pos, selection_name, 255, 255, 255, 255, vid.scale, 0);
+	Menu_DrawString(x_pos, y_pos, selection_name, 255, 255, 255, 255, Menu_AndroidFontScale(), 0);
 }
 
 #ifdef PLATFORM_USES_GENERIC_GLYPHS
@@ -775,8 +814,11 @@ void Menu_DrawControllerGlyphPreview(int order)
 
 void Menu_DrawOptionSlider(int order, int button_index, float min_option_value, float max_option_value, cvar_t option, char* option_string, qboolean zero_to_one, qboolean draw_option_string, float increment_amount)
 {
-	int y_factor = 15;
-	int x_pos = 165; 
+	int y_factor = Menu_RowStep();
+	int x_pos = 165;
+#ifdef PLATFORM_ANDROID
+    x_pos = 250;
+#endif 
 	int y_pos = 30 + (order*y_factor);
 	int slider_box_width = 100;
 	int slider_box_height = 4;
@@ -821,14 +863,17 @@ void Menu_DrawOptionSlider(int order, int button_index, float min_option_value, 
 	Menu_DrawFill((x_pos+(option_pos*slider_box_width)) - slider_width, y_pos-2, slider_width, slider_box_height+4, 255, 255, 255, 255);
 	// Cvar value string
 	if (draw_option_string) {
-		Menu_DrawString(x_pos + slider_box_width + _CHAR_WIDTH, y_pos - 2, _option_string, 255, 255, 255, 255, vid.scale, 0);
+		Menu_DrawString(x_pos + slider_box_width + _CHAR_WIDTH, y_pos - 2, _option_string, 255, 255, 255, 255, Menu_AndroidFontScale(), 0);
 	}
 }
 
 void Menu_DrawOptionKey (int order, char *current_bind)
 {
-	int 	y_factor = 15;
-	int 	x_pos = 165; 
+	int 	y_factor = Menu_RowStep();
+	int 	x_pos = 165;
+#ifdef PLATFORM_ANDROID
+    x_pos = 250;
+#endif 
 	int 	y_pos = 28 + (order*y_factor);
 	char 	*b;
 
@@ -845,9 +890,9 @@ void Menu_DrawOptionKey (int order, char *current_bind)
 		if (IN_GetActiveDevice() == IN_DEVICE_GAMEPAD && GetButtonIcon(b) >= 0)
 			HUD_DrawCommandIcon(UI_X(x_pos), UI_Y(y_pos), b, UI_W(12), 255);
 		else
-			Menu_DrawString(x_pos, y_pos, current_bind, 255, 255, 0, 255, vid.scale, 0);
+			Menu_DrawString(x_pos, y_pos, current_bind, 255, 255, 0, 255, Menu_AndroidFontScale(), 0);
 	} else {
-		Menu_DrawString(x_pos, y_pos, current_bind, 255, 255, 0, 255, vid.scale, 0);
+		Menu_DrawString(x_pos, y_pos, current_bind, 255, 255, 0, 255, Menu_AndroidFontScale(), 0);
 	}
 }
 

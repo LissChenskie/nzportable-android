@@ -223,7 +223,9 @@ static void MaxPlayers_f (void)
 		Cbuf_AddText ("listen 1\n");
 
 	svs.maxclients = n;
-	if (n == 1)
+	// Quake defaults to deathmatch with multiple slots. NZ:P LAN cooperative
+	// must keep its scripted zombie/round logic in coop mode instead.
+	if (n == 1 || Cvar_VariableValue("coop") != 0)
 		Cvar_Set ("deathmatch", "0");
 	else
 		Cvar_Set ("deathmatch", "1");
@@ -383,6 +385,12 @@ qsocket_t *NET_Connect (char *host)
 			numdrivers = 1;
 			goto JustDoIt;
 		}
+#ifdef PLATFORM_ANDROID
+		// A user-supplied IPv4 endpoint is already an exact address. Avoid
+		// blocking the SDL thread for 1.5s on an unnecessary LAN scan.
+		if (host[0] >= '0' && host[0] <= '9' && strchr(host,'.'))
+			goto JustDoIt;
+#endif
 
 		if (hostCacheCount)
 		{
@@ -906,7 +914,9 @@ void		NET_Shutdown (void)
 
 	SetNetTime();
 
-	for (sock = net_activeSockets; sock; sock = sock->next)
+	// NET_Close rewires sock->next into the free list. Walking that pointer
+	// skips active peers; consume the current active-list head instead.
+	while ((sock = net_activeSockets) != NULL)
 		NET_Close(sock);
 
 //

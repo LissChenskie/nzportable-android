@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "menu_defs.h"
 
 void Menu_Main_Draw(void);
+void Menu_LAN_Draw(void);
 void Menu_Pause_Draw(void);
 void Menu_Main_Draw(void);
 void Menu_StockMaps_Draw(void);
@@ -165,6 +166,7 @@ void Menu_Init (void)
 	loading_init = false;
 
 	Cmd_AddCommand ("togglemenu", Menu_ToggleMenu_f);
+	Menu_LAN_Init();
 }
 
 
@@ -220,6 +222,13 @@ void Menu_Draw (void)
 
 	case m_main:
 		Menu_Main_Draw ();
+		break;
+
+	case m_lan:
+	case m_lancreate:
+	case m_lanfind:
+	case m_lanhost:
+		Menu_LAN_Draw();
 		break;
 
 	case m_stockmaps:

@@ -20,6 +20,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // host.c -- coordinates spawning and killing of local servers
 
 #include "nzportable_def.h"
+#ifdef PLATFORM_ANDROID
+#include "menu/menu_defs.h"
+#endif
 
 #ifdef PLATFORM_SDL
 extern qboolean sdl_running;
@@ -74,7 +77,11 @@ cvar_t	teamplay = {"teamplay","0",false,true};
 cvar_t	samelevel = {"samelevel","0"};
 
 #ifndef __WII__
+#ifdef PLATFORM_ANDROID
+cvar_t cl_maxfps = {"cl_maxfps", "60", true}; /* 0 = uncapped */
+#else
 cvar_t	cl_maxfps = {"cl_maxfps", "30", true}; // dr_mabuse1981: maxfps setting
+#endif
 #endif // __WII__ creates a timing issue within Dolphin emu - and vsync is always on anyhow
 
 #ifdef __PSP__
@@ -110,6 +117,9 @@ void Host_EndGame (char *message, ...)
 	vsprintf (string,message,argptr);
 	va_end (argptr);
 	Con_DPrintf ("Host_EndGame: %s\n",string);
+#ifdef PLATFORM_ANDROID
+    qboolean lost_lan_host = !sv.active && cls.state == ca_connected && !menu_is_solo;
+#endif
 
 	if (sv.active)
 		Host_ShutdownServer (false);
@@ -121,6 +131,9 @@ void Host_EndGame (char *message, ...)
 		CL_NextDemo ();
 	else
 		CL_Disconnect ();
+#ifdef PLATFORM_ANDROID
+    if (lost_lan_host) Menu_LAN_ShowError("Server disconnected or game ended");
+#endif
 
     Clear_LoadingFill ();
 
@@ -529,13 +542,18 @@ qboolean Host_FilterTime (float time)
 {
 	realtime += (double)time;
 #ifndef __WII__
-   if (cl_maxfps.value < 1) Cvar_SetValue("cl_maxfps", 30);
-   if (!cls.timedemo && realtime - oldrealtime < 1.0/(double)cl_maxfps.value
 #ifdef PLATFORM_ANDROID
-       - fmin(0.001, 0.1/(double)cl_maxfps.value)
-#endif
-       )
-		return false;		// framerate is too high
+    /* Android pacing belongs to SDL's single render loop, not this
+     * second timer. Keeping both gates caused skipped frames and jitter
+     * when SDL woke just before the configured deadline. The simulation
+     * still uses real elapsed time below. */
+    if(!cls.timedemo && realtime<=oldrealtime)
+        return false;
+#else
+    if(cl_maxfps.value < 1) Cvar_SetValue("cl_maxfps",30);
+    if(!cls.timedemo && realtime-oldrealtime < 1.0/(double)cl_maxfps.value)
+        return false;
+#endif		// framerate is too high
 #else
 	if (!cls.timedemo && realtime - oldrealtime < 1.0f/60.0f)
 		return false;		// framerate is too high

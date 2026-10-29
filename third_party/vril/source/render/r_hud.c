@@ -543,9 +543,17 @@ HUD_UsePrint(int index, int cost)
 
     hud_use_key = HUD_GetBoundKey("+use");
     button      = HUD_KeyHasIcon(hud_use_key) ? "  " : HUD_UseKeyLabel(hud_use_key);
+#ifdef PLATFORM_ANDROID
+    /* The touchscreen USE command is independent of keyboard binds.
+     * Show the actual control rather than a possibly unbound E key. */
+    button = "USE";
+#endif
 
     hud_usecost[0] = 0;
     HUD_ExpandUsePrint(hud_useprint_strings[index], button, touch);
+#ifdef PLATFORM_ANDROID
+    hud_use_has_button = false; /* USE text is already in the prompt. */
+#endif
     if (cost > 0)
         snprintf(hud_usecost, sizeof(hud_usecost), "[Cost: %i]", cost);
     hud_use_type    = index;
@@ -567,6 +575,20 @@ HUD_DrawUsePrint(void)
         return;
     }
     scr_usetime_off = (float) (hud_use_until - Sys_FloatTime());
+#ifdef PLATFORM_ANDROID
+    const float prompt_scale = fmaxf(1.55f, vid.scale * 1.5f);
+    // Larger, centered and higher so the controls do not cover interaction text.
+    y = vid.height - (int)(110 * vid.scale);
+    x = (vid.width - getTextWidth(hud_usestring, prompt_scale)) / 2;
+    HUD_DrawTextBackdrop(x,y,hud_usestring,
+      hud_useprint_colors[hud_use_type][0],
+      hud_useprint_colors[hud_use_type][1],
+      hud_useprint_colors[hud_use_type][2],255,prompt_scale);
+    if (hud_usecost[0])
+        HUD_DrawTextBackdrop((vid.width - getTextWidth(hud_usecost,prompt_scale))/2,
+            y+(int)(12*prompt_scale),hud_usecost,255,255,255,255,prompt_scale);
+    return;
+#else
     y = vid.height - 74 * vid.scale;
     x = (vid.width - getTextWidth(hud_usestring, vid.scale)) / 2;
     HUD_DrawTextBackdrop(x, y, hud_usestring, hud_useprint_colors[hud_use_type][0],
@@ -581,6 +603,7 @@ HUD_DrawUsePrint(void)
         HUD_DrawTextBackdrop((vid.width - getTextWidth(hud_usecost, vid.scale)) / 2,
           y + 10 * vid.scale, hud_usecost, 255, 255, 255, 255, vid.scale);
     UNUSED(hud_use_button_x);
+#endif /* PLATFORM_ANDROID */
 }
 
 static void

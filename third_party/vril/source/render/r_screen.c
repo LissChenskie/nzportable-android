@@ -20,6 +20,9 @@
 
 // screen.c -- master for refresh, status bar, console, chat, notify, etc
 
+#ifdef PLATFORM_ANDROID
+#include "vulkan/renderer.h"
+#endif
 #include "../nzportable_def.h"
 #include "r_fov.h"
 #include "r_alias_lerp.h"
@@ -374,9 +377,25 @@ SCR_DrawFPS(void)
             red  = green = 0;
             blue = 255;
         }
+#ifdef PLATFORM_ANDROID
+        /* Readable high-contrast counter independent of the 3D framebuffer.
+         * Draw last so HUD/map/menu layers cannot hide it. */
+        const float font = fmaxf(2.0f, vid.scale * 1.75f);
+        const int pad = 7 * vid.scale;
+        snprintf(st,sizeof(st),"FPS %.0f",lastfps);
+        const int width = getTextWidth(st,font);
+        /* Top-left during play: the Java MENU touch button covers top-right. */
+        const int x = key_dest == key_game ? 2 * pad :
+                      (int)vid.width - width - 3 * pad;
+        const int y = 2 * vid.scale + pad;
+        Draw_FillByColor(x-pad,y-pad,width+pad*2,(int)(8*font)+pad*2,
+                         0,0,0,220);
+        Draw_ColoredString(x,y,st,red,green,blue,255,font);
+#else
         sprintf(st, "%4.0f fps", lastfps);
         Draw_ColoredString(vid.width - getTextWidth(st, vid.scale) - (4 * vid.scale),
           2 * vid.scale, st, red, green, blue, 255, vid.scale);
+#endif
     }
 } /* SCR_DrawFPS */
 
@@ -489,6 +508,12 @@ SCR_ScreenShot_f(void)
     }
 
 
+#ifdef PLATFORM_ANDROID
+    if(NZP_VK_Active()) {
+        NZP_VK_RequestCapture(checkname);
+        Con_Printf("Screenshot queued: %s\n",pcxname);return;
+    }
+#endif
     buffer = malloc(glwidth * glheight * 3 + 18);
     if (!buffer)
         Sys_Error("SCR_ScreenShot_f: out of memory");
@@ -858,14 +883,20 @@ SCR_UpdateScreen(void)
         V_RenderView();
     }
 
+#ifdef PLATFORM_ANDROID
+    /* Composite the world to full native surface BEFORE drawing HUD/menu text.
+     * This keeps controls crisp even with user-selected <100% 3D resolution. */
+    extern void VID_BeginNativeUI(void);
+    VID_BeginNativeUI();
+#endif
     Draw_Set2D();
 
     if (!LoadingScreen_IsWaiting()) {
-        // muff - to show FPS on screen
-        SCR_DrawFPS();
         HUD_Draw();
         SCR_DrawConsole();
         Menu_Draw();
+        // Draw FPS above the 2D HUD and menu so it stays visible.
+        SCR_DrawFPS();
     }
 
     if (scr_loadscreen.value) {
