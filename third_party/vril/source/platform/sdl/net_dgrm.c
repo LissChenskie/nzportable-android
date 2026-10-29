@@ -33,6 +33,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #endif	// BAN_TEST
 
 #include "../../nzportable_def.h"
+#ifdef PLATFORM_ANDROID
+#include <SDL.h>
+#endif
 #include "net_dgrm.h"
 
 // these two macros are to make the code more readable
@@ -1266,6 +1269,10 @@ static qsocket_t *_Datagram_Connect (char *host)
 				}
 			}
 		}
+#ifdef PLATFORM_ANDROID
+		// Do not spin at 100% CPU during retries on Exynos.
+			if (ret == 0) SDL_Delay(1);
+#endif
 		while (ret == 0 && (SetNetTime() - start_time) < 2.5);
 		if (ret)
 			break;
