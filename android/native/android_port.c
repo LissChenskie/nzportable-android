@@ -6,6 +6,7 @@
 #include <SDL_mixer.h>
 #include <jni.h>
 #include <unistd.h>
+#include <stdint.h>
 
 typedef struct {float x,y,r;int key;const char *label;} touch_button;
 // Coordinates normalized to the rendered area, with radii relative to height.
@@ -21,7 +22,49 @@ typedef struct {SDL_FingerID id;int active,role;float x,y;} touch_finger;
 static touch_finger fingers[FINGERS];
 static int button_refs[BUTTONS], foreground=1, thermal, touch_visible=1;
 static float move_x,move_y,move_origin_x,move_origin_y,look_x,look_y;
-static jmethodID thermal_method;
+static jmethodID thermal_method, touch_method;
+static int external_touch, last_touch_mode=-1;
+enum { NZP_TOUCH_ACTION=0x4e5a10, NZP_TOUCH_MOVE=0x4e5a11,
+       NZP_TOUCH_LOOK=0x4e5a12, NZP_TOUCH_NEUTRAL=0x4e5a13 };
+static intptr_t float_bits(float f) { uint32_t bits; memcpy(&bits,&f,sizeof(bits)); return (intptr_t)bits; }
+static float bits_float(const void *p) { uint32_t bits=(uint32_t)(uintptr_t)p;float f;memcpy(&f,&bits,sizeof(f));return f; }
+static void push_touch(int code, intptr_t a, intptr_t b) {
+    if (!SDL_WasInit(SDL_INIT_EVENTS)) return;
+    SDL_Event e;SDL_zero(e);e.type=SDL_USEREVENT;e.user.code=code;
+    e.user.data1=(void*)a;e.user.data2=(void*)b;SDL_PushEvent(&e);
+}
+static int touch_action_key(const char *id) {
+    if (!strcmp(id,"fire"))return K_MOUSE1;
+    if (!strcmp(id,"aim"))return K_MOUSE2;
+    if (!strcmp(id,"jump"))return ' ';
+    if (!strcmp(id,"reload"))return 'r';
+    if (!strcmp(id,"use"))return 'e';
+    if (!strcmp(id,"swap"))return 'q';
+    if (!strcmp(id,"run"))return K_SHIFT;
+    if (!strcmp(id,"knife"))return 'v';
+    if (!strcmp(id,"nade"))return 'g';
+    if (!strcmp(id,"menu"))return K_ESCAPE;
+    return 0;
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchAction(
+        JNIEnv *env,jclass unused,jstring name,jboolean down) {
+    (void)unused;if(!name)return;const char *s=(*env)->GetStringUTFChars(env,name,NULL);if(!s)return;
+    int key=touch_action_key(s);(*env)->ReleaseStringUTFChars(env,name,s);
+    if(key)push_touch(NZP_TOUCH_ACTION,key,down?1:0);
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchMove(
+        JNIEnv *env,jclass unused,jfloat x,jfloat y) {
+    (void)env;(void)unused;push_touch(NZP_TOUCH_MOVE,float_bits(x),float_bits(y));
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchLook(
+        JNIEnv *env,jclass unused,jfloat x,jfloat y) {
+    (void)env;(void)unused;push_touch(NZP_TOUCH_LOOK,float_bits(x),float_bits(y));
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchNeutral(
+        JNIEnv *env,jclass unused) {
+    (void)env;(void)unused;push_touch(NZP_TOUCH_NEUTRAL,0,0);
+}
+
 static cvar_t touch_sensitivity={"touch_sensitivity","1.0",true};
 extern cvar_t cl_maxfps;
 extern void Host_WriteConfiguration(void);
@@ -102,6 +145,26 @@ static void touch(const SDL_TouchFingerEvent *event){
 }
 int Android_Event(const SDL_Event *event){
     switch(event->type){
+        case SDL_USEREVENT:
+            switch (event->user.code) {
+                case NZP_TOUCH_ACTION:
+                    Key_Event((int)(intptr_t)event->user.data1,
+                              (int)(intptr_t)event->user.data2);return 1;
+                case NZP_TOUCH_MOVE:
+                    move_x=bits_float(event->user.data1);
+                    move_y=-bits_float(event->user.data2);return 1;
+                case NZP_TOUCH_LOOK: {
+                    float dx=bits_float(event->user.data1),dy=bits_float(event->user.data2);
+                    int width=0,height=0;SDL_GL_GetDrawableSize(sdl_window,&width,&height);
+                    // RetroTouch builds report relative look, either normalized or pixels.
+                    if(fabsf(dx)>1.f)dx/=fmaxf(1.f,(float)width);
+                    if(fabsf(dy)>1.f)dy/=fmaxf(1.f,(float)height);
+                    look_x+=dx;look_y+=dy;return 1;
+                }
+                case NZP_TOUCH_NEUTRAL:Android_ResetTouch();return 1;
+                default:break;
+            }
+            break;
         case SDL_FINGERDOWN:case SDL_FINGERUP:case SDL_FINGERMOTION:touch(&event->tfinger);return 1;
         case SDL_APP_WILLENTERBACKGROUND:if(foreground)suspend_game();return 1;
         case SDL_APP_DIDENTERFOREGROUND:if(!foreground)resume_game();return 1;
@@ -126,20 +189,55 @@ void Android_TouchLook(void){
     }look_x=look_y=0;
 }
 void Android_Frame(void){
-    static Uint64 poll_time,last_hot;Uint64 now=SDL_GetTicks64();
-    if(now-poll_time>=1000){
-        poll_time=now;JNIEnv *env=SDL_AndroidGetJNIEnv();jobject activity=SDL_AndroidGetActivity();
-        if(env&&activity){jclass cls=(*env)->GetObjectClass(env,activity);
-            if(!thermal_method)thermal_method=(*env)->GetMethodID(env,cls,"getThermalStatus","()I");
-            if(thermal_method){int value=(*env)->CallIntMethod(env,activity,thermal_method);if(!(*env)->ExceptionCheck(env)){
-                if(value>=thermal){thermal=value;last_hot=now;}else if(now-last_hot>=30000){thermal=value;last_hot=now;}
+    static Uint64 thermal_poll,ui_poll,last_hot;Uint64 now=SDL_GetTicks64();
+    int need_thermal=now-thermal_poll>=1000;
+    int need_ui=now-ui_poll>=500;
+    if(!need_thermal&&!need_ui)return;
+    JNIEnv *env=SDL_AndroidGetJNIEnv();jobject activity=SDL_AndroidGetActivity();
+    if(!env||!activity)return;
+    jclass activity_class=(*env)->GetObjectClass(env,activity);
+    if(need_thermal) {
+        thermal_poll=now;
+        if(!thermal_method)thermal_method=(*env)->GetMethodID(env,activity_class,"getThermalStatus","()I");
+        if(thermal_method){int value=(*env)->CallIntMethod(env,activity,thermal_method);
+            if(!(*env)->ExceptionCheck(env)){
+                if(value>=thermal){thermal=value;last_hot=now;}
+                else if(now-last_hot>=30000){thermal=value;last_hot=now;}
             }}
-            if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
-            (*env)->DeleteLocalRef(env,cls);(*env)->DeleteLocalRef(env,activity);
+    }
+    if(need_ui) {
+        ui_poll=now;
+        int playing=host_initialized && key_dest==key_game && cls.state==ca_connected &&
+                    cls.signon==SIGNONS && !cl.paused && !LoadingScreen_IsActive();
+        // Re-evaluate controllers on the Java side, without reallocating the overlay.
+        if(!touch_method)touch_method=(*env)->GetMethodID(env,activity_class,
+            "setTouchControlsVisible","(Z)V");
+        if(touch_method) {
+            (*env)->CallVoidMethod(env,activity,touch_method,playing?JNI_TRUE:JNI_FALSE);
+            external_touch=1;last_touch_mode=playing;
         }
+    }
+    if((*env)->ExceptionCheck(env)){
+        (*env)->ExceptionDescribe(env);(*env)->ExceptionClear(env);
+    }
+    (*env)->DeleteLocalRef(env,activity_class);(*env)->DeleteLocalRef(env,activity);
+}
+void Android_RecordFrame(double cpu_frame_ms) {
+    static Uint64 last_report;static double elapsed_sum,worst;static unsigned frames;
+    Uint64 now=SDL_GetTicks64();
+    if(!last_report)last_report=now;
+    frames++;elapsed_sum+=cpu_frame_ms;if(cpu_frame_ms>worst)worst=cpu_frame_ms;
+    if(now-last_report>=5000){
+        double seconds=(now-last_report)/1000.0;
+        SDL_Log("NZP_PERF frames=%u fps=%.1f render_ms_avg=%.1f render_ms_max=%.1f "
+                "res=%dx%d thermal=%d cap=%d overlay=%d",
+                frames,frames/seconds,elapsed_sum/frames,worst,
+                vid.width,vid.height,thermal,Android_FrameRate(),last_touch_mode);
+        frames=0;elapsed_sum=worst=0;last_report=now;
     }
 }
 void Android_DrawTouch(void){
+    if(external_touch)return; // RetroTouch draws on a separate Android overlay view.
     if(!touch_visible||!host_initialized||key_dest!=key_game||cls.state!=ca_connected||LoadingScreen_IsWaiting())return;
     for(int i=0;i<BUTTONS;i++){
         int r=buttons[i].r*vid.height,x=buttons[i].x*vid.width,y=buttons[i].y*vid.height;
