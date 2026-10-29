@@ -3,6 +3,7 @@
 #include "menu/menu_defs.h"
 #include "platform/sdl/sdl_local.h"
 #include "android_port.h"
+#include "menu/menu_defs.h"
 #include <SDL_mixer.h>
 #include <jni.h>
 #include <unistd.h>
@@ -25,7 +26,8 @@ static float move_x,move_y,move_origin_x,move_origin_y,look_x,look_y;
 static jmethodID thermal_method, touch_method;
 static int external_touch, last_touch_mode=-1;
 enum { NZP_TOUCH_ACTION=0x4e5a10, NZP_TOUCH_MOVE=0x4e5a11,
-       NZP_TOUCH_LOOK=0x4e5a12, NZP_TOUCH_NEUTRAL=0x4e5a13 };
+       NZP_TOUCH_LOOK=0x4e5a12, NZP_TOUCH_NEUTRAL=0x4e5a13,
+       NZP_LAN_CONNECT=0x4e5a14, NZP_LAN_NAME=0x4e5a15 };
 static intptr_t float_bits(float f) { uint32_t bits; memcpy(&bits,&f,sizeof(bits)); return (intptr_t)bits; }
 static float bits_float(const void *p) { uint32_t bits=(uint32_t)(uintptr_t)p;float f;memcpy(&f,&bits,sizeof(f));return f; }
 static void push_touch(int code, intptr_t a, intptr_t b) {
@@ -59,6 +61,40 @@ JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchMove(
 JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchLook(
         JNIEnv *env,jclass unused,jfloat x,jfloat y) {
     (void)env;(void)unused;push_touch(NZP_TOUCH_LOOK,float_bits(x),float_bits(y));
+}
+static void Android_LanDialog(const char *method) {
+    JNIEnv *env=SDL_AndroidGetJNIEnv();
+    jobject activity=SDL_AndroidGetActivity();
+    if(!env || !activity)return;
+    jclass cls=(*env)->GetObjectClass(env,activity);
+    jmethodID mid=(*env)->GetMethodID(env,cls,method,"()V");
+    if(mid)(*env)->CallVoidMethod(env,activity,mid);
+    if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
+    (*env)->DeleteLocalRef(env,cls);
+    (*env)->DeleteLocalRef(env,activity);
+}
+void Android_RequestLANAddress(void) {Android_LanDialog("openLanAddressDialog");}
+void Android_RequestLANName(void) {Android_LanDialog("openLanServerNameDialog");}
+static void Android_QueueLanString(JNIEnv *env,jstring value,int code) {
+    if(!value)return;
+    const char *bytes=(*env)->GetStringUTFChars(env,value,NULL);
+    if(!bytes)return;
+    size_t len=strlen(bytes);
+    char *copy=malloc(len+1);
+    if(copy)memcpy(copy,bytes,len+1);
+    (*env)->ReleaseStringUTFChars(env,value,bytes);
+    if(!copy)return;
+    SDL_Event event;SDL_zero(event);event.type=SDL_USEREVENT;
+    event.user.code=code;event.user.data1=copy;
+    if(SDL_PushEvent(&event)<0)free(copy);
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeLanConnect(
+    JNIEnv *env,jclass unused,jstring value) {
+    (void)unused;Android_QueueLanString(env,value,NZP_LAN_CONNECT);
+}
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeLanSetName(
+    JNIEnv *env,jclass unused,jstring value) {
+    (void)unused;Android_QueueLanString(env,value,NZP_LAN_NAME);
 }
 JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchNeutral(
         JNIEnv *env,jclass unused) {
@@ -162,6 +198,18 @@ int Android_Event(const SDL_Event *event){
                     look_x+=dx;look_y+=dy;return 1;
                 }
                 case NZP_TOUCH_NEUTRAL:Android_ResetTouch();return 1;
+                case NZP_LAN_CONNECT: {
+                    char *ip=(char *)event->user.data1;
+                    Menu_LAN_JoinAddress(ip);
+                    free(ip);
+                    return 1;
+                }
+                case NZP_LAN_NAME: {
+                    char *name=(char *)event->user.data1;
+                    Menu_LAN_SetServerName(name);
+                    free(name);
+                    return 1;
+                }
                 default:break;
             }
             break;
