@@ -47,7 +47,20 @@ struct Texture {
     std::vector<std::shared_ptr<Image>> image_pool;
 };
 struct Mesh {std::shared_ptr<Buffer> gpu;std::vector<std::shared_ptr<Buffer>> pool;};
+struct DrawState {
+    VkPipeline pipeline{};
+    VkViewport viewport{};
+    VkRect2D scissor{};
+    float bias_units{},bias_factor{};
+    VkDescriptorSet sets[3]{};
+    uint32_t uniform_offset{},bound_offset{};
+    nzp_vk_uniform uniform{};
+    bool viewport_valid{},scissor_valid{},bias_valid{},sets_valid{},uniform_valid{};
+};
 struct Frame {
+    nzp_vk_command_stats stats{};
+    nzp_vk_frame_timings timings{};
+    DrawState draw_state{};
     VkCommandPool pool{}; VkCommandBuffer upload{},draw{};
     VkFence fence{}; VkSemaphore acquired{};
     Buffer arena; size_t used{};
@@ -79,6 +92,8 @@ VkShaderModule vertex_shader{},fragment_shader{};
 VkRenderPass native_pass{},world_pass{};
 VkDebugUtilsMessengerEXT debug{};
 std::map<PipelineKey,VkPipeline> pipelines;
+PipelineKey recent_pipeline_key{};VkPipeline recent_pipeline{};
+nzp_vk_command_stats last_command_stats{};nzp_vk_frame_timings last_frame_timings{};
 std::map<unsigned,Texture> textures;std::map<unsigned,Mesh> meshes;
 std::array<Frame,Frames> frames;
 std::vector<SwapImage> images;
@@ -290,7 +305,11 @@ VkPipeline pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,in
     if(!key.blend){key.blend_src=1;key.blend_dst=0;}
     if(!key.depth){key.depth_func=0x203;key.depth_write=0;}
     if(!key.cull)key.cull_face=0x404;
-    auto it=pipelines.find(key);if(it!=pipelines.end())return it->second;
+    // The current material often repeats for many adjacent BSP surfaces.
+    if(recent_pipeline && !std::memcmp(&key,&recent_pipeline_key,sizeof(key)))return recent_pipeline;
+    auto it=pipelines.find(key);if(it!=pipelines.end()){
+        recent_pipeline_key=key;recent_pipeline=it->second;return it->second;
+    }
     VkPipelineShaderStageCreateInfo stages[2]{};
     for(int i=0;i<2;i++){stages[i].sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[i].stage=i?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;
@@ -323,6 +342,7 @@ VkPipeline pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,in
     ci.pMultisampleState=&multisample;ci.pDepthStencilState=&depth;ci.pColorBlendState=&blending;ci.pDynamicState=&dyn;
     ci.layout=pipeline_layout;ci.renderPass=native_pass;
     VkPipeline result;VK_CHECK(vkCreateGraphicsPipelines(device,pipeline_cache,1,&ci,nullptr,&result));pipelines.emplace(key,result);
+    recent_pipeline_key=key;recent_pipeline=result;
     if(recording)SDL_Log("NZP_VULKAN runtime_pipeline_miss count=%zu",pipelines.size());return result;
 }
 Layout interleaved(){Layout l{};for(int i=0;i<3;i++)l.stride[i]=sizeof(nzp_vk_vertex);
@@ -361,6 +381,9 @@ std::shared_ptr<TextureGPU> material(unsigned id){
     write_image_set(gpu->descriptor,gpu->image->view,gpu->sampler);t.gpu=gpu;t.dirty=t.pixel_dirty=false;return gpu;
 }
 void begin_pass(bool native){
+    // Dynamic states survive pipeline switches, but not a new command buffer;
+    // explicitly invalidate here to also cover the offscreen-to-HUD pass.
+    frame().draw_state=DrawState{};
     pass_has_draw=false;std::memcpy(pass_clear_color,clear_color,16);pass_clear_depth=clear_depth;
     VkClearValue values[2]{};std::memcpy(values[0].color.float32,clear_color,16);values[1].depthStencil.depth=clear_depth;
     VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};bi.renderPass=(native&&!benchmark)?native_pass:world_pass;
@@ -368,17 +391,51 @@ void begin_pass(bool native){
     bi.clearValueCount=2;bi.pClearValues=values;vkCmdBeginRenderPass(frame().draw,&bi,VK_SUBPASS_CONTENTS_INLINE);in_pass=true;
 }
 void bind_draw(const Layout &layout,unsigned mode,const nzp_vk_uniform &uniform,const nzp_vk_raster &state,VkDescriptorSet texture,VkDescriptorSet lightmap=VK_NULL_HANDLE){
-    pass_has_draw=true;auto cb=frame().draw;vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(layout,mode,state,lightmap!=VK_NULL_HANDLE));
+    pass_has_draw=true;
+    auto &f=frame();auto &cached=f.draw_state;auto cb=f.draw;
+    const VkPipeline wanted=pipeline(layout,mode,state,lightmap!=VK_NULL_HANDLE);
+    if(cached.pipeline!=wanted){
+        vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,wanted);
+        cached.pipeline=wanted;++f.stats.pipeline_binds;
+    }
     float xs=(!ui&&scale<100)?float(world_width)/width:1.f,ys=(!ui&&scale<100)?float(world_height)/height:1.f;
     int target_h=(!ui&&scale<100)?world_height:height;
     VkViewport viewport{state.viewport[0]*xs,target_h-(state.viewport[1]+state.viewport[3])*ys,
         state.viewport[2]*xs,state.viewport[3]*ys,state.depth_near,state.depth_far};
-    vkCmdSetViewport(cb,0,1,&viewport);VkRect2D scissor{{0,0},{(unsigned)(!ui&&scale<100?world_width:width),(unsigned)target_h}};
-    vkCmdSetScissor(cb,0,1,&scissor);vkCmdSetDepthBias(cb,state.offset_units,0,state.offset_factor);
-    size_t uoffset=allocate(sizeof(uniform),std::max<size_t>(16,properties.limits.minUniformBufferOffsetAlignment));
-    std::memcpy((char*)frame().arena.mapped+uoffset,&uniform,sizeof(uniform));uint32_t offset=uoffset;
-    VkDescriptorSet sets[]={frame().uniform_set,texture,lightmap?lightmap:texture};
-    vkCmdBindDescriptorSets(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_layout,0,3,sets,1,&offset);
+    if(!cached.viewport_valid||std::memcmp(&cached.viewport,&viewport,sizeof(viewport))){
+        vkCmdSetViewport(cb,0,1,&viewport);
+        cached.viewport=viewport;cached.viewport_valid=true;++f.stats.viewport_sets;
+    }
+    VkRect2D scissor{{0,0},{(unsigned)(!ui&&scale<100?world_width:width),(unsigned)target_h}};
+    if(!cached.scissor_valid||std::memcmp(&cached.scissor,&scissor,sizeof(scissor))){
+        vkCmdSetScissor(cb,0,1,&scissor);
+        cached.scissor=scissor;cached.scissor_valid=true;++f.stats.scissor_sets;
+    }
+    // No depth-bias dynamic state is needed for pipelines with depth bias disabled.
+    if(state.offset&&(!cached.bias_valid||cached.bias_units!=state.offset_units||cached.bias_factor!=state.offset_factor)){
+        vkCmdSetDepthBias(cb,state.offset_units,0,state.offset_factor);
+        cached.bias_units=state.offset_units;cached.bias_factor=state.offset_factor;
+        cached.bias_valid=true;++f.stats.depth_bias_sets;
+    }
+    // Consecutive material draws typically share an MVP/fog block. Keep its
+    // dynamic UBO offset alive for this command buffer instead of copying it.
+    uint32_t offset;
+    if(cached.uniform_valid&&!std::memcmp(&cached.uniform,&uniform,sizeof(uniform))){
+        offset=cached.uniform_offset;++f.stats.uniform_reuses;
+    }else{
+        size_t uoffset=allocate(sizeof(uniform),std::max<size_t>(16,properties.limits.minUniformBufferOffsetAlignment));
+        std::memcpy((char*)f.arena.mapped+uoffset,&uniform,sizeof(uniform));
+        offset=static_cast<uint32_t>(uoffset);
+        cached.uniform=uniform;cached.uniform_offset=offset;cached.uniform_valid=true;
+        ++f.stats.uniform_uploads;
+    }
+    VkDescriptorSet sets[]={f.uniform_set,texture,lightmap?lightmap:texture};
+    if(!cached.sets_valid||cached.bound_offset!=offset||std::memcmp(cached.sets,sets,sizeof(sets))){
+        vkCmdBindDescriptorSets(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_layout,0,3,sets,1,&offset);
+        std::memcpy(cached.sets,sets,sizeof(sets));
+        cached.bound_offset=offset;cached.sets_valid=true;++f.stats.descriptor_binds;
+    }
+    ++f.stats.draws;
 }
 void submit(){
     auto &f=frame();if(in_pass){vkCmdEndRenderPass(f.draw);in_pass=false;}
@@ -401,7 +458,11 @@ void submit(){
     VkCommandBuffer cbs[]={f.upload,f.draw};VkPipelineStageFlags stage=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};si.waitSemaphoreCount=benchmark?0:1;si.pWaitSemaphores=&f.acquired;si.pWaitDstStageMask=&stage;
     si.commandBufferCount=2;si.pCommandBuffers=cbs;si.signalSemaphoreCount=benchmark?0:1;si.pSignalSemaphores=&images[image_index].complete;
-    VK_CHECK(vkResetFences(device,1,&f.fence));VK_CHECK(vkQueueSubmit(queue,1,&si,f.fence));f.submitted=true;recording=false;
+    VK_CHECK(vkResetFences(device,1,&f.fence));
+    const Uint64 submit_start=SDL_GetPerformanceCounter();
+    VK_CHECK(vkQueueSubmit(queue,1,&si,f.fence));
+    f.timings.queue_submit_ms=1000.0*(SDL_GetPerformanceCounter()-submit_start)/SDL_GetPerformanceFrequency();
+    f.submitted=true;recording=false;
 }
 }
 
@@ -515,19 +576,24 @@ void NZP_VK_Finish(){
 }
 int NZP_VK_BeginFrame(int vsync,int percent){
     if(!active)return 0;auto &f=frame();
+    const Uint64 wait_start=SDL_GetPerformanceCounter();
     VK_CHECK(vkWaitForFences(device,1,&f.fence,VK_TRUE,UINT64_MAX));
+    const double wait_ms=1000.0*(SDL_GetPerformanceCounter()-wait_start)/SDL_GetPerformanceFrequency();
+    f.timings={};f.timings.fence_wait_ms=wait_ms;
     bool was_submitted=f.submitted;
     if(was_submitted){++completed_frames;f.submitted=false;}
     if(was_submitted&&f.queries){uint64_t times[2]{};if(vkGetQueryPoolResults(device,f.queries,0,2,sizeof(times),times,8,VK_QUERY_RESULT_64_BIT)==VK_SUCCESS)
         gpu_ms=((times[1]-times[0])&(timestamp_bits<64?((uint64_t(1)<<timestamp_bits)-1):UINT64_MAX))*properties.limits.timestampPeriod/1e6;}
-    f.textures.clear();f.meshes.clear();f.used=0;f.staging_index=0;
+    f.textures.clear();f.meshes.clear();f.used=0;f.staging_index=0;f.stats={};f.draw_state={};
     std::fill(f.staging_used.begin(),f.staging_used.end(),0);
     int w,h;SDL_Vulkan_GetDrawableSize(window,&w,&h);
     if(w<=0||h<=0)return 0;
     if(surface_lost)restore_surface();
     if(resize_pending||w!=width||h!=height||vsync!=current_vsync||percent!=scale)if(!recreate(vsync,percent))return 0;
     VkResult r=VK_SUCCESS;
+    const Uint64 acquire_start=SDL_GetPerformanceCounter();
     if(!benchmark)r=vkAcquireNextImageKHR(device,swapchain,UINT64_MAX,f.acquired,VK_NULL_HANDLE,&image_index);
+    f.timings.acquire_ms=1000.0*(SDL_GetPerformanceCounter()-acquire_start)/SDL_GetPerformanceFrequency();
     if(r==VK_ERROR_SURFACE_LOST_KHR){surface_lost=true;resize_pending=true;return 0;}
     if(r==VK_ERROR_OUT_OF_DATE_KHR){resize_pending=true;return 0;}if(r!=VK_SUBOPTIMAL_KHR)VK_CHECK(r);else resize_pending=true;
     VK_CHECK(vkResetCommandPool(device,f.pool,0));VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};bi.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -568,8 +634,12 @@ void NZP_VK_EndFrame(){
     capture_requested=false;
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};pi.waitSemaphoreCount=1;pi.pWaitSemaphores=&images[image_index].complete;
     pi.swapchainCount=1;pi.pSwapchains=&swapchain;pi.pImageIndices=&image_index;
-    auto r=benchmark?VK_SUCCESS:vkQueuePresentKHR(queue,&pi);if(r==VK_ERROR_SURFACE_LOST_KHR){surface_lost=true;resize_pending=true;}
+    const Uint64 present_start=SDL_GetPerformanceCounter();
+    auto r=benchmark?VK_SUCCESS:vkQueuePresentKHR(queue,&pi);
+    frame().timings.present_ms=benchmark?0:1000.0*(SDL_GetPerformanceCounter()-present_start)/SDL_GetPerformanceFrequency();
+    if(r==VK_ERROR_SURFACE_LOST_KHR){surface_lost=true;resize_pending=true;}
     else if(r==VK_ERROR_OUT_OF_DATE_KHR||r==VK_SUBOPTIMAL_KHR)resize_pending=true;else VK_CHECK(r);
+    last_command_stats=frame().stats;last_frame_timings=frame().timings;
     frame_index=(frame_index+1)%Frames;
 }
 void NZP_VK_Draw(const nzp_vk_vertex *v,int count,unsigned mode,const nzp_vk_uniform *u,const nzp_vk_raster *s,unsigned tex){
@@ -669,6 +739,8 @@ void NZP_VK_GetSize(int *w,int *h){if(w)*w=width;if(h)*h=height;}
 unsigned NZP_VK_MaxTextureSize(){return properties.limits.maxImageDimension2D;}
 double NZP_VK_GPUTime(){return gpu_ms;}
 unsigned NZP_VK_ValidationErrors(){return validation_errors;}
+void NZP_VK_GetCommandStats(nzp_vk_command_stats *out){if(out)*out=device?(recording?frame().stats:last_command_stats):nzp_vk_command_stats{};}
+void NZP_VK_GetFrameTimings(nzp_vk_frame_timings *out){if(out)*out=device?last_frame_timings:nzp_vk_frame_timings{};}
 void NZP_VK_Shutdown(){
     active=false;
     if(device){vkDeviceWaitIdle(device);
@@ -677,6 +749,7 @@ void NZP_VK_Shutdown(){
         destroy(readback);captured.clear();capture_requested=false;screenshot_path.clear();
         destroy_targets();for(auto &f:frames){f.textures.clear();f.meshes.clear();}textures.clear();meshes.clear();
         for(auto &p:pipelines)vkDestroyPipeline(device,p.second,nullptr);pipelines.clear();
+        recent_pipeline=VK_NULL_HANDLE;recent_pipeline_key={};
         for(auto &f:frames){for(auto &b:f.staging)destroy(b);destroy(f.arena);if(f.queries)vkDestroyQueryPool(device,f.queries,nullptr);if(f.pool)vkDestroyCommandPool(device,f.pool,nullptr);
             if(f.fence)vkDestroyFence(device,f.fence,nullptr);if(f.acquired)vkDestroySemaphore(device,f.acquired,nullptr);f={};}
         if(upscale_sampler)vkDestroySampler(device,upscale_sampler,nullptr);
@@ -689,6 +762,7 @@ void NZP_VK_Shutdown(){
     if(instance)vkDestroyInstance(instance,nullptr);
     instance={};physical={};device={};surface={};allocator={};debug={};swapchain={};
     descriptors={};uniform_layout={};texture_layout={};pipeline_layout={};pipeline_cache={};vertex_shader={};fragment_shader={};native_pass={};world_pass={};upscale_sampler={};
+    last_command_stats={};last_frame_timings={};
     frame_index=0;recording=in_pass=ui=resize_pending=false;benchmark=requested_benchmark=surface_lost=false;completed_frames=0;current_vsync=-1;width=height=0;gpu_ms=-1;color_format=depth_format=VK_FORMAT_UNDEFINED;
     SDL_Vulkan_UnloadLibrary();
 }
