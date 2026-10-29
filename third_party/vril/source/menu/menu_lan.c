@@ -79,6 +79,8 @@ void Menu_LAN_JoinAddress(const char *ip) {
     snprintf(cmd,sizeof(cmd),"connect %u.%u.%u.%u:%u\n",
              octet[0],octet[1],octet[2],octet[3],port);
     menu_is_solo=false;
+    Cvar_Set("coop","1");
+    Cvar_Set("deathmatch","0");
     if(sv.active)Cbuf_AddText("disconnect\n");
     Cbuf_AddText(cmd);
     Menu_LAN_SetStatus("Connecting to LAN host...");
