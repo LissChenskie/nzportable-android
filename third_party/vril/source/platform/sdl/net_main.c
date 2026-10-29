@@ -385,6 +385,12 @@ qsocket_t *NET_Connect (char *host)
 			numdrivers = 1;
 			goto JustDoIt;
 		}
+#ifdef PLATFORM_ANDROID
+		// A user-supplied IPv4 endpoint is already an exact address. Avoid
+		// blocking the SDL thread for 1.5s on an unnecessary LAN scan.
+		if (host[0] >= '0' && host[0] <= '9' && strchr(host,'.'))
+			goto JustDoIt;
+#endif
 
 		if (hostCacheCount)
 		{
