@@ -401,12 +401,16 @@ void Android_RecordFrame(double cpu_frame_ms) {
         (usage.ru_stime.tv_sec-previous_usage.ru_stime.tv_sec)+
         (usage.ru_stime.tv_usec-previous_usage.ru_stime.tv_usec)*0.000001;
     previous_usage=usage;
+    int world_width=0,world_height=0;
+    extern void VID_GetWorldResolution(int *w,int *h);
+    VID_GetWorldResolution(&world_width,&world_height);
     SDL_Log("NZP_PERF fps=%.1f low_1pct_fps=%.1f cpu_ms_avg=%.2f "
             "cpu_ms_max=%.2f draw_calls_per_frame=%.1f cpu_percent_one_core=%.1f "
-            "rss_peak_kb=%ld res=%dx%d thermal=%d fps_cap=%d",
+            "rss_peak_kb=%ld native=%dx%d world=%dx%d thermal=%d fps_cap=%d",
             frames/elapsed,low,frames?cpu_sum/frames:0.0,cpu_max,
             frames?(double)draw_calls/frames:0.0,100.0*cpu_seconds/elapsed,
-            (long)usage.ru_maxrss,vid.width,vid.height,thermal,Android_FrameRate());
+            (long)usage.ru_maxrss,vid.width,vid.height,
+            world_width,world_height,thermal,Android_FrameRate());
     frames=draw_calls=recorded=0;cpu_sum=cpu_max=0.0;last_report=now;
 }
 
