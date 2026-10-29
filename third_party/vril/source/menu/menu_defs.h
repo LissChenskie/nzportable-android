@@ -323,6 +323,7 @@ void Menu_Exit_Set(void);
 void Menu_GameOptions_Set(void);
 void Menu_CustomMaps_Set(void);
 void Menu_Lobby_Set(void);
+const char *Menu_LAN_Address(void);
 void Menu_LAN_Init(void);
 void Menu_LAN_Set(void);
 void Menu_LANCreate_Set(void);
