@@ -140,6 +140,18 @@ int UDP_Init (void)
 
 //=============================================================================
 
+#ifdef PLATFORM_ANDROID
+const char *UDP_ActiveAddressString(void)
+{
+    static char address[INET_ADDRSTRLEN];
+    struct in_addr ip;
+    ip.s_addr=UDP_ActiveIPv4();
+    if (!inet_ntop(AF_INET, &ip, address, sizeof(address)))
+        snprintf(address,sizeof(address),"127.0.0.1");
+    return address;
+}
+#endif
+
 void UDP_Shutdown (void)
 {
 	UDP_Listen (false);
