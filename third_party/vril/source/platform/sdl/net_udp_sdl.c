@@ -26,6 +26,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "../../nzportable_def.h"
 #include "net_udp.h"
+#include "net_lan_utils.h"
 
 #if !defined(_WIN32)
 #include <sys/socket.h>
@@ -375,7 +376,7 @@ int UDP_Broadcast (int socket, byte *buf, int len)
             memset(&target, 0, sizeof(target));
             target.sin_family = AF_INET;
             target.sin_port = htons(net_hostport);
-            target.sin_addr.s_addr = (ip & mask) | ~mask;
+            target.sin_addr.s_addr = LAN_SubnetBroadcast(ip,mask);
             if (sendto(socket, (const char *)buf, len, 0,
                        (struct sockaddr *)&target, sizeof(target)) == len)
                 ++sent;
