@@ -54,11 +54,12 @@ void Menu_Video_ApplyTextureFiltering(void);
 void Menu_Video_ApplyDithering(void);
 void Menu_Video_ApplyUltrawide(void);
 extern cvar_t vid_render_scale,vid_ui_scale,r_vsync,nzp_profile;
+extern int Android_FrameRate(void);
 extern void Host_WriteConfiguration(void);
 static int android_video_page;
 static char android_resolution_string[48];
 static char android_ui_string[32];
-static char android_fps_string[32];
+static char android_fps_string[56];
 static void Menu_Video_Save(void) {Host_WriteConfiguration();}
 static void Menu_Video_SetRenderScale(void) {
     static const int choices[]={100,90,80,75,60};
@@ -116,11 +117,18 @@ static void Menu_Video_DrawAndroid(void) {
                      "%d%% 3D / NATIVE UI",percent);
         snprintf(android_ui_string,sizeof(android_ui_string),
                  "%d%%",(int)vid_ui_scale.value);
-        if(cl_maxfps.value<1)
-            snprintf(android_fps_string,sizeof(android_fps_string),"UNLIMITED");
-        else
+        int selected_fps=(int)cl_maxfps.value;
+        int effective_fps=Android_FrameRate();
+        if(effective_fps>0 &&
+           (selected_fps<=0||effective_fps<selected_fps)) {
             snprintf(android_fps_string,sizeof(android_fps_string),
-                     "%d FPS",(int)cl_maxfps.value);
+                     "%d FPS (THERMAL)",effective_fps);
+        } else if(selected_fps<=0) {
+            snprintf(android_fps_string,sizeof(android_fps_string),"UNLIMITED");
+        } else {
+            snprintf(android_fps_string,sizeof(android_fps_string),
+                     "%d FPS",selected_fps);
+        }
         Menu_DrawButton(1,i++,"RESOLUTION",
             "Native 100% default, lower values only when selected.",
             Menu_Video_SetRenderScale);
