@@ -37,12 +37,16 @@ These are conservative starting policies, not measured A51 performance claims.
 
 ## Input and lifecycle
 
+Android audio uses one SDL_mixer output: music is decoded there and the engine's
+SFX ring is mixed into its postmix callback. This avoids opening two default
+devices on Android OpenSL ES. The DMA position is atomic across audio/game threads.
+
 SDL finger IDs own the movement stick, relative camera zone and action buttons.
 Buttons are reference counted so releasing one finger cannot release another
 finger's held action. Touch-generated mouse events are disabled. Menu taps use
 the existing menu hit testing. Controller activity hides the touch overlay.
 Background/focus loss clears held inputs; background opens pause, saves config,
-pauses both sound devices and avoids simulation catch-up on resume.
+pauses effects and music and avoids simulation catch-up on resume.
 The game Activity uses its own app process, so exiting and launching again gets
 a clean native allocator/VM while keeping the launcher and installed files.
 

@@ -98,7 +98,9 @@ int Android_Event(const SDL_Event *event){
         case SDL_APP_DIDENTERFOREGROUND:if(!foreground)resume_game();return 1;
         case SDL_APP_LOWMEMORY:SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,"Android low memory");return 1;
         case SDL_APP_TERMINATING:Host_WriteConfiguration();sdl_running=false;return 1;
-        case SDL_CONTROLLERBUTTONDOWN:case SDL_CONTROLLERAXISMOTION:touch_visible=0;Android_ResetTouch();break;
+        case SDL_CONTROLLERBUTTONDOWN:touch_visible=0;Android_ResetTouch();break;
+        case SDL_CONTROLLERAXISMOTION:
+            if(event->caxis.value>8192||event->caxis.value<-8192){touch_visible=0;Android_ResetTouch();}break;
         case SDL_WINDOWEVENT:
             if(event->window.event==SDL_WINDOWEVENT_FOCUS_LOST)reset_input();break;
         case SDL_KEYDOWN:case SDL_KEYUP:

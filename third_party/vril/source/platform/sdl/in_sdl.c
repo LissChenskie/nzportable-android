@@ -121,7 +121,10 @@ void IN_GetAnalogStick(in_analog_stick_id_t stick, in_analog_stick_t *value)
 	SDL_GameControllerAxis yaxis = stick == IN_STICK_LEFT ? SDL_CONTROLLER_AXIS_LEFTY : SDL_CONTROLLER_AXIS_RIGHTY;
 	value->x = value->y = 0.0f;
 #ifdef PLATFORM_ANDROID
-	if (stick == IN_STICK_LEFT) Android_TouchMove(&value->x, &value->y);
+	if (IN_GetActiveDevice() != IN_DEVICE_GAMEPAD) {
+		if (stick == IN_STICK_LEFT) Android_TouchMove(&value->x, &value->y);
+		return;
+	}
 #endif
 	if (!sdl_controller) return;
 	value->x = SDL_GameControllerGetAxis(sdl_controller, xaxis) / 32767.0f;

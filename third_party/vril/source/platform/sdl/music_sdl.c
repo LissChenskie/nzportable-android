@@ -1,5 +1,6 @@
 #include "../../nzportable_def.h"
 #include <SDL_mixer.h>
+#include <SDL_log.h>
 
 volatile int music_job_started;
 int music_volume;
@@ -18,10 +19,12 @@ int music_init(void)
 {
 	if ((Mix_Init(MIX_INIT_MP3) & MIX_INIT_MP3) == 0) {
 		Con_Printf("SDL_mixer MP3 support unavailable: %s\n", Mix_GetError());
+		SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "MP3 decoder: %s", Mix_GetError());
 		return 0;
 	}
 	if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 1024) < 0) {
 		Con_Printf("SDL_mixer audio initialization failed: %s\n", Mix_GetError());
+		SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Music output: %s", Mix_GetError());
 		Mix_Quit();
 		return 0;
 	}
