@@ -45,6 +45,15 @@ static unsigned draw_calls_this_frame;
 static GLuint current_program;
 static GLuint driver_bound_texture;
 static int driver_texture_valid;
+static int vertex_attribute_enabled[3]={-1,-1,-1};
+static void enable_vertex_attribute(int index,int enable) {
+    if(vertex_attribute_enabled[index]==enable) {
+        ++render_stats.skipped_state_changes;return;
+    }
+    if(enable)glEnableVertexAttribArray(index);
+    else glDisableVertexAttribArray(index);
+    vertex_attribute_enabled[index]=enable;
+}
 static nzp_render_stats_t render_stats;
 static void bind_tex0(GLuint texture) {
     /* The Quake GLES2 backend uses texture unit 0. GPU API calls from
@@ -145,6 +154,7 @@ void NZP_GLES_Init(void) {
     current_program=0;
     driver_texture_valid=0;
     mvp_valid=0;
+    for(int i=0;i<3;i++)vertex_attribute_enabled[i]=-1;
     glGenBuffers(3,streams);
     glBindBuffer(GL_ARRAY_BUFFER,streams[0]);glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
     for(int i=0;i<3;i++)nzp_identity(matrices[i][0]);
@@ -194,7 +204,9 @@ static void upload(const nzp_vertex *vertices,int count,GLenum mode) {
     glBufferSubData(GL_ARRAY_BUFFER,stream_offset,bytes,vertices);
     ++render_stats.buffer_uploads;
     render_stats.vertex_upload_bytes+=(unsigned)bytes;
-    glEnableVertexAttribArray(0);glEnableVertexAttribArray(1);glEnableVertexAttribArray(2);
+    enable_vertex_attribute(0,1);
+    enable_vertex_attribute(1,1);
+    enable_vertex_attribute(2,1);
     glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,xyz)));
     glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,uv)));
     glVertexAttribPointer(2,4,GL_UNSIGNED_BYTE,GL_TRUE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,color)));
@@ -500,9 +512,9 @@ int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *a,GLuint index_buffer,size
         alpha_test?alpha_threshold:-1.f,fog_enabled?(fog_mode==GL_LINEAR?1.f:fog_mode==GL_EXP?2.f:3.f):0.f);
     bind_tex0(bound_texture);
     for(int i=0;i<3;i++){
-        if(a[i].buffer){glBindBuffer(GL_ARRAY_BUFFER,a[i].buffer);glEnableVertexAttribArray(i);
+        if(a[i].buffer){glBindBuffer(GL_ARRAY_BUFFER,a[i].buffer);enable_vertex_attribute(i,1);
             glVertexAttribPointer(i,a[i].size,a[i].type,i==2?GL_TRUE:GL_FALSE,a[i].stride,a[i].offset);
-        }else{glDisableVertexAttribArray(i);if(i==1)glVertexAttrib2f(i,current.uv[0],current.uv[1]);
+        }else{enable_vertex_attribute(i,0);if(i==1)glVertexAttrib2f(i,current.uv[0],current.uv[1]);
             else if(i==2)glVertexAttrib4f(i,current.color[0]/255.f,current.color[1]/255.f,current.color[2]/255.f,current.color[3]/255.f);}
     }
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,index_buffer);
