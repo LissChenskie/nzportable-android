@@ -6,6 +6,7 @@
 #include "menu_defs.h"
 #include <stdio.h>
 #include <string.h>
+#include "../platform/sdl/net_lan_utils.h"
 
 extern int hostCacheCount;
 extern hostcache_t hostcache[HOSTCACHESIZE];
@@ -69,30 +70,21 @@ void Menu_LAN_BrowserSet(void) {
     Menu_LAN_Search();
 }
 void Menu_LAN_JoinAddress(const char *ip) {
-    unsigned a,b,c,d,port=26000;
-    char extra;
+    unsigned octet[4],port=26000;
     char cmd[80];
-    int matched;
-    if(!ip)return;
-    matched=sscanf(ip,"%u.%u.%u.%u:%u%c",&a,&b,&c,&d,&port,&extra);
-    if(matched!=5) {
-        if(sscanf(ip,"%u.%u.%u.%u%c",&a,&b,&c,&d,&extra)!=4){
-            Menu_LAN_SetStatus("Invalid address. Enter IPv4 or IPv4:port.");
-            return;
-        }
-        port=26000;
-    }
-    if(a>255||b>255||c>255||d>255||port==0||port>65535){
-        Menu_LAN_SetStatus("Invalid IPv4 address or port.");
+    if(!LAN_ParseIPv4(ip,octet,&port,26000)){
+        Menu_LAN_SetStatus("Invalid address. Enter IPv4 or IPv4:port.");
         return;
     }
-    snprintf(cmd,sizeof(cmd),"connect %u.%u.%u.%u:%u\n",a,b,c,d,port);
-    if(sv.active)Cbuf_AddText("disconnect\n");
+    snprintf(cmd,sizeof(cmd),"connect %u.%u.%u.%u:%u\\n",
+             octet[0],octet[1],octet[2],octet[3],port);
+    if(sv.active)Cbuf_AddText("disconnect\\n");
     Cbuf_AddText(cmd);
     Menu_LAN_SetStatus("Connecting to LAN host...");
     m_state=m_none;
     key_dest=key_game;
 }
+
 static void Menu_LAN_JoinSelected(void) {
     int selected=lan_scroll+current_menu.cursor;
     if(selected>=0&&selected<hostCacheCount) {
