@@ -53,7 +53,7 @@ void Menu_Video_ApplyParticles(void);
 void Menu_Video_ApplyTextureFiltering(void);
 void Menu_Video_ApplyDithering(void);
 void Menu_Video_ApplyUltrawide(void);
-extern cvar_t vid_render_scale,vid_ui_scale,r_vsync;
+extern cvar_t vid_render_scale,vid_ui_scale,r_vsync,nzp_profile;
 extern void Host_WriteConfiguration(void);
 static int android_video_page;
 static char android_resolution_string[48];
@@ -82,6 +82,10 @@ static void Menu_Video_SetFPSLimit(void) {
     /* VSYNC only presents at panel refresh. Uncapped/high fps must not be
      * silently limited to 60 by a 60Hz display's vsync. */
     if(choices[next]==0 || choices[next]>60)Cvar_SetValue("r_vsync",0);
+    Menu_Video_Save();
+}
+static void Menu_Video_ToggleProfiling(void) {
+    Cvar_SetValue("nzp_profile",nzp_profile.value?0:1);
     Menu_Video_Save();
 }
 static void Menu_Video_SetVsyncAndroid(void) {
@@ -154,6 +158,10 @@ static void Menu_Video_DrawAndroid(void) {
                 Menu_Video_ApplyDithering);
             Menu_DrawOptionButton(3,dithering_string);
         }
+        Menu_DrawButton(4,i++,"PERFORMANCE LOG",
+            "Log FPS, 1% lows, CPU, draw calls and memory every 5 seconds.",
+            Menu_Video_ToggleProfiling);
+        Menu_DrawOptionButton(4,nzp_profile.value?"ENABLED":"DISABLED");
     }
     Menu_DrawButton(-2,i++,"NEXT PAGE","More video options.",
         Menu_Video_NextPageAndroid);
