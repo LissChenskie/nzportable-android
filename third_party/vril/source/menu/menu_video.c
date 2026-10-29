@@ -43,6 +43,11 @@ extern cvar_t cl_maxfps;
 extern cvar_t r_vsync;
 extern cvar_t vid_render_scale;
 extern cvar_t vid_ui_scale;
+extern cvar_t android_profile;
+static void Menu_Video_ToggleProfile(void) {
+    Cvar_SetValue("android_profile",!android_profile.value);
+    Menu_Video_SaveAndroid();
+}
 extern void Host_WriteConfiguration(void);
 static int video_android_page;
 static char video_resolution_text[80];
@@ -287,7 +292,11 @@ void Menu_Video_Draw (void)
             "Synchronize presentation to display refresh.",
             Menu_Video_VSyncNext);
         Menu_DrawOptionButton(5,r_vsync.value?"ENABLED":"DISABLED");
-        Menu_DrawButton(6,video_items++,"MORE GRAPHICS",
+        Menu_DrawButton(6,video_items++,"PERFORMANCE LOG",
+            "Opt-in 5-second FPS/CPU/draw-call profiling in Android logcat.",
+            Menu_Video_ToggleProfile);
+        Menu_DrawOptionButton(6,android_profile.value?"ENABLED":"DISABLED");
+        Menu_DrawButton(7,video_items++,"MORE GRAPHICS",
             "Field of view, particles, filtering, and brightness.",
             Menu_Video_NextPage);
         Menu_DrawDivider(-2.5);
