@@ -37,6 +37,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include <sys/fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #ifdef PLATFORM_ANDROID
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -241,6 +242,7 @@ the local network components to fill in the rest
 */
 static int PartialIPAddress (char *in, struct qsockaddr *hostaddr)
 {
+    if(!in || strlen(in)>=255)return -1;
 	char buff[256];
 	char *b;
 	int addr;
@@ -419,16 +421,15 @@ char *UDP_AddrToString (struct qsockaddr *addr)
 
 int UDP_StringToAddr (char *string, struct qsockaddr *addr)
 {
-	int ha1, ha2, ha3, ha4, hp;
-	int ipaddr;
-
-	sscanf(string, "%d.%d.%d.%d:%d", &ha1, &ha2, &ha3, &ha4, &hp);
-	ipaddr = (ha1 << 24) | (ha2 << 16) | (ha3 << 8) | ha4;
-
-	addr->sa_family = AF_INET;
-	((struct sockaddr_in *)addr)->sin_addr.s_addr = htonl(ipaddr);
-	((struct sockaddr_in *)addr)->sin_port = htons(hp);
-	return 0;
+    unsigned octet[4],port=26000;
+    unsigned int ipaddr;
+    if(!LAN_ParseIPv4(string,octet,&port,(unsigned)net_hostport))return -1;
+    ipaddr = (octet[0]<<24) | (octet[1]<<16) | (octet[2]<<8) | octet[3];
+    memset(addr,0,sizeof(*addr));
+    addr->sa_family = AF_INET;
+    ((struct sockaddr_in *)addr)->sin_addr.s_addr = htonl(ipaddr);
+    ((struct sockaddr_in *)addr)->sin_port = htons(port);
+    return 0;
 }
 
 //=============================================================================
@@ -455,6 +456,12 @@ int UDP_GetSocketAddr (int socket, struct qsockaddr *addr)
 
 int UDP_GetNameFromAddr (struct qsockaddr *addr, char *name)
 {
+#ifdef PLATFORM_ANDROID
+    /* Reverse DNS on hotspot guests is often unavailable and blocks the game thread. */
+    Q_strncpy(name,UDP_AddrToString(addr),NET_NAMELEN-1);
+    name[NET_NAMELEN-1]=0;
+    return 0;
+#else
 	struct hostent *hostentry;
 
 	hostentry = gethostbyaddr ((char *)&((struct sockaddr_in *)addr)->sin_addr, sizeof(struct in_addr), AF_INET);
@@ -466,6 +473,7 @@ int UDP_GetNameFromAddr (struct qsockaddr *addr, char *name)
 
 	Q_strcpy (name, UDP_AddrToString (addr));
 	return 0;
+#endif
 }
 
 //=============================================================================
