@@ -27,20 +27,22 @@ final class RetroTouchBridge {
         overlay.registerAction("nade", "Nade");
         overlay.registerAction("menu", "Menu");
         List<RetroTouchControl> controls = new ArrayList<RetroTouchControl>();
-        // Add look first: controls on top still receive input and FIRE can turn.
+        // Larger Android landscape controls; action buttons take precedence over the
+        // camera zone. New saved-layout ID applies these defaults on upgrade.
+        // Look remains usable while firing.
         controls.add(RetroTouchControl.lookZone("look", .73f, .47f, .54f, .87f));
-        controls.add(RetroTouchControl.moveStick("move", .16f, .76f, .25f));
-        controls.add(RetroTouchControl.button("fire_button", "fire", "FIRE", .90f, .60f, .16f));
-        controls.add(RetroTouchControl.button("aim_button", "aim", "AIM", .75f, .59f, .11f));
-        controls.add(RetroTouchControl.button("jump_button", "jump", "JUMP", .91f, .84f, .12f));
-        controls.add(RetroTouchControl.button("reload_button", "reload", "RELOAD", .78f, .83f, .10f));
-        controls.add(RetroTouchControl.button("use_button", "use", "USE", .64f, .84f, .10f));
-        controls.add(RetroTouchControl.button("swap_button", "swap", "SWAP", .61f, .63f, .09f));
-        controls.add(RetroTouchControl.button("run_button", "run", "RUN", .31f, .82f, .10f));
-        controls.add(RetroTouchControl.button("knife_button", "knife", "KNIFE", .91f, .34f, .10f));
-        controls.add(RetroTouchControl.button("nade_button", "nade", "NADE", .76f, .31f, .09f));
-        controls.add(RetroTouchControl.button("menu_button", "menu", "MENU", .93f, .09f, .10f));
-        overlay.setGameplayLayout(new RetroTouchLayout("nzportable_android_v1", controls));
+        controls.add(RetroTouchControl.moveStick("move", .17f, .75f, .33f));
+        controls.add(RetroTouchControl.button("fire_button", "fire", "FIRE", .90f, .59f, .21f));
+        controls.add(RetroTouchControl.button("aim_button", "aim", "AIM", .75f, .55f, .15f));
+        controls.add(RetroTouchControl.button("jump_button", "jump", "JUMP", .91f, .85f, .16f));
+        controls.add(RetroTouchControl.button("reload_button", "reload", "RELOAD", .75f, .89f, .14f));
+        controls.add(RetroTouchControl.button("use_button", "use", "USE", .60f, .79f, .19f));
+        controls.add(RetroTouchControl.button("swap_button", "swap", "SWAP", .60f, .55f, .12f));
+        controls.add(RetroTouchControl.button("run_button", "run", "RUN", .37f, .82f, .12f));
+        controls.add(RetroTouchControl.button("knife_button", "knife", "KNIFE", .90f, .31f, .13f));
+        controls.add(RetroTouchControl.button("nade_button", "nade", "NADE", .75f, .30f, .12f));
+        controls.add(RetroTouchControl.button("menu_button", "menu", "MENU", .93f, .10f, .13f));
+        overlay.setGameplayLayout(new RetroTouchLayout("nzportable_android_v2_large", controls));
         overlay.setLookWhileHoldingAction("fire", true);
         overlay.setListener(new RetroTouchAdapter() {
             @Override public void onAction(String id, boolean down) {
