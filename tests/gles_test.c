@@ -142,6 +142,23 @@ int main(void){
         NZP_GLES_GetFrameStats(&stats1);
         assert(stats1.skipped_state_changes>=stats0.skipped_state_changes+4);
         assert(stats1.nonempty_flushes==stats0.nonempty_flushes);
+        // The same filter request must not trigger another driver state
+        // mutation; changing the value still must reach GLES.
+        GLuint cached_tex;
+        glGenTextures(1,&cached_tex);glBindTexture(GL_TEXTURE_2D,cached_tex);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+        glTexParameterf(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        NZP_GLES_GetFrameStats(&stats0);
+        glTexParameterf(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        NZP_GLES_GetFrameStats(&stats1);
+        assert(stats1.texture_parameter_changes==stats0.texture_parameter_changes);
+        glTexParameterf(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+        GLint actual_filter=0;
+        glGetTexParameteriv(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,&actual_filter);
+        assert(actual_filter==GL_LINEAR);
+        NZP_GLES_GetFrameStats(&stats1);
+        assert(stats1.texture_parameter_changes==stats0.texture_parameter_changes+1);
+        glDeleteTextures(1,&cached_tex);
         glDisable(GL_BLEND);
         glMatrixMode(GL_PROJECTION);glLoadIdentity();
         glMatrixMode(GL_MODELVIEW);glLoadIdentity();
