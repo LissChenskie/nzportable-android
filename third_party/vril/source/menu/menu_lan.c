@@ -3,6 +3,7 @@
 #include "../nzportable_def.h"
 #include "menu_defs.h"
 #include <ctype.h>
+#include "lan_endpoint.h"
 #include <stdio.h>
 #ifdef PLATFORM_ANDROID
 #include <jni.h>
@@ -156,30 +157,7 @@ void Menu_LAN_RequestName(void) {
 
 // Explicitly reject console separators, malformed address, and invalid ports.
 // Called exclusively on the SDL/engine thread by Android's SDL event handler.
-int Menu_LAN_ValidEndpoint(const char *value) {
-    int octets=0, port=26000;
-    const char *p=value;
-    if(!p || !*p) return 0;
-    while(octets<4) {
-        int n=0, digits=0;
-        while(*p>='0' && *p<='9') {
-            if(++digits>3)return 0;
-            n=n*10+(*p++-'0');
-        }
-        if(!digits || n>255)return 0;
-        octets++;
-        if(octets<4){if(*p++!='.')return 0;}
-    }
-    if(*p==':') {
-        int digits=0;port=0;p++;
-        while(*p>='0' && *p<='9') {
-            if(++digits>5)return 0;
-            port=port*10+(*p++-'0');
-        }
-        if(!digits)return 0;
-    }
-    return *p=='\0' && port>0 && port<=65535;
-}
+int Menu_LAN_ValidEndpoint(const char *value) { return lan_endpoint_valid(value); }
 void Menu_LAN_ConnectAddress(const char *value) {
     char cmd[96];
     if(!Menu_LAN_ValidEndpoint(value)) {
