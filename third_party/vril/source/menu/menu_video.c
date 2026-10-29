@@ -47,6 +47,12 @@ extern cvar_t r_retro;
 extern cvar_t r_dithering;
 extern cvar_t vid_ultrawide_limiter;
 #ifdef PLATFORM_ANDROID
+void Menu_Video_SetStrings(void);
+void Menu_Video_ApplyShowFPS(void);
+void Menu_Video_ApplyParticles(void);
+void Menu_Video_ApplyTextureFiltering(void);
+void Menu_Video_ApplyDithering(void);
+void Menu_Video_ApplyUltrawide(void);
 extern cvar_t vid_render_scale,vid_ui_scale,r_vsync;
 extern void Host_WriteConfiguration(void);
 static int android_video_page;
