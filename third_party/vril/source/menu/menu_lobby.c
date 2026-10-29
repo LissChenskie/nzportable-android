@@ -207,7 +207,7 @@ void Menu_Lobby_Draw (void)
         }
         Menu_LoadMap(current_selected_bsp);
         if (!menu_is_solo) {
-            Cbuf_AddText("lan_host_lobby\\n");
+            Cbuf_AddText("lan_host_lobby\n");
         }
         Menu_Lobby_StopCountdown();
     }
