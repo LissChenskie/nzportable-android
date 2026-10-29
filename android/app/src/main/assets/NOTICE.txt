@@ -1,0 +1,6 @@
+NZPortable Android: https://github.com/LissChenskie/nzportable-android
+Original game: https://github.com/nzp-team/nzportable
+Vril Engine: https://github.com/nzp-team/vril-engine
+Engine source and Android modifications: GPL-2.0-or-later (see source notices).
+SDL2 and SDL_mixer: zlib license, reproduced in the accompanying license files.
+Game data retains its original authors' copyrights and credits.

@@ -1,70 +1,61 @@
-# Nazi Zombies: Portable
+# NZPortable for Android
 
-# About
-This is the main/hub repository for NZ:P, a Call of Duty: Zombies "de-make" powered by various enhanced forks of the Quake engine, in development since 2009. This hub repository serves as a place to host nightly builds as well as a means of bug reporting on a game-wide (non-component) scale. See [the breakdown](#github-organization-breakdown) for source code and other components.
+Native Android port of [NZ:P](https://github.com/nzp-team/nzportable), using
+[Vril Engine](https://github.com/nzp-team/vril-engine), SDL2 and OpenGL ES 2.
+The initial performance profile targets Samsung Galaxy A51 LTE / Exynos 9611.
+This is an experimental port; physical A51 performance is not yet measured.
 
-The game itself is feature-equivalent with Call of Duty: World at War on a generic level. Gameplay components are implemented with minor parity differences. Most World at War maps and their unique features are not yet represented. Various small additions and changes from Call of Duty: Black Ops are present as a means of gameplay smoothing, but not on a wide scale. NZ:P is, first and foremost, a Call of Duty: World at War remake.
+## Build
 
-# Supported Platforms
-* Linux (x86, x86_64, armhf, arm64)
-* Nintendo Switch
-* Nintendo 3DS
-* PlayStation Portable (both "PHAT" (PSP-1000) and "SLIM" (PSP-2000 and higher))
-* PlayStation VITA
-* [WebGL](https://nzp.gay)
-* Windows (x86, x86_64)
-* TI NSPIRE (CX II)
+Requires Python 3.11+, Git, JDK 17, Android SDK platform 35, build-tools 35.0.0,
+NDK 27.2.12479018 and SDK CMake 3.22.1. Set `ANDROID_HOME` and `JAVA_HOME`.
 
-# GitHub Organization Breakdown
-* [assets](https://github.com/nzp-team/assets): Game GFX, Sound, etc. data.
-* [vril-engine](https://github.com/nzp-team/vril-engine): The NZ:P engine.
-* [quakec](https://github.com/nzp-team/quakec): The game-side code for things like weapons and Perk machines.
-* [tools](https://github.com/nzp-team/tools): Misc. development tools.
-* [toolbox](https://github.com/nzp-team/toolbox): AiO Development suite for map makers and contributors.
+```sh
+python scripts/bootstrap.py --with-data
+python scripts/build_apk.py --abi arm64-v8a
+```
 
-# Screenshots
+Output: `build/nzportable-android-arm64-v8a.apk` (optimized native code, test signature).
+Install with `adb install -r build/nzportable-android-arm64-v8a.apk`. The first launch
+extracts the game data, then press **Играть**. Without `--with-data`, import a full
+PC release ZIP using the launcher's document picker. Upstream nightly URLs change;
+the data checksum is deliberately pinned and must be reviewed when updating.
 
-<center>
-    <p float="left">
-        <img src="screenshots/0.webp" width="400" />
-        <img src="screenshots/1.webp" width="400" /> 
-    </p>
-    <p float="left">
-        <img src="screenshots/2.webp" width="400" />
-        <img src="screenshots/3.webp" width="400" /> 
-    </p>
-</center>
+Android Studio can open the `android/` directory after `python scripts/bootstrap.py`.
+Gradle 8.9 / Android Gradle Plugin 8.7.3: run `gradle :app:assembleDebug` there.
+`-PnzpAbis=arm64-v8a,armeabi-v7a` selects both ARM ABIs. The direct SDK build script
+is also provided so APK construction does not depend on Maven availability.
 
-# Credits
+## Included
 
-#### Programming
-Blubswillrule, Jukki, DR_Mabuse1981, Naievil, Cypress, Scatterbox
+- GLES shaders for the engine's legacy rendering API, without desktop GL/GL4ES.
+- Static world VBOs, streamed indices and batched dynamic geometry.
+- Aspect-correct bounded resolution: 1280×576 on a 2400×1080 landscape surface.
+- Touch movement, swipe camera, fire/aim/reload/use/jump/swap/knife/grenade/run/menu.
+- SDL controllers, audio, app-private data, pause/resume and held-input reset.
+- 60 FPS starting cap; thermal 30/15 FPS tiers and resolution reduction.
+- Pinned dependencies, two-ABI Android CI and real GLES pixel/installer tests.
 
-#### Models
-Blubswillrule, Ju\[s]tice, Derped_Crusader
+See [implementation and validation](docs/ANDROID_PORT.md). A fixed touch layout
+is included; a layout editor, device visual regression, and sustained A51 thermal
+benchmarking remain to be done. No claim of guaranteed 60 FPS or perfect parity.
 
-#### GFX
-Blubswillrule, Ju\[s]tice, Cypress, Derped_Crusader
+## Tests
 
-#### Sounds/Music
-Blubswillrule, Biodude, Cypress, Marty P.
+Linux with JDK 17, Mesa EGL and GLES2 development packages:
 
-#### Special Thanks
-* Spike, Eukara, Contributors: FTEQW
-* Shpuld: CleanQC4FTE, heavy dQuakePlus optimization
-* Crow_Bar, st1x51: (a)dQuake(plus)
-* fgsfdsfgs: Quakespasm-NX
-* MasterFeizz: ctrQuake
-* Rinnegatamante: Initial VITA port, VITA Auto-Updater
-* Ralf Willenbacher: nQuake
-* Azenn: GFX Assistance
-* BCDeshiG: Extensive Testing
+```sh
+sh tests/run_host_tests.sh
+```
 
-# Stars
-<a href="https://www.star-history.com/?repos=nzp-team%2Fnzportable%2Cnzp-team%2Fvril-engine%2Cnzp-team%2Fquakec%2Cnzp-team%2Fassets%2Cnzp-team%2Fnzp-team.github.io&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=nzp-team/nzportable%2Cnzp-team/vril-engine%2Cnzp-team/quakec%2Cnzp-team/assets%2Cnzp-team/nzp-team.github.io&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=nzp-team/nzportable%2Cnzp-team/vril-engine%2Cnzp-team/quakec%2Cnzp-team/assets%2Cnzp-team/nzp-team.github.io&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=nzp-team/nzportable%2Cnzp-team/vril-engine%2Cnzp-team/quakec%2Cnzp-team/assets%2Cnzp-team/nzp-team.github.io&type=date&legend=top-left" />
- </picture>
-</a>
+For device logs on Windows: `powershell -File scripts/profile-a51.ps1 -Seconds 1800`.
+Play a map during capture. FPS, heat and audio must be checked on the actual phone.
+
+## Sources and license
+
+Vril's C sources and SDL backend are vendored at the revision recorded in
+[dependencies.lock.json](dependencies.lock.json), with copyright notices and
+[GPL license](third_party/vril/LICENSE) preserved. Android code is GPL-2.0-or-later.
+SDL2/SDL_mixer retain their upstream licenses. Game data retains the original
+authors' rights and credits; this port does not relicense it.
+Original project information and credits: [upstream hub README](docs/UPSTREAM_HUB.md).

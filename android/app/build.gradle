@@ -1,0 +1,25 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'org.nzportable.android'
+    compileSdk 35
+    ndkVersion '27.2.12479018'
+    defaultConfig {
+        applicationId 'org.nzportable.android'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+        ndk { abiFilters.addAll((project.findProperty('nzpAbis') ?: 'arm64-v8a').split(',')) }
+        externalNativeBuild { cmake { arguments '-DANDROID_STL=c++_shared', '-DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON' } }
+    }
+    buildTypes {
+        debug { debuggable true; jniDebuggable true }
+        release { minifyEnabled false; ndk { debugSymbolLevel 'SYMBOL_TABLE' } }
+    }
+    externalNativeBuild { cmake { path '../CMakeLists.txt'; version '3.22.1' } }
+    // SDL Java classes live in the pinned SDL2 source checkout at repository root.
+    sourceSets.main.java.srcDirs = ['src/main/java', '../../third_party/SDL/android-project/app/src/main/java']
+    packaging { jniLibs { useLegacyPackaging false } }
+    androidResources { noCompress 'zip', 'pak', 'pk3' }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
+}

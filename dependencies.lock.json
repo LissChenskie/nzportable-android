@@ -1,0 +1,6 @@
+{
+  "vril": {"repository": "https://github.com/nzp-team/vril-engine.git", "commit": "7a31c3d7eb4bd9db87e295932a0f092a69495d5b", "storage": "vendored C sources and SDL backend, with Android changes"},
+  "SDL": {"repository": "https://github.com/libsdl-org/SDL.git", "commit": "fa24d868ac2f8fd558e4e914c9863411245db8fd", "tag": "release-2.30.11"},
+  "SDL_mixer": {"repository": "https://github.com/libsdl-org/SDL_mixer.git", "commit": "171eb2d420d5643e4ee11514a06e04a41a463bbd", "tag": "release-2.8.1"},
+  "game_data": {"url": "https://github.com/nzp-team/nzportable/releases/download/nightly/nzportable-linuxarm64.zip", "sha256": "8edbcbfc23d4e585a3179654a1b509ab230445d66cc7c1c8695aa6ea6b9c85cd", "published_at": "2026-10-28T13:57:59Z"}
+}

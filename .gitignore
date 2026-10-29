@@ -1,3 +1,14 @@
 # flatpak build files
 .flatpak-builder
 build-dir
+build/
+third_party/SDL/
+third_party/SDL_mixer/
+android/.gradle/
+android/.cxx/
+android/app/.cxx/
+android/app/build/
+android/local.properties
+android/app/src/main/assets/bootstrap/*.zip
+*.keystore
+__pycache__/
