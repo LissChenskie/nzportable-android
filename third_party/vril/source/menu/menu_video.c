@@ -46,6 +46,116 @@ extern cvar_t r_runqmbparticles;
 extern cvar_t r_retro;
 extern cvar_t r_dithering;
 extern cvar_t vid_ultrawide_limiter;
+#ifdef PLATFORM_ANDROID
+extern cvar_t vid_render_scale,vid_ui_scale,r_vsync;
+extern void Host_WriteConfiguration(void);
+static int android_video_page;
+static char android_resolution_string[48];
+static char android_ui_string[32];
+static char android_fps_string[32];
+static void Menu_Video_Save(void) {Host_WriteConfiguration();}
+static void Menu_Video_SetRenderScale(void) {
+    static const int choices[]={100,90,80,75,60};
+    int next=0,current=(int)vid_render_scale.value;
+    for(int i=0;i<5;i++)if(current==choices[i]) {next=(i+1)%5;break;}
+    Cvar_SetValue("vid_render_scale",choices[next]);
+    Menu_Video_Save();
+}
+static void Menu_Video_SetUIScale(void) {
+    static const int choices[]={80,100,120,140};
+    int next=1,current=(int)vid_ui_scale.value;
+    for(int i=0;i<4;i++)if(current==choices[i]) {next=(i+1)%4;break;}
+    Cvar_SetValue("vid_ui_scale",choices[next]);
+    Menu_Video_Save();
+}
+static void Menu_Video_SetFPSLimit(void) {
+    static const int choices[]={30,45,60,90,120,0};
+    int next=2,current=(int)cl_maxfps.value;
+    for(int i=0;i<6;i++)if(current==choices[i]) {next=(i+1)%6;break;}
+    Cvar_SetValue("cl_maxfps",choices[next]);
+    /* VSYNC only presents at panel refresh. Uncapped/high fps must not be
+     * silently limited to 60 by a 60Hz display's vsync. */
+    if(choices[next]==0 || choices[next]>60)Cvar_SetValue("r_vsync",0);
+    Menu_Video_Save();
+}
+static void Menu_Video_SetVsyncAndroid(void) {
+    Cvar_SetValue("r_vsync",r_vsync.value?0:1);
+    Menu_Video_Save();
+}
+static void Menu_Video_NextPageAndroid(void) {
+    android_video_page=(android_video_page+1)%3;
+    Menu_ResetMenuButtons();
+}
+static void Menu_Video_BackAndroid(void) {
+    Menu_Video_Save();
+    Menu_Configuration_Set();
+}
+static void Menu_Video_DrawAndroid(void) {
+    int i=0;
+    Menu_DrawCustomBackground(true);
+    Menu_DrawTitle("VIDEO OPTIONS",MENU_COLOR_WHITE);
+    Menu_DrawMapPanel();
+    Menu_Video_SetStrings();
+    if(android_video_page==0) {
+        const int percent=(int)vid_render_scale.value;
+        if(percent==100)
+            snprintf(android_resolution_string,sizeof(android_resolution_string),
+                     "AUTO %ux%u",vid.width,vid.height);
+        else
+            snprintf(android_resolution_string,sizeof(android_resolution_string),
+                     "%d%% 3D / NATIVE UI",percent);
+        snprintf(android_ui_string,sizeof(android_ui_string),
+                 "%d%%",(int)vid_ui_scale.value);
+        if(cl_maxfps.value<1)
+            snprintf(android_fps_string,sizeof(android_fps_string),"UNLIMITED");
+        else
+            snprintf(android_fps_string,sizeof(android_fps_string),
+                     "%d FPS",(int)cl_maxfps.value);
+        Menu_DrawButton(1,i++,"RESOLUTION",
+            "Native 100% default, lower values only when selected.",
+            Menu_Video_SetRenderScale);
+        Menu_DrawOptionButton(1,android_resolution_string);
+        Menu_DrawButton(2,i++,"UI SCALE","Adjust HUD and menu size separately.",
+            Menu_Video_SetUIScale);
+        Menu_DrawOptionButton(2,android_ui_string);
+        Menu_DrawButton(3,i++,"FPS LIMIT",
+            "30 / 45 / 60 / 90 / 120 / Unlimited",
+            Menu_Video_SetFPSLimit);
+        Menu_DrawOptionButton(3,android_fps_string);
+        Menu_DrawButton(4,i++,"SHOW FPS","Display real frame rate.",
+            Menu_Video_ApplyShowFPS);
+        Menu_DrawOptionButton(4,fps_string);
+    } else if(android_video_page==1) {
+        Menu_DrawButton(1,i++,"FIELD OF VIEW","Set camera field of view.",NULL);
+        Menu_DrawOptionSlider(1,i-1,60,160,scr_fov,"fov",false,true,10.f);
+        Menu_DrawButton(2,i++,"GAMMA","Adjust black level.",NULL);
+        Menu_DrawOptionSlider(2,i-1,0,1,v_gamma,"gamma",false,false,.1f);
+        Menu_DrawButton(3,i++,"ULTRAWIDE MODE","Condense HUD to center.",
+            Menu_Video_ApplyUltrawide);
+        Menu_DrawOptionButton(3,ultrawide_string);
+        Menu_DrawButton(4,i++,"VSYNC","Sync to display refresh; toggle off for 120 FPS.",
+            Menu_Video_SetVsyncAndroid);
+        Menu_DrawOptionButton(4,r_vsync.value?"ENABLED":"DISABLED");
+    } else {
+        Menu_DrawButton(1,i++,"PARTICLES","Keep original visual effects.",
+            Menu_Video_ApplyParticles);
+        Menu_DrawOptionButton(1,particles_string);
+        Menu_DrawButton(2,i++,"TEXTURE FILTERING","Choose original texture filtering.",
+            Menu_Video_ApplyTextureFiltering);
+        Menu_DrawOptionButton(2,retro_string);
+        if(platform_supports_dithering) {
+            Menu_DrawButton(3,i++,"DITHERING","Toggle color banding improvement.",
+                Menu_Video_ApplyDithering);
+            Menu_DrawOptionButton(3,dithering_string);
+        }
+    }
+    Menu_DrawButton(-2,i++,"NEXT PAGE","More video options.",
+        Menu_Video_NextPageAndroid);
+    Menu_DrawButton(-1,i++,"BACK","Save video settings and return.",
+        Menu_Video_BackAndroid);
+}
+#endif
+
 
 void Menu_Video_ApplyShowFPS (void)
 {
@@ -114,8 +224,10 @@ void Menu_Video_ApplyVSync (void)
 
 void Menu_Configuration_ApplySettings (void)
 {
-    // no op
     Menu_SetSound(MENU_SND_ENTER);
+#ifdef PLATFORM_ANDROID
+    Host_WriteConfiguration();
+#endif
 }
 
 /*
@@ -125,6 +237,9 @@ Menu_Video_Set
 */
 void Menu_Video_Set (void)
 {
+#ifdef PLATFORM_ANDROID
+    android_video_page=0;
+#endif
 #ifdef RENDERER_SUPPORTS_DITHERING
     platform_supports_dithering = true;
 #else
@@ -182,6 +297,10 @@ Menu_Video_Draw
 */
 void Menu_Video_Draw (void)
 {
+#ifdef PLATFORM_ANDROID
+    Menu_Video_DrawAndroid();
+    return;
+#endif
     int video_items = 0;
 
 	// Background
