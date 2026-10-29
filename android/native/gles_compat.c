@@ -75,8 +75,13 @@ void NZP_GLES_Init(void) {
     UNIFORM(u_replace);UNIFORM(u_alpha);UNIFORM(u_fog);UNIFORM(u_fogcolor);
 #undef UNIFORM
     memset(&last_uniforms,0,sizeof(last_uniforms));
+    // Triple buffered streaming allocations, created just once at startup.
+    // Avoid one driver-side 1+ MB GL buffer orphan/allocation every frame.
     glGenBuffers(3,streams);
-    glBindBuffer(GL_ARRAY_BUFFER,streams[0]);glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
+    for(int i=0;i<3;i++) {
+        glBindBuffer(GL_ARRAY_BUFFER,streams[i]);
+        glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
+    }
     for(int i=0;i<3;i++)nzp_identity(matrices[i][0]);
     memset(current.color,255,sizeof(current.color));
 }
@@ -133,8 +138,8 @@ void NZP_GLES_BeginFrame(void){
     // Fixed-pipeline renderer owns this GLES2 program for the whole frame.
     glUseProgram(program);
     glBindBuffer(GL_ARRAY_BUFFER,streams[stream_index]);
-    // One orphan per frame, instead of allocating a new store per HUD glyph batch.
-    glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
+    // STREAM_BYTES storage already exists; cycle through three buffers.
+    // A capacity overflow still orphans the current buffer safely.
 }
 void NZP_GLES_Flush(void) {
     if(!batch_count)return;
