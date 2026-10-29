@@ -71,6 +71,24 @@ int main(void){
         glColor4f(0,0,1,1);quad(0,-1,1,1);pixel(10,32,255,0,0);pixel(50,32,0,0,255);
     }
     int rw,rh;nzp_render_size(2400,1080,1280,720,&rw,&rh);assert(rw==1280&&rh==576);nzp_render_size(1280,720,1024,576,&rw,&rh);assert(rw==1024&&rh==576);
+    // Native 100% must never be clipped, rounded down or tied to device model.
+    nzp_render_percent(2400,1080,100,&rw,&rh);assert(rw==2400&&rh==1080);
+    nzp_render_percent(2341,1031,100,&rw,&rh);assert(rw==2341&&rh==1031);
+    nzp_render_percent(2400,1080,90,&rw,&rh);assert(rw==2160&&rh==972);
+    nzp_render_percent(2400,1080,80,&rw,&rh);assert(rw==1920&&rh==864);
+    nzp_render_percent(2400,1080,75,&rw,&rh);assert(rw==1800&&rh==810);
+    nzp_render_percent(2400,1080,60,&rw,&rh);assert(rw==1440&&rh==648);
+    nzp_render_percent(1080,2400,100,&rw,&rh);assert(rw==1080&&rh==2400);
+    NZP_GLES_SetWorldViewport(32,32,64,64);
+    glViewport(0,0,64,64);
+    GLint viewport[4];glGetIntegerv(GL_VIEWPORT,viewport);
+    assert(viewport[2]==32&&viewport[3]==32);
+    NZP_GLES_SetNativeViewport();
+    glViewport(0,0,64,64);
+    glGetIntegerv(GL_VIEWPORT,viewport);
+    assert(viewport[2]==64&&viewport[3]==64);
+    assert(glGetError()==GL_NO_ERROR);
+
     NZP_GLES_Shutdown();eglMakeCurrent(d,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);eglDestroyContext(d,c);eglDestroySurface(d,s);eglTerminate(d);
     puts("GLES pixel, batching, matrices, topology, fog and size tests passed");return 0;
 }
