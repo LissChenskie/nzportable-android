@@ -103,7 +103,9 @@ void GL_BeginRendering(int *x,int *y,int *w,int *h) {
     vid.width=vid.conwidth=vid.maxwarpwidth=sdl_window_width=scene_w;
     vid.height=vid.conheight=vid.maxwarpheight=sdl_window_height=scene_h;
     vid.aspect=((float)scene_h/scene_w)*(320.f/240.f);
-    vid.scale=nzp_ui_scale(drawable_h,(int)vid_ui_scale.value);
+    // Refdef/3D positioning must use scene-space units; independent HUD
+    // pixel scale is switched on only for the native UI composition pass.
+    vid.scale=nzp_ui_scale(scene_h,100);
     glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);
     *x=*y=0;*w=scene_w;*h=scene_h;
     NZP_GLES_BeginFrame();
