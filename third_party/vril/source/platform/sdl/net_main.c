@@ -225,7 +225,7 @@ static void MaxPlayers_f (void)
 	svs.maxclients = n;
 	// Quake defaults to deathmatch with multiple slots. NZ:P LAN cooperative
 	// must keep its scripted zombie/round logic in coop mode instead.
-	if (n == 1 || coop.value != 0)
+	if (n == 1 || Cvar_VariableValue("coop") != 0)
 		Cvar_Set ("deathmatch", "0");
 	else
 		Cvar_Set ("deathmatch", "1");
