@@ -25,6 +25,12 @@ static int stream_index;
 static size_t stream_offset;
 enum { STREAM_BYTES=BATCH_CAPACITY*4*sizeof(nzp_vertex) };
 static int raster_enabled[4];
+// Avoid redundant GLES uniform updates on Mali, especially for frequent HUD/world
+// draw calls that reuse the same projection, modelview and texture state.
+static struct {
+    int valid,textured,replace;
+    float mvp[16],mv[16],tm[16],alpha,fog[4],fogcolor[4];
+} last_uniforms;
 static GLint u_mvp,u_mv,u_tm,u_texture,u_textured,u_replace,u_alpha,u_fog,u_fogcolor;
 
 static void fail(const char *message) { fprintf(stderr,"NZP GLES: %s\n",message); abort(); }
@@ -60,15 +66,44 @@ void NZP_GLES_Init(void) {
     UNIFORM(u_mvp);UNIFORM(u_mv);UNIFORM(u_tm);UNIFORM(u_texture);UNIFORM(u_textured);
     UNIFORM(u_replace);UNIFORM(u_alpha);UNIFORM(u_fog);UNIFORM(u_fogcolor);
 #undef UNIFORM
+    memset(&last_uniforms,0,sizeof(last_uniforms));
     glGenBuffers(3,streams);
     glBindBuffer(GL_ARRAY_BUFFER,streams[0]);glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
     for(int i=0;i<3;i++)nzp_identity(matrices[i][0]);
     memset(current.color,255,sizeof(current.color));
 }
 static void uniforms(const float *mvp,const float *mv,const float *tm,int tex,int replace,float alpha,float fog) {
-    glUseProgram(program);glUniformMatrix4fv(u_mvp,1,GL_FALSE,mvp);glUniformMatrix4fv(u_mv,1,GL_FALSE,mv);
-    glUniformMatrix4fv(u_tm,1,GL_FALSE,tm);glUniform1i(u_texture,0);glUniform1i(u_textured,tex);glUniform1i(u_replace,replace);
-    glUniform1f(u_alpha,alpha);glUniform4f(u_fog,fog,fog_start,fog_end,fog_density);glUniform4fv(u_fogcolor,1,fog_color);
+    const float fog_params[4]={fog,fog_start,fog_end,fog_density};
+    glUseProgram(program);
+    if(!last_uniforms.valid||memcmp(last_uniforms.mvp,mvp,16*sizeof(float))) {
+        glUniformMatrix4fv(u_mvp,1,GL_FALSE,mvp);
+        memcpy(last_uniforms.mvp,mvp,16*sizeof(float));
+    }
+    if(!last_uniforms.valid||memcmp(last_uniforms.mv,mv,16*sizeof(float))) {
+        glUniformMatrix4fv(u_mv,1,GL_FALSE,mv);
+        memcpy(last_uniforms.mv,mv,16*sizeof(float));
+    }
+    if(!last_uniforms.valid||memcmp(last_uniforms.tm,tm,16*sizeof(float))) {
+        glUniformMatrix4fv(u_tm,1,GL_FALSE,tm);
+        memcpy(last_uniforms.tm,tm,16*sizeof(float));
+    }
+    if(!last_uniforms.valid||last_uniforms.textured!=tex) {
+        glUniform1i(u_textured,tex);last_uniforms.textured=tex;
+    }
+    if(!last_uniforms.valid||last_uniforms.replace!=replace) {
+        glUniform1i(u_replace,replace);last_uniforms.replace=replace;
+    }
+    if(!last_uniforms.valid||last_uniforms.alpha!=alpha) {
+        glUniform1f(u_alpha,alpha);last_uniforms.alpha=alpha;
+    }
+    if(!last_uniforms.valid||memcmp(last_uniforms.fog,fog_params,sizeof(fog_params))) {
+        glUniform4fv(u_fog,1,fog_params);memcpy(last_uniforms.fog,fog_params,sizeof(fog_params));
+    }
+    if(!last_uniforms.valid||memcmp(last_uniforms.fogcolor,fog_color,sizeof(fog_color))) {
+        glUniform4fv(u_fogcolor,1,fog_color);memcpy(last_uniforms.fogcolor,fog_color,sizeof(fog_color));
+    }
+    if(!last_uniforms.valid)glUniform1i(u_texture,0);
+    last_uniforms.valid=1;
 }
 static void upload(const nzp_vertex *vertices,int count,GLenum mode) {
     glBindBuffer(GL_ARRAY_BUFFER,streams[stream_index]);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);
@@ -95,7 +130,7 @@ void NZP_GLES_Flush(void) {
     glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,bound_texture);upload(batch,batch_count,batch_mode);
     batch_count=0;
 }
-void NZP_GLES_Shutdown(void) { NZP_GLES_Flush();glDeleteBuffers(3,streams);glDeleteProgram(program);program=0;memset(streams,0,sizeof(streams)); }
+void NZP_GLES_Shutdown(void) { NZP_GLES_Flush();last_uniforms.valid=0;glDeleteBuffers(3,streams);glDeleteProgram(program);program=0;memset(streams,0,sizeof(streams)); }
 static void reserve(int count,GLenum mode) {
     if(batch_mode!=mode||batch_count+count>BATCH_CAPACITY)NZP_GLES_Flush();batch_mode=mode;
 }
