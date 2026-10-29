@@ -453,6 +453,11 @@ int UDP_GetSocketAddr (int socket, struct qsockaddr *addr)
 
 int UDP_GetNameFromAddr (struct qsockaddr *addr, char *name)
 {
+#ifdef PLATFORM_ANDROID
+	// Reverse DNS may block indefinitely on isolated Hotspot networks.
+	Q_strncpyz(name, UDP_AddrToString(addr), NET_NAMELEN);
+	return 0;
+#endif
 	struct hostent *hostentry;
 
 	hostentry = gethostbyaddr ((char *)&((struct sockaddr_in *)addr)->sin_addr, sizeof(struct in_addr), AF_INET);
@@ -472,8 +477,31 @@ int UDP_GetAddrFromName(char *name, struct qsockaddr *addr)
 {
 	struct hostent *hostentry;
 
+#ifdef PLATFORM_ANDROID
+	if (name[0] >= '0' && name[0] <= '9') {
+		struct in_addr ip;
+		char host[INET_ADDRSTRLEN];
+		const char *colon = strchr(name, ':');
+		size_t len = colon ? (size_t)(colon-name) : strlen(name);
+		unsigned long port = (unsigned long)net_hostport;
+		if (!len || len >= sizeof(host)) return -1;
+		memcpy(host,name,len);host[len]=0;
+		if (inet_pton(AF_INET,host,&ip)!=1)return -1;
+		if(colon){
+			char *end=NULL;
+			port=strtoul(colon+1,&end,10);
+			if(end==colon+1 || *end || port==0 || port>65535)return -1;
+		}
+		memset(addr,0,sizeof(*addr));
+		((struct sockaddr_in *)addr)->sin_family=AF_INET;
+		((struct sockaddr_in *)addr)->sin_addr=ip;
+		((struct sockaddr_in *)addr)->sin_port=htons((unsigned short)port);
+		return 0;
+	}
+#else
 	if (name[0] >= '0' && name[0] <= '9')
 		return PartialIPAddress (name, addr);
+#endif
 
 	hostentry = gethostbyname (name);
 	if (!hostentry)
