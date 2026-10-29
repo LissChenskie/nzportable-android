@@ -162,6 +162,7 @@ JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchNeutr
 }
 
 static cvar_t touch_sensitivity={"touch_sensitivity","1.0",true};
+cvar_t android_profile={"android_profile","0",true};
 extern cvar_t cl_maxfps;
 extern void Host_WriteConfiguration(void);
 extern void SNDDMA_SetPaused(int paused);
@@ -347,18 +348,58 @@ void Android_Frame(void){
     }
     (*env)->DeleteLocalRef(env,activity_class);(*env)->DeleteLocalRef(env,activity);
 }
-void Android_RecordFrame(double cpu_frame_ms) {
-    static Uint64 last_report;static double elapsed_sum,worst;static unsigned frames;
+// Optional 5-second frame profiling; disabled unless explicitly requested.
+// No GL readbacks, GPU glFinish or heap allocation is used for these stats.
+static int cmp_double(const void *a,const void *b) {
+    double x=*(const double*)a,y=*(const double*)b;
+    return (x>y)-(x<y);
+}
+int Android_ProfileEnabled(void) {return android_profile.value!=0;}
+void Android_RecordFrame(double thread_cpu_ms,double frame_wall_ms) {
+    static Uint64 since;
+    static double cpu_sum,wall_sum,draws_sum,bytes_sum,batches_sum;
+    static double frame_samples[600],worst_ms;
+    static unsigned frames,samples;
+    if(!Android_ProfileEnabled()) {
+        since=0;frames=samples=0;
+        cpu_sum=wall_sum=draws_sum=bytes_sum=batches_sum=worst_ms=0;
+        return;
+    }
     Uint64 now=SDL_GetTicks64();
-    if(!last_report)last_report=now;
-    frames++;elapsed_sum+=cpu_frame_ms;if(cpu_frame_ms>worst)worst=cpu_frame_ms;
-    if(now-last_report>=5000){
-        double seconds=(now-last_report)/1000.0;
-        SDL_Log("NZP_PERF frames=%u fps=%.1f render_ms_avg=%.1f render_ms_max=%.1f "
-                "res=%dx%d thermal=%d cap=%d overlay=%d",
-                frames,frames/seconds,elapsed_sum/frames,worst,
-                vid.width,vid.height,thermal,Android_FrameRate(),last_touch_mode);
-        frames=0;elapsed_sum=worst=0;last_report=now;
+    if(!since)since=now;
+    unsigned draws,bytes,batches;
+    NZP_GLES_FrameStats(&draws,&bytes,&batches);
+    frames++;
+    cpu_sum+=thread_cpu_ms;wall_sum+=frame_wall_ms;
+    draws_sum+=draws;bytes_sum+=bytes;batches_sum+=batches;
+    if(frame_wall_ms>worst_ms)worst_ms=frame_wall_ms;
+    if(samples<600)frame_samples[samples++]=frame_wall_ms;
+    if(now-since>=5000&&frames) {
+        double seconds=(now-since)/1000.0;
+        qsort(frame_samples,samples,sizeof(frame_samples[0]),cmp_double);
+        unsigned rank=(unsigned)(samples*0.99);
+        if(rank>=samples)rank=samples-1;
+        double p99=frame_samples[rank];
+        double p01_fps=p99>0?1000.0/p99:0;
+        unsigned long resident_pages=0;
+        FILE *statm=fopen("/proc/self/statm","r");
+        if(statm) {
+            unsigned long ignored;
+            if(fscanf(statm,"%lu %lu",&ignored,&resident_pages)!=2)
+                resident_pages=0;
+            fclose(statm);
+        }
+        double rss_mb=(double)resident_pages*(double)sysconf(_SC_PAGESIZE)/(1024.0*1024.0);
+        SDL_Log("NZP_PROFILE fps_avg=%.1f fps_1pct_low=%.1f cpu_thread_ms_avg=%.2f "
+                "frame_wall_ms_avg=%.2f worst_wall_ms=%.2f draws_per_frame=%.1f "
+                "upload_kb_per_frame=%.1f batches_per_frame=%.1f rss_mb=%.1f "
+                "display=%ux%u thermal=%d cap=%d gpu_ms=unavailable",
+                frames/seconds,p01_fps,cpu_sum/frames,
+                wall_sum/frames,worst_ms,draws_sum/frames,
+                bytes_sum/frames/1024.0,batches_sum/frames,rss_mb,
+                vid.width,vid.height,thermal,Android_FrameRate());
+        since=now;frames=samples=0;
+        cpu_sum=wall_sum=draws_sum=bytes_sum=batches_sum=worst_ms=0;
     }
 }
 void Android_DrawTouch(void){
