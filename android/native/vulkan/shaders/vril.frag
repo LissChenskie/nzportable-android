@@ -21,11 +21,15 @@ void main() {
     if(u.fog.x==1)f=clamp((u.fog.z-v_depth)/max(u.fog.z-u.fog.y,0.0001),0,1);
     else if(u.fog.x==2)f=exp(-u.fog.w*v_depth);
     else if(u.fog.x==3){float d=u.fog.w*v_depth;f=exp(-d*d);}
-    out_color=vec4(mix(u.fogcolor.rgb,c.rgb,clamp(f,0,1)),c.a);
     if(LIGHTMAPPED) {
-        // Preserve Vril's two-pass DST_COLOR/SRC_COLOR formula, including
-        // diffuse attachment quantization before multiplication and fog order.
-        vec4 base=round(clamp(out_color,0,1)*255.0)/255.0;
-        out_color=2.0*base*texture(lightmap,v_lightmap_uv);
+        // Fog belongs to the final lit surface, not to the diffuse input.
+        // Otherwise the lightmap multiplies the fog color and dark BSP faces
+        // appear to have no fog while dynamic/unlightmapped models do.
+        // Match the 8-bit diffuse attachment when fog is disabled.
+        vec4 base=round(clamp(c,0,1)*255.0)/255.0;
+        vec4 lit=2.0*base*texture(lightmap,v_lightmap_uv);
+        out_color=vec4(mix(u.fogcolor.rgb,lit.rgb,clamp(f,0,1)),lit.a);
+    } else {
+        out_color=vec4(mix(u.fogcolor.rgb,c.rgb,clamp(f,0,1)),c.a);
     }
 }
