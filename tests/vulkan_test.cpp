@@ -58,7 +58,7 @@ int main(){
     NZP_VK_Texture(21,0,0,0,1,1,0x1908,0x1401,base,1,1);
     NZP_VK_Texture(22,0,0,0,1,1,0x1908,0x1401,light,1,1);
     NZP_VK_TextureFilter(21,0x2801,0x2601);NZP_VK_TextureFilter(22,0x2801,0x2601);
-    u=uniform();u.params[0]=u.params[1]=1;u.fog[0]=1;u.fog[2]=1;u.fogcolor[0]=1;u.mv[14]=-.5f;
+    u=uniform();u.params[0]=u.params[1]=1;
     assert(NZP_VK_BeginFrame(0,100));quad(u,s,21,255,255,255);
     auto lighting=uniform();lighting.params[0]=lighting.params[1]=1;
     auto multiply=s;multiply.blend=1;multiply.blend_src=0x306;multiply.blend_dst=0x300;
@@ -70,6 +70,13 @@ int main(){
     assert(NZP_VK_BeginFrame(0,100));assert(NZP_VK_DrawLightmappedBuffers(dual,&lmuv,31,0,6,&u,&s,21,22,uv,white));end();
     unsigned char combined[sizeof(reference)];assert(NZP_VK_ReadPixels(0,0,64,64,combined));
     for(size_t i=0;i<sizeof(reference);i++)assert(abs(int(combined[i])-int(reference[i]))<=1);
+    // Regression: lightmapped static geometry must remain fogged even if
+    // the lightmap is dark. Unlit fog color must not be multiplied away.
+    u.fog[0]=1;u.fog[1]=0;u.fog[2]=1;u.fogcolor[0]=1;u.fogcolor[1]=0;u.fogcolor[2]=0;
+    u.mv[14]=-.5f;
+    assert(NZP_VK_BeginFrame(0,100));
+    assert(NZP_VK_DrawLightmappedBuffers(dual,&lmuv,31,0,6,&u,&s,21,22,uv,white));
+    end();pixel(32,32,158,61,101,4);
     NZP_VK_DeleteTexture(21);NZP_VK_DeleteTexture(22);NZP_VK_DeleteBuffer(30);NZP_VK_DeleteBuffer(31);NZP_VK_DeleteBuffer(32);u=uniform();
     // Offscreen rendering does not acquire/present swapchain images. Completion
     // counts advance only after the GPU fence, and the same pixels are retained.
