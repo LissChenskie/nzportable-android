@@ -28,6 +28,38 @@ static int raster_enabled[4];
 static float viewport_xscale=1.f,viewport_yscale=1.f;
 static unsigned draw_calls_this_frame;
 static GLuint current_program;
+static nzp_render_stats_t render_stats;
+/* Direct mapped per-texture cache. Exact values only; deleted textures
+ * invalidate entries to protect against GL object-id reuse. */
+enum { FILTER_SLOTS=1024 };
+static struct {
+    GLuint texture;
+    GLint min_filter,mag_filter;
+    unsigned valid; /* bit 1=min, bit 2=mag */
+} filter_cache[FILTER_SLOTS];
+/* GLES2 driver state that only our wrapper modifies. */
+static struct {
+    unsigned valid;
+    GLenum blend_src,blend_dst,depth_func,cull_face;
+    GLboolean depth_mask;
+    float polygon_factor,polygon_units;
+    float depth_near,depth_far;
+    GLint viewport[4];
+} driver_state;
+enum {
+    DS_BLEND=1,DS_DEPTHFUNC=2,DS_DEPTHMASK=4,DS_CULL=8,
+    DS_POLYGON=16,DS_DEPTHRANGE=32,DS_VIEWPORT=64
+};
+void NZP_GLES_GetFrameStats(nzp_render_stats_t *out) {
+    if(out)*out=render_stats;
+}
+void NZP_GLES_InvalidateTextureState(void) {
+    /* Native EGL/FBO code may bind a texture directly; the next wrapped
+     * texture bind must restore our desired binding. */
+    memset(filter_cache,0,sizeof(filter_cache));
+    bound_texture=0;
+}
+
 // Avoid redundant GLES uniform updates on Mali, especially for frequent HUD/world
 // draw calls that reuse the same projection, modelview and texture state.
 static struct {
@@ -70,6 +102,10 @@ void NZP_GLES_Init(void) {
     UNIFORM(u_replace);UNIFORM(u_alpha);UNIFORM(u_fog);UNIFORM(u_fogcolor);
 #undef UNIFORM
     memset(&last_uniforms,0,sizeof(last_uniforms));
+    memset(&render_stats,0,sizeof(render_stats));
+    memset(&driver_state,0,sizeof(driver_state));
+    memset(filter_cache,0,sizeof(filter_cache));
+    current_program=0;
     glGenBuffers(3,streams);
     glBindBuffer(GL_ARRAY_BUFFER,streams[0]);glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
     for(int i=0;i<3;i++)nzp_identity(matrices[i][0]);
@@ -79,36 +115,37 @@ static void uniforms(const float *mvp,const float *mv,const float *tm,int tex,in
     const float fog_params[4]={fog,fog_start,fog_end,fog_density};
     if(current_program!=program) {
         glUseProgram(program);
+        ++render_stats.shader_switches;
         current_program=program;
     }
     if(!last_uniforms.valid||memcmp(last_uniforms.mvp,mvp,16*sizeof(float))) {
-        glUniformMatrix4fv(u_mvp,1,GL_FALSE,mvp);
+        glUniformMatrix4fv(u_mvp,1,GL_FALSE,mvp); ++render_stats.uniform_updates;
         memcpy(last_uniforms.mvp,mvp,16*sizeof(float));
     }
     if(!last_uniforms.valid||memcmp(last_uniforms.mv,mv,16*sizeof(float))) {
-        glUniformMatrix4fv(u_mv,1,GL_FALSE,mv);
+        glUniformMatrix4fv(u_mv,1,GL_FALSE,mv); ++render_stats.uniform_updates;
         memcpy(last_uniforms.mv,mv,16*sizeof(float));
     }
     if(!last_uniforms.valid||memcmp(last_uniforms.tm,tm,16*sizeof(float))) {
-        glUniformMatrix4fv(u_tm,1,GL_FALSE,tm);
+        glUniformMatrix4fv(u_tm,1,GL_FALSE,tm); ++render_stats.uniform_updates;
         memcpy(last_uniforms.tm,tm,16*sizeof(float));
     }
     if(!last_uniforms.valid||last_uniforms.textured!=tex) {
-        glUniform1i(u_textured,tex);last_uniforms.textured=tex;
+        glUniform1i(u_textured,tex); ++render_stats.uniform_updates;last_uniforms.textured=tex;
     }
     if(!last_uniforms.valid||last_uniforms.replace!=replace) {
-        glUniform1i(u_replace,replace);last_uniforms.replace=replace;
+        glUniform1i(u_replace,replace); ++render_stats.uniform_updates;last_uniforms.replace=replace;
     }
     if(!last_uniforms.valid||last_uniforms.alpha!=alpha) {
-        glUniform1f(u_alpha,alpha);last_uniforms.alpha=alpha;
+        glUniform1f(u_alpha,alpha); ++render_stats.uniform_updates;last_uniforms.alpha=alpha;
     }
     if(!last_uniforms.valid||memcmp(last_uniforms.fog,fog_params,sizeof(fog_params))) {
-        glUniform4fv(u_fog,1,fog_params);memcpy(last_uniforms.fog,fog_params,sizeof(fog_params));
+        glUniform4fv(u_fog,1,fog_params); ++render_stats.uniform_updates;memcpy(last_uniforms.fog,fog_params,sizeof(fog_params));
     }
     if(!last_uniforms.valid||memcmp(last_uniforms.fogcolor,fog_color,sizeof(fog_color))) {
-        glUniform4fv(u_fogcolor,1,fog_color);memcpy(last_uniforms.fogcolor,fog_color,sizeof(fog_color));
+        glUniform4fv(u_fogcolor,1,fog_color); ++render_stats.uniform_updates;memcpy(last_uniforms.fogcolor,fog_color,sizeof(fog_color));
     }
-    if(!last_uniforms.valid)glUniform1i(u_texture,0);
+    if(!last_uniforms.valid)glUniform1i(u_texture,0); ++render_stats.uniform_updates;
     last_uniforms.valid=1;
 }
 static void upload(const nzp_vertex *vertices,int count,GLenum mode) {
@@ -116,29 +153,36 @@ static void upload(const nzp_vertex *vertices,int count,GLenum mode) {
     size_t bytes=count*sizeof(nzp_vertex);
     if(stream_offset+bytes>STREAM_BYTES){glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);stream_offset=0;}
     glBufferSubData(GL_ARRAY_BUFFER,stream_offset,bytes,vertices);
+    ++render_stats.buffer_uploads;
+    render_stats.vertex_upload_bytes+=(unsigned)bytes;
     glEnableVertexAttribArray(0);glEnableVertexAttribArray(1);glEnableVertexAttribArray(2);
     glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,xyz)));
     glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,uv)));
     glVertexAttribPointer(2,4,GL_UNSIGNED_BYTE,GL_TRUE,sizeof(nzp_vertex),(void*)(stream_offset+offsetof(nzp_vertex,color)));
     glDrawArrays(mode,0,count);
     ++draw_calls_this_frame;
+    ++render_stats.draw_calls;
     stream_offset+=bytes;
 }
 void NZP_GLES_BeginFrame(void){
     NZP_GLES_Flush();
-    draw_calls_this_frame=0;stream_index=(stream_index+1)%3;stream_offset=0;
+    draw_calls_this_frame=0;
+    memset(&render_stats,0,sizeof(render_stats));stream_index=(stream_index+1)%3;stream_offset=0;
     glBindBuffer(GL_ARRAY_BUFFER,streams[stream_index]);
     // One orphan per frame, instead of allocating a new store per HUD glyph batch.
     glBufferData(GL_ARRAY_BUFFER,STREAM_BYTES,NULL,GL_STREAM_DRAW);
 }
 void NZP_GLES_Flush(void) {
-    if(!batch_count)return;float mvp[16];nzp_multiply(mvp,matrices[1][matrix_depth[1]],matrices[0][matrix_depth[0]]);
+    if(!batch_count)return;
+    ++render_stats.nonempty_flushes;
+    float mvp[16];nzp_multiply(mvp,matrices[1][matrix_depth[1]],matrices[0][matrix_depth[0]]);
     uniforms(mvp,matrices[0][matrix_depth[0]],matrices[2][matrix_depth[2]],textured,replace_mode,
         alpha_test?alpha_threshold:-1.f,fog_enabled?(fog_mode==GL_LINEAR?1.f:fog_mode==GL_EXP?2.f:3.f):0.f);
     glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,bound_texture);upload(batch,batch_count,batch_mode);
     batch_count=0;
 }
-void NZP_GLES_Shutdown(void) { NZP_GLES_Flush();last_uniforms.valid=0;current_program=0;glDeleteBuffers(3,streams);glDeleteProgram(program);program=0;memset(streams,0,sizeof(streams)); }
+void NZP_GLES_Shutdown(void) { NZP_GLES_Flush();last_uniforms.valid=0;current_program=0;
+    memset(filter_cache,0,sizeof(filter_cache));glDeleteBuffers(3,streams);glDeleteProgram(program);program=0;memset(streams,0,sizeof(streams)); }
 static void reserve(int count,GLenum mode) {
     if(batch_mode!=mode||batch_count+count>BATCH_CAPACITY)NZP_GLES_Flush();batch_mode=mode;
 }
@@ -175,11 +219,35 @@ void nzp_glColor4f(float r,float g,float b,float a){current.color[0]=color_byte(
 void nzp_glColor3f(float r,float g,float b){nzp_glColor4f(r,g,b,1);}
 void nzp_glColor4fv(const float *v){nzp_glColor4f(v[0],v[1],v[2],v[3]);}
 void nzp_glMatrixMode(GLenum mode){matrix_mode=mode;}
-void nzp_glLoadIdentity(void){NZP_GLES_Flush();nzp_identity(matrix());}
-void nzp_glLoadMatrixf(const float *m){NZP_GLES_Flush();memcpy(matrix(),m,16*sizeof(float));}
+void nzp_glLoadIdentity(void){
+    float identity[16];nzp_identity(identity);
+    if(!memcmp(matrix(),identity,sizeof(identity))) {
+        ++render_stats.skipped_state_changes; return;
+    }
+    NZP_GLES_Flush();memcpy(matrix(),identity,sizeof(identity));
+}
+void nzp_glLoadMatrixf(const float *m){
+    if(!memcmp(matrix(),m,16*sizeof(float))) {
+        ++render_stats.skipped_state_changes;return;
+    }
+    NZP_GLES_Flush();memcpy(matrix(),m,16*sizeof(float));
+}
 void nzp_glPushMatrix(void){int i=matrix_index();if(matrix_depth[i]+1>=MATRIX_DEPTH)fail("matrix stack overflow");memcpy(matrices[i][matrix_depth[i]+1],matrix(),16*sizeof(float));matrix_depth[i]++;}
-void nzp_glPopMatrix(void){NZP_GLES_Flush();int i=matrix_index();if(!matrix_depth[i])fail("matrix stack underflow");matrix_depth[i]--;}
-static void multiply(const float *m){NZP_GLES_Flush();nzp_multiply(matrix(),matrix(),m);}
+void nzp_glPopMatrix(void){
+    int i=matrix_index();
+    if(!matrix_depth[i])fail("matrix stack underflow");
+    if(memcmp(matrices[i][matrix_depth[i]],matrices[i][matrix_depth[i]-1],
+              16*sizeof(float))) NZP_GLES_Flush();
+    else ++render_stats.skipped_state_changes;
+    matrix_depth[i]--;
+}
+static void multiply(const float *m){
+    float identity[16];nzp_identity(identity);
+    if(!memcmp(m,identity,sizeof(identity))) {
+        ++render_stats.skipped_state_changes;return;
+    }
+    NZP_GLES_Flush();nzp_multiply(matrix(),matrix(),m);
+}
 void nzp_glTranslatef(float x,float y,float z){float m[16];nzp_identity(m);m[12]=x;m[13]=y;m[14]=z;multiply(m);}
 void nzp_glScalef(float x,float y,float z){float m[16];nzp_identity(m);m[0]=x;m[5]=y;m[10]=z;multiply(m);}
 void nzp_glRotatef(float angle,float x,float y,float z){
@@ -201,9 +269,26 @@ void nzp_glEnable(GLenum cap){enable(cap,1);}void nzp_glDisable(GLenum cap){enab
 void nzp_glAlphaFunc(GLenum f,float threshold){if(f!=GL_GREATER)fail("unsupported alpha test");if(alpha_threshold!=threshold){NZP_GLES_Flush();alpha_threshold=threshold;}}
 void nzp_glTexEnvf(GLenum t,GLenum n,float v){(void)t;(void)n;int replace=(int)v==GL_REPLACE;if(replace!=replace_mode){NZP_GLES_Flush();replace_mode=replace;}}
 void nzp_glShadeModel(GLenum mode){flat_shading=mode==GL_FLAT;}
-void nzp_glFogf(GLenum n,float v){NZP_GLES_Flush();if(n==GL_FOG_START)fog_start=v;else if(n==GL_FOG_END)fog_end=v;else if(n==GL_FOG_DENSITY)fog_density=v;else if(n==GL_FOG_MODE)fog_mode=(int)v;}
+void nzp_glFogf(GLenum n,float v){
+    float *target=n==GL_FOG_START?&fog_start:
+        n==GL_FOG_END?&fog_end:n==GL_FOG_DENSITY?&fog_density:NULL;
+    if(target) {
+        if(*target==v) {++render_stats.skipped_state_changes;return;}
+        NZP_GLES_Flush();*target=v;return;
+    }
+    if(n==GL_FOG_MODE && fog_mode!=(int)v) {
+        NZP_GLES_Flush();fog_mode=(int)v;
+    }
+}
 void nzp_glFogi(GLenum n,GLint v){nzp_glFogf(n,(float)v);}
-void nzp_glFogfv(GLenum n,const float *v){if(n==GL_FOG_COLOR){NZP_GLES_Flush();memcpy(fog_color,v,4*sizeof(float));}else nzp_glFogf(n,*v);}
+void nzp_glFogfv(GLenum n,const float *v){
+    if(n==GL_FOG_COLOR){
+        if(!memcmp(fog_color,v,4*sizeof(float))) {
+            ++render_stats.skipped_state_changes;return;
+        }
+        NZP_GLES_Flush();memcpy(fog_color,v,4*sizeof(float));
+    } else nzp_glFogf(n,*v);
+}
 static int array_index(GLenum a){return a==GL_VERTEX_ARRAY?0:a==GL_TEXTURE_COORD_ARRAY?1:2;}
 void nzp_glEnableClientState(GLenum a){arrays[array_index(a)].enabled=1;}
 void nzp_glDisableClientState(GLenum a){arrays[array_index(a)].enabled=0;}
@@ -222,16 +307,79 @@ void nzp_glDrawElements(GLenum mode,int count,GLenum type,const void *indices){n
     if(type==GL_UNSIGNED_SHORT){unsigned short s;memcpy(&s,(const unsigned char*)indices+2*i,2);index=s;}else if(type==GL_UNSIGNED_INT){memcpy(&index,(const unsigned char*)indices+4*i,4);}else index=((const unsigned char*)indices)[i];array_vertex(index);}nzp_glEnd();}
 
 void nzp_glBindTexture(GLenum t,GLuint texture){if(bound_texture!=texture){NZP_GLES_Flush();bound_texture=texture;glBindTexture(t,texture);}}
-void nzp_glTexParameterf(GLenum t,GLenum n,float v){NZP_GLES_Flush();glTexParameterf(t,n,v);}
+void nzp_glTexParameterf(GLenum t,GLenum n,float v){
+    if(t==GL_TEXTURE_2D && bound_texture &&
+       (n==GL_TEXTURE_MIN_FILTER || n==GL_TEXTURE_MAG_FILTER)) {
+        unsigned slot=bound_texture&(FILTER_SLOTS-1);
+        unsigned mask=n==GL_TEXTURE_MIN_FILTER?1u:2u;
+        GLint value=(GLint)v;
+        if(filter_cache[slot].texture==bound_texture &&
+           (filter_cache[slot].valid&mask) &&
+           (mask==1u?filter_cache[slot].min_filter:
+                      filter_cache[slot].mag_filter)==value) {
+            ++render_stats.skipped_state_changes;
+            return;
+        }
+        NZP_GLES_Flush();
+        glTexParameterf(t,n,v);
+        ++render_stats.texture_parameter_changes;
+        if(filter_cache[slot].texture!=bound_texture) {
+            filter_cache[slot].texture=bound_texture;
+            filter_cache[slot].valid=0;
+        }
+        if(mask==1u)filter_cache[slot].min_filter=value;
+        else filter_cache[slot].mag_filter=value;
+        filter_cache[slot].valid|=mask;
+        return;
+    }
+    NZP_GLES_Flush();glTexParameterf(t,n,v);
+    ++render_stats.texture_parameter_changes;
+}
 void nzp_glTexImage2D(GLenum t,int l,int in,int w,int h,int b,GLenum f,GLenum type,const void *data){(void)in;NZP_GLES_Flush();glTexImage2D(t,l,f,w,h,b,f,type,data);}
 void nzp_glTexSubImage2D(GLenum t,int l,int x,int y,int w,int h,GLenum f,GLenum type,const void *data){NZP_GLES_Flush();glTexSubImage2D(t,l,x,y,w,h,f,type,data);}
-void nzp_glDeleteTextures(int n,const GLuint *textures){NZP_GLES_Flush();for(int i=0;i<n;i++)if(textures[i]==bound_texture)bound_texture=0;glDeleteTextures(n,textures);}
-#define FLUSH_CALL(name,args,call) void nzp_##name args {NZP_GLES_Flush();name call;}
-FLUSH_CALL(glBlendFunc,(GLenum s,GLenum d),(s,d))
-FLUSH_CALL(glDepthFunc,(GLenum f),(f))
-FLUSH_CALL(glDepthMask,(GLboolean e),(e))
-FLUSH_CALL(glCullFace,(GLenum f),(f))
-FLUSH_CALL(glPolygonOffset,(float f,float u),(f,u))
+void nzp_glDeleteTextures(int n,const GLuint *textures){
+    NZP_GLES_Flush();
+    for(int i=0;i<n;i++) {
+        GLuint id=textures[i];
+        if(id==bound_texture)bound_texture=0;
+        unsigned slot=id&(FILTER_SLOTS-1);
+        if(filter_cache[slot].texture==id)
+            filter_cache[slot].valid=0;
+    }
+    glDeleteTextures(n,textures);
+}
+/* Only flush if a *real* GLES state mutation would affect queued draws. */
+void nzp_glBlendFunc(GLenum s,GLenum d){
+    if((driver_state.valid&DS_BLEND)&&driver_state.blend_src==s &&
+       driver_state.blend_dst==d){++render_stats.skipped_state_changes;return;}
+    NZP_GLES_Flush();glBlendFunc(s,d);
+    driver_state.blend_src=s;driver_state.blend_dst=d;driver_state.valid|=DS_BLEND;
+}
+void nzp_glDepthFunc(GLenum f){
+    if((driver_state.valid&DS_DEPTHFUNC)&&driver_state.depth_func==f)
+       {++render_stats.skipped_state_changes;return;}
+    NZP_GLES_Flush();glDepthFunc(f);
+    driver_state.depth_func=f;driver_state.valid|=DS_DEPTHFUNC;
+}
+void nzp_glDepthMask(GLboolean e){
+    if((driver_state.valid&DS_DEPTHMASK)&&driver_state.depth_mask==e)
+       {++render_stats.skipped_state_changes;return;}
+    NZP_GLES_Flush();glDepthMask(e);
+    driver_state.depth_mask=e;driver_state.valid|=DS_DEPTHMASK;
+}
+void nzp_glCullFace(GLenum f){
+    if((driver_state.valid&DS_CULL)&&driver_state.cull_face==f)
+       {++render_stats.skipped_state_changes;return;}
+    NZP_GLES_Flush();glCullFace(f);
+    driver_state.cull_face=f;driver_state.valid|=DS_CULL;
+}
+void nzp_glPolygonOffset(float f,float u){
+    if((driver_state.valid&DS_POLYGON)&&driver_state.polygon_factor==f &&
+       driver_state.polygon_units==u){++render_stats.skipped_state_changes;return;}
+    NZP_GLES_Flush();glPolygonOffset(f,u);
+    driver_state.polygon_factor=f;driver_state.polygon_units=u;
+    driver_state.valid|=DS_POLYGON;
+}
 /* Render only the 3D world at the user's optional resolution percentage.
  * Logical viewport/refdef remains surface-native for a sharp HUD. */
 void NZP_GLES_SetWorldViewport(int ww,int wh,int sw,int sh) {
@@ -242,18 +390,35 @@ void NZP_GLES_SetNativeViewport(void) {
     viewport_xscale=viewport_yscale=1.f;
 }
 void nzp_glViewport(int x,int y,int w,int h) {
+    GLint rect[4]={
+        (GLint)lroundf(x*viewport_xscale),
+        (GLint)lroundf(y*viewport_yscale),
+        (GLint)lroundf(w*viewport_xscale),
+        (GLint)lroundf(h*viewport_yscale)
+    };
+    if((driver_state.valid&DS_VIEWPORT) &&
+       !memcmp(rect,driver_state.viewport,sizeof(rect))) {
+        ++render_stats.skipped_state_changes;return;
+    }
     NZP_GLES_Flush();
-    glViewport((int)lroundf(x*viewport_xscale),
-               (int)lroundf(y*viewport_yscale),
-               (int)lroundf(w*viewport_xscale),
-               (int)lroundf(h*viewport_yscale));
+    glViewport(rect[0],rect[1],rect[2],rect[3]);
+    memcpy(driver_state.viewport,rect,sizeof(rect));
+    driver_state.valid|=DS_VIEWPORT;
 }
 unsigned NZP_GLES_DrawCalls(void) { return draw_calls_this_frame; }
 FLUSH_CALL(glClear,(GLbitfield mask),(mask))
 FLUSH_CALL(glReadPixels,(int x,int y,int w,int h,GLenum f,GLenum t,void *p),(x,y,w,h,f,t,p))
 FLUSH_CALL(glFinish,(void),())
 #undef FLUSH_CALL
-void nzp_glDepthRange(double n,double f){NZP_GLES_Flush();glDepthRangef(n,f);}
+void nzp_glDepthRange(double n,double f){
+    if((driver_state.valid&DS_DEPTHRANGE)&&driver_state.depth_near==(float)n &&
+       driver_state.depth_far==(float)f) {
+        ++render_stats.skipped_state_changes;return;
+    }
+    NZP_GLES_Flush();glDepthRangef((float)n,(float)f);
+    driver_state.depth_near=(float)n;driver_state.depth_far=(float)f;
+    driver_state.valid|=DS_DEPTHRANGE;
+}
 void nzp_glHint(GLenum target,GLenum mode){(void)target;(void)mode;}
 void nzp_glPolygonMode(GLenum face,GLenum mode){(void)face;(void)mode;} // wireframe debug only
 void nzp_glReadBuffer(GLenum b){(void)b;}void nzp_glDrawBuffer(GLenum b){(void)b;}
@@ -273,6 +438,7 @@ int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *a,GLuint index_buffer,size
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,index_buffer);
     if(index_buffer)glDrawElements(mode,count,GL_UNSIGNED_SHORT,(const void*)offset);else glDrawArrays(mode,0,count);
     ++draw_calls_this_frame;
+    ++render_stats.draw_calls;
     glBindBuffer(GL_ARRAY_BUFFER,0);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);return 1;
 }
 
