@@ -39,6 +39,8 @@ void VID_SetVSync(qboolean vsync);
 qboolean platform_supports_dithering;
 
 #ifdef PLATFORM_ANDROID
+extern cvar_t cl_maxfps;
+extern cvar_t r_vsync;
 extern cvar_t vid_render_scale;
 extern cvar_t vid_ui_scale;
 extern void Host_WriteConfiguration(void);
