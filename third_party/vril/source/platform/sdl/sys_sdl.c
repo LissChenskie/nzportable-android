@@ -3,6 +3,7 @@
 #include "sdl_local.h"
 #ifdef PLATFORM_ANDROID
 #include "android_port.h"
+#include <time.h>
 #endif
 
 #include <errno.h>
@@ -416,14 +417,20 @@ int main(int argc, char **argv)
 			continue;
 		}
 		Android_Frame();
+        const int profiling=Android_ProfileEnabled();
+        struct timespec cpu_start={0},cpu_end={0};
+        if(profiling)clock_gettime(CLOCK_THREAD_CPUTIME_ID,&cpu_start);
 #endif
 		double now = Sys_FloatTime();
 		Host_Frame(now - oldtime);
 		music_update();
 		oldtime = now;
 #ifdef PLATFORM_ANDROID
-		Android_RecordFrame((double)(SDL_GetPerformanceCounter() - frame_start) * 1000.0 /
-		                    (double)SDL_GetPerformanceFrequency());
+		if(profiling)clock_gettime(CLOCK_THREAD_CPUTIME_ID,&cpu_end);
+        const double cpu_thread_ms=profiling ?
+           (cpu_end.tv_sec-cpu_start.tv_sec)*1000.0+
+           (cpu_end.tv_nsec-cpu_start.tv_nsec)*0.000001 : 0.0;
+        Android_RecordFrame(cpu_thread_ms);
 #endif
 #ifdef PLATFORM_ANDROID
 		// Wait without CPU spinning. Zero means explicit UNLIMITED.
