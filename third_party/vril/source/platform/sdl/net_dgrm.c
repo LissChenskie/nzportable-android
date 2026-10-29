@@ -1116,7 +1116,14 @@ static void _Datagram_SearchForHosts (qboolean xmit)
 		if (MSG_ReadByte() != CCREP_SERVER_INFO)
 			continue;
 
-		dfunc.GetAddrFromName(MSG_ReadString(), &readaddr);
+#ifdef PLATFORM_ANDROID
+        // The payload can advertise cellular rmnet0 while the reply actually
+        // arrived from the Hotspot/Wi-Fi interface. Use observed UDP source IP.
+        // Quake server-info packets originate on the real UDP 26000 listen port.
+        MSG_ReadString();
+#else
+        dfunc.GetAddrFromName(MSG_ReadString(), &readaddr);
+#endif
 		// search the cache for this server
 		for (n = 0; n < hostCacheCount; n++)
 			if (dfunc.AddrCompare(&readaddr, &hostcache[n].addr) == 0)
