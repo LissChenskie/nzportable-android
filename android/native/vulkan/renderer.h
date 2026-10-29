@@ -20,6 +20,11 @@ typedef struct {
     int viewport[4];
 } nzp_vk_raster;
 typedef struct {unsigned buffer;size_t offset;int size;unsigned type;int stride;} nzp_vk_array;
+/* Command counts describe CPU-side Vulkan recording, not GPU time or FPS. */
+typedef struct {
+    unsigned draws,pipeline_binds,viewport_sets,scissor_sets,depth_bias_sets;
+    unsigned uniform_uploads,uniform_reuses,descriptor_binds;
+} nzp_vk_command_stats;
 int NZP_VK_Init(struct SDL_Window *window,const char *cache_directory,int validation);
 void NZP_VK_Shutdown(void);
 int NZP_VK_Active(void);
@@ -52,6 +57,7 @@ void NZP_VK_GetSize(int *w,int *h);
 unsigned NZP_VK_MaxTextureSize(void);
 double NZP_VK_GPUTime(void);
 unsigned NZP_VK_ValidationErrors(void);
+void NZP_VK_GetCommandStats(nzp_vk_command_stats *out);
 #ifdef __cplusplus
 }
 #endif
