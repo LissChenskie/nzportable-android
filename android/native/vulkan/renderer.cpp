@@ -59,6 +59,7 @@ struct DrawState {
 };
 struct Frame {
     nzp_vk_command_stats stats{};
+    nzp_vk_frame_timings timings{};
     DrawState draw_state{};
     VkCommandPool pool{}; VkCommandBuffer upload{},draw{};
     VkFence fence{}; VkSemaphore acquired{};
@@ -92,6 +93,7 @@ VkRenderPass native_pass{},world_pass{};
 VkDebugUtilsMessengerEXT debug{};
 std::map<PipelineKey,VkPipeline> pipelines;
 PipelineKey recent_pipeline_key{};VkPipeline recent_pipeline{};
+nzp_vk_command_stats last_command_stats{};nzp_vk_frame_timings last_frame_timings{};
 std::map<unsigned,Texture> textures;std::map<unsigned,Mesh> meshes;
 std::array<Frame,Frames> frames;
 std::vector<SwapImage> images;
@@ -456,7 +458,11 @@ void submit(){
     VkCommandBuffer cbs[]={f.upload,f.draw};VkPipelineStageFlags stage=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};si.waitSemaphoreCount=benchmark?0:1;si.pWaitSemaphores=&f.acquired;si.pWaitDstStageMask=&stage;
     si.commandBufferCount=2;si.pCommandBuffers=cbs;si.signalSemaphoreCount=benchmark?0:1;si.pSignalSemaphores=&images[image_index].complete;
-    VK_CHECK(vkResetFences(device,1,&f.fence));VK_CHECK(vkQueueSubmit(queue,1,&si,f.fence));f.submitted=true;recording=false;
+    VK_CHECK(vkResetFences(device,1,&f.fence));
+    const Uint64 submit_start=SDL_GetPerformanceCounter();
+    VK_CHECK(vkQueueSubmit(queue,1,&si,f.fence));
+    f.timings.queue_submit_ms=1000.0*(SDL_GetPerformanceCounter()-submit_start)/SDL_GetPerformanceFrequency();
+    f.submitted=true;recording=false;
 }
 }
 
@@ -570,7 +576,10 @@ void NZP_VK_Finish(){
 }
 int NZP_VK_BeginFrame(int vsync,int percent){
     if(!active)return 0;auto &f=frame();
+    const Uint64 wait_start=SDL_GetPerformanceCounter();
     VK_CHECK(vkWaitForFences(device,1,&f.fence,VK_TRUE,UINT64_MAX));
+    const double wait_ms=1000.0*(SDL_GetPerformanceCounter()-wait_start)/SDL_GetPerformanceFrequency();
+    f.timings={};f.timings.fence_wait_ms=wait_ms;
     bool was_submitted=f.submitted;
     if(was_submitted){++completed_frames;f.submitted=false;}
     if(was_submitted&&f.queries){uint64_t times[2]{};if(vkGetQueryPoolResults(device,f.queries,0,2,sizeof(times),times,8,VK_QUERY_RESULT_64_BIT)==VK_SUCCESS)
@@ -582,7 +591,9 @@ int NZP_VK_BeginFrame(int vsync,int percent){
     if(surface_lost)restore_surface();
     if(resize_pending||w!=width||h!=height||vsync!=current_vsync||percent!=scale)if(!recreate(vsync,percent))return 0;
     VkResult r=VK_SUCCESS;
+    const Uint64 acquire_start=SDL_GetPerformanceCounter();
     if(!benchmark)r=vkAcquireNextImageKHR(device,swapchain,UINT64_MAX,f.acquired,VK_NULL_HANDLE,&image_index);
+    f.timings.acquire_ms=1000.0*(SDL_GetPerformanceCounter()-acquire_start)/SDL_GetPerformanceFrequency();
     if(r==VK_ERROR_SURFACE_LOST_KHR){surface_lost=true;resize_pending=true;return 0;}
     if(r==VK_ERROR_OUT_OF_DATE_KHR){resize_pending=true;return 0;}if(r!=VK_SUBOPTIMAL_KHR)VK_CHECK(r);else resize_pending=true;
     VK_CHECK(vkResetCommandPool(device,f.pool,0));VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};bi.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -623,8 +634,12 @@ void NZP_VK_EndFrame(){
     capture_requested=false;
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};pi.waitSemaphoreCount=1;pi.pWaitSemaphores=&images[image_index].complete;
     pi.swapchainCount=1;pi.pSwapchains=&swapchain;pi.pImageIndices=&image_index;
-    auto r=benchmark?VK_SUCCESS:vkQueuePresentKHR(queue,&pi);if(r==VK_ERROR_SURFACE_LOST_KHR){surface_lost=true;resize_pending=true;}
+    const Uint64 present_start=SDL_GetPerformanceCounter();
+    auto r=benchmark?VK_SUCCESS:vkQueuePresentKHR(queue,&pi);
+    frame().timings.present_ms=benchmark?0:1000.0*(SDL_GetPerformanceCounter()-present_start)/SDL_GetPerformanceFrequency();
+    if(r==VK_ERROR_SURFACE_LOST_KHR){surface_lost=true;resize_pending=true;}
     else if(r==VK_ERROR_OUT_OF_DATE_KHR||r==VK_SUBOPTIMAL_KHR)resize_pending=true;else VK_CHECK(r);
+    last_command_stats=frame().stats;last_frame_timings=frame().timings;
     frame_index=(frame_index+1)%Frames;
 }
 void NZP_VK_Draw(const nzp_vk_vertex *v,int count,unsigned mode,const nzp_vk_uniform *u,const nzp_vk_raster *s,unsigned tex){
@@ -724,7 +739,8 @@ void NZP_VK_GetSize(int *w,int *h){if(w)*w=width;if(h)*h=height;}
 unsigned NZP_VK_MaxTextureSize(){return properties.limits.maxImageDimension2D;}
 double NZP_VK_GPUTime(){return gpu_ms;}
 unsigned NZP_VK_ValidationErrors(){return validation_errors;}
-void NZP_VK_GetCommandStats(nzp_vk_command_stats *out){if(out)*out=device?frame().stats:nzp_vk_command_stats{};}
+void NZP_VK_GetCommandStats(nzp_vk_command_stats *out){if(out)*out=device?(recording?frame().stats:last_command_stats):nzp_vk_command_stats{};}
+void NZP_VK_GetFrameTimings(nzp_vk_frame_timings *out){if(out)*out=device?last_frame_timings:nzp_vk_frame_timings{};}
 void NZP_VK_Shutdown(){
     active=false;
     if(device){vkDeviceWaitIdle(device);
@@ -746,6 +762,7 @@ void NZP_VK_Shutdown(){
     if(instance)vkDestroyInstance(instance,nullptr);
     instance={};physical={};device={};surface={};allocator={};debug={};swapchain={};
     descriptors={};uniform_layout={};texture_layout={};pipeline_layout={};pipeline_cache={};vertex_shader={};fragment_shader={};native_pass={};world_pass={};upscale_sampler={};
+    last_command_stats={};last_frame_timings={};
     frame_index=0;recording=in_pass=ui=resize_pending=false;benchmark=requested_benchmark=surface_lost=false;completed_frames=0;current_vsync=-1;width=height=0;gpu_ms=-1;color_format=depth_format=VK_FORMAT_UNDEFINED;
     SDL_Vulkan_UnloadLibrary();
 }
