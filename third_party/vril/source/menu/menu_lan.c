@@ -8,12 +8,38 @@
 #ifdef PLATFORM_ANDROID
 #include <jni.h>
 #include <SDL.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <arpa/inet.h>
 #endif
 
 
 static int lan_slots = 4;
 static char lan_status[96] = "Create a game or search your local Wi-Fi.";
 static char lan_endpoint[64];
+#ifdef PLATFORM_ANDROID
+static const char *LAN_CurrentAddress(void) {
+    static char address[INET_ADDRSTRLEN];
+    struct ifaddrs *list=NULL,*it;
+    address[0]=0;
+    if(getifaddrs(&list)==0) {
+        for(it=list;it;it=it->ifa_next) {
+            if(!it->ifa_addr||it->ifa_addr->sa_family!=AF_INET||
+                !(it->ifa_flags & IFF_UP)||(it->ifa_flags & IFF_LOOPBACK)) continue;
+            const struct sockaddr_in *ip=(const struct sockaddr_in*)it->ifa_addr;
+            if(!inet_ntop(AF_INET,&ip->sin_addr,address,sizeof(address)))continue;
+            // Keep the first active non-loopback interface. Wi-Fi/Hotspot interfaces
+            // can be seen without location or Wi-Fi configuration permissions.
+            break;
+        }
+        freeifaddrs(list);
+    }
+    return address[0]?address:my_tcpip_address;
+}
+#else
+static const char *LAN_CurrentAddress(void) { return my_tcpip_address; }
+#endif
+
 static char lan_line[160];
 
 void Menu_LAN_Set(void) {
@@ -235,7 +261,7 @@ static void Menu_LAN_Host_Draw(void) {
     UI_SetAlignment(UI_ANCHOR_LEFT,UI_ANCHOR_TOP);
     snprintf(lan_line,sizeof(lan_line),"%.22s",Cvar_VariableString("hostname"));
     Menu_DrawString(153,45,lan_line,255,255,0,255,vid.scale,0);
-    snprintf(lan_line,sizeof(lan_line),"IP: %.32s:%d",my_tcpip_address,net_hostport);
+    snprintf(lan_line,sizeof(lan_line),"IP: %.32s:%d",LAN_CurrentAddress(),net_hostport);
     Menu_DrawString(153,58,lan_line,255,255,255,255,vid.scale,0);
     snprintf(lan_line,sizeof(lan_line),"Map: %.28s",sv.name);
     Menu_DrawString(153,71,lan_line,255,255,255,255,vid.scale,0);
