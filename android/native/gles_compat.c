@@ -205,6 +205,22 @@ static void triangle(nzp_vertex a,nzp_vertex b,nzp_vertex c,const unsigned char 
     if(flat_shading){memcpy(a.color,color,4);memcpy(b.color,color,4);memcpy(c.color,color,4);}
     batch[batch_count++]=a;batch[batch_count++]=b;batch[batch_count++]=c;
 }
+void NZP_GLES_AppendUIQuad(float x0,float y0,float x1,float y1,
+                            float u0,float v0,float u1,float v1,
+                            unsigned char r,unsigned char g,
+                            unsigned char b,unsigned char a) {
+    /* Same corner order and GL_TRIANGLES semantics as Hyena_Draw2DQuads,
+     * but no RGB->float->RGB conversion and no 3 separate staging arrays. */
+    nzp_vertex v[4]={
+        {{x0,y0,0},{u0,v0},{r,g,b,a}},
+        {{x1,y0,0},{u1,v0},{r,g,b,a}},
+        {{x1,y1,0},{u1,v1},{r,g,b,a}},
+        {{x0,y1,0},{u0,v1},{r,g,b,a}}
+    };
+    triangle(v[0],v[1],v[2],v[2].color);
+    triangle(v[0],v[2],v[3],v[3].color);
+    current=v[3];
+}
 void nzp_glBegin(GLenum mode) { primitive=mode;primitive_count=0; }
 void nzp_glEnd(void) {}
 void nzp_glVertex3f(float x,float y,float z) {
