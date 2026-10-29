@@ -76,9 +76,9 @@ void Menu_LAN_JoinAddress(const char *ip) {
         Menu_LAN_SetStatus("Invalid address. Enter IPv4 or IPv4:port.");
         return;
     }
-    snprintf(cmd,sizeof(cmd),"connect %u.%u.%u.%u:%u\\n",
+    snprintf(cmd,sizeof(cmd),"connect %u.%u.%u.%u:%u\n",
              octet[0],octet[1],octet[2],octet[3],port);
-    if(sv.active)Cbuf_AddText("disconnect\\n");
+    if(sv.active)Cbuf_AddText("disconnect\n");
     Cbuf_AddText(cmd);
     Menu_LAN_SetStatus("Connecting to LAN host...");
     m_state=m_none;
