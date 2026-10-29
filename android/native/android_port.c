@@ -59,6 +59,15 @@ static void update_move(float x,float y){
     float length=sqrtf(move_x*move_x+move_y*move_y);if(length>1){move_x/=length;move_y/=length;}
 }
 static void touch(const SDL_TouchFingerEvent *event){
+    // A loading screen is not gameplay. Do not generate movement/attack actions;
+    // tap to continue only after its precache and intro have finished.
+    if (LoadingScreen_IsWaiting()) {
+        if (event->type == SDL_FINGERDOWN) {
+            Key_Event(K_ENTER, true);
+            Key_Event(K_ENTER, false);
+        }
+        return;
+    }
     touch_finger *f=NULL;
     for(int i=0;i<FINGERS;i++)if(fingers[i].active&&fingers[i].id==event->fingerId){f=&fingers[i];break;}
     if(event->type==SDL_FINGERDOWN){
@@ -131,7 +140,7 @@ void Android_Frame(void){
     }
 }
 void Android_DrawTouch(void){
-    if(!touch_visible||!host_initialized||key_dest!=key_game||cls.state!=ca_connected)return;
+    if(!touch_visible||!host_initialized||key_dest!=key_game||cls.state!=ca_connected||LoadingScreen_IsWaiting())return;
     for(int i=0;i<BUTTONS;i++){
         int r=buttons[i].r*vid.height,x=buttons[i].x*vid.width,y=buttons[i].y*vid.height;
         Draw_FillByColor(x-r,y-r,r*2,r*2,button_refs[i]?180:32,button_refs[i]?110:40,50,button_refs[i]?170:95);
