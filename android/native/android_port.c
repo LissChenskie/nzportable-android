@@ -25,7 +25,8 @@ static float move_x,move_y,move_origin_x,move_origin_y,look_x,look_y;
 static jmethodID thermal_method, touch_method;
 static int external_touch, last_touch_mode=-1;
 enum { NZP_TOUCH_ACTION=0x4e5a10, NZP_TOUCH_MOVE=0x4e5a11,
-       NZP_TOUCH_LOOK=0x4e5a12, NZP_TOUCH_NEUTRAL=0x4e5a13 };
+       NZP_TOUCH_LOOK=0x4e5a12, NZP_TOUCH_NEUTRAL=0x4e5a13,
+       NZP_LAN_ADDRESS=0x4e5a14, NZP_LAN_NAME=0x4e5a15 };
 static intptr_t float_bits(float f) { uint32_t bits; memcpy(&bits,&f,sizeof(bits)); return (intptr_t)bits; }
 static float bits_float(const void *p) { uint32_t bits=(uint32_t)(uintptr_t)p;float f;memcpy(&f,&bits,sizeof(f));return f; }
 static void push_touch(int code, intptr_t a, intptr_t b) {
@@ -45,6 +46,26 @@ static int touch_action_key(const char *id) {
     if (!strcmp(id,"nade"))return 'g';
     if (!strcmp(id,"menu"))return K_ESCAPE;
     return 0;
+}
+// Asynchronous text input: Java UI thread -> SDL event queue -> engine thread.
+// A copy is owned by SDL until Android_Event consumes or an error frees it.
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeLanInput(
+        JNIEnv *env,jclass unused,jstring input,jboolean is_name) {
+    (void)unused;
+    if(!input||!SDL_WasInit(SDL_INIT_EVENTS))return;
+    const char *str=(*env)->GetStringUTFChars(env,input,NULL);
+    if(!str)return;
+    size_t len=strlen(str);
+    if(len==0||len>=96){(*env)->ReleaseStringUTFChars(env,input,str);return;}
+    char *copy=(char*)malloc(len+1);
+    if(copy){
+        memcpy(copy,str,len+1);
+        SDL_Event event;SDL_zero(event);event.type=SDL_USEREVENT;
+        event.user.code=is_name?NZP_LAN_NAME:NZP_LAN_ADDRESS;
+        event.user.data1=copy;
+        if(SDL_PushEvent(&event)<=0)free(copy);
+    }
+    (*env)->ReleaseStringUTFChars(env,input,str);
 }
 JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchAction(
         JNIEnv *env,jclass unused,jstring name,jboolean down) {
@@ -146,6 +167,15 @@ static void touch(const SDL_TouchFingerEvent *event){
 int Android_Event(const SDL_Event *event){
     switch(event->type){
         case SDL_USEREVENT:
+            if(event->user.code==NZP_LAN_ADDRESS||event->user.code==NZP_LAN_NAME){
+                const char *input=(const char*)event->user.data1;
+                if(input){
+                    if(event->user.code==NZP_LAN_ADDRESS)Menu_LAN_ConnectAddress(input);
+                    else Menu_LAN_SetName(input);
+                    free(event->user.data1);
+                }
+                return 1;
+            }
             switch (event->user.code) {
                 case NZP_TOUCH_ACTION:
                     Key_Event((int)(intptr_t)event->user.data1,
