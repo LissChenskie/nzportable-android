@@ -12,6 +12,7 @@ int sdl_window_width=1,sdl_window_height=1;
 // Legacy vid_width/vid_height are not caps on Android. Keep aliases archived for
 // old configs but NEVER use them to reduce the actual drawable resolution.
 cvar_t vid_width={"vid_width","0",true},vid_height={"vid_height","0",true};
+extern cvar_t android_profile;
 cvar_t vid_render_scale={"vid_render_scale","100",true};
 cvar_t vid_ui_scale={"vid_ui_scale","100",true};
 cvar_t vid_fullscreen={"vid_fullscreen","1",true},r_vsync={"r_vsync","1",true};
@@ -157,6 +158,7 @@ void VID_ShiftPalette(unsigned char *p){(void)p;}
 void VID_Init(unsigned char *palette) {
     Cvar_RegisterVariable(&vid_width);Cvar_RegisterVariable(&vid_height);
     Cvar_RegisterVariable(&vid_render_scale);Cvar_RegisterVariable(&vid_ui_scale);
+    Cvar_RegisterVariable(&android_profile);
     Cvar_RegisterVariable(&vid_fullscreen);Cvar_RegisterVariable(&r_vsync);
     Cvar_RegisterVariable(&gl_ztrick);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,2);
