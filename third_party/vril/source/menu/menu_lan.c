@@ -4,6 +4,11 @@
 #include "menu_defs.h"
 #include <ctype.h>
 #include <stdio.h>
+#ifdef PLATFORM_ANDROID
+#include <jni.h>
+#include <SDL.h>
+#endif
+
 
 static int lan_slots = 4;
 static char lan_status[96] = "Create a game or search your local Wi-Fi.";
