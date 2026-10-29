@@ -8,6 +8,7 @@
 
 SDL_Window *sdl_window;
 SDL_GLContext sdl_gl_context;
+extern int glx,gly,glwidth,glheight;
 int sdl_window_width=1,sdl_window_height=1;
 // Legacy vid_width/vid_height are not caps on Android. Keep aliases archived for
 // old configs but NEVER use them to reduce the actual drawable resolution.
@@ -124,6 +125,9 @@ void VID_BeginNativeUI(void) {
         glBindFramebuffer(GL_FRAMEBUFFER,0);
         NZP_GLES_Present(color,drawable_w,drawable_h);
     }
+    // Hyena_Set2D uses glwidth/glheight, not just vid.width/height.
+    // Switching viewport here keeps HUD text sharp across all world scales.
+    glx=gly=0;glwidth=drawable_w;glheight=drawable_h;
     vid.width=vid.conwidth=drawable_w;
     vid.height=vid.conheight=drawable_h;
     vid.maxwarpwidth=drawable_w;vid.maxwarpheight=drawable_h;
