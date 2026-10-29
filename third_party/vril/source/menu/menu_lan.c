@@ -83,6 +83,8 @@ void Menu_LAN_JoinAddress(const char *ip) {
     Cvar_Set("deathmatch","0");
     if(sv.active)Cbuf_AddText("disconnect\n");
     Cbuf_AddText(cmd);
+    extern char m_return_reason[32];
+    m_return_reason[0]=0;
     Menu_LAN_SetStatus("Connecting to LAN host...");
     m_state=m_none;
     key_dest=key_game;
