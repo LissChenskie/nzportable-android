@@ -24,10 +24,9 @@ public final class GameActivity extends SDLActivity {
 
     @Override protected String[] getLibraries() { return new String[]{"SDL2", "SDL2_mixer", "main"}; }
     @Override protected String[] getArguments() {
-        // 960x540 FBO ceiling produces ~960x432 on a 20:9 A51. Native vid_width/height
-        // settings remain adjustable after benchmarking.
-        return new String[]{"-basedir", new java.io.File(getFilesDir(),"game").getAbsolutePath(),
-            "+cl_maxfps", "60", "+vid_width", "960", "+vid_height", "540"};
+        // No hard-coded framebuffer dimensions or command-line overrides:
+        // archived graphics settings win on every subsequent launch.
+        return new String[]{"-basedir", new java.io.File(getFilesDir(),"game").getAbsolutePath()};
     }
     @Override protected void onCreate(Bundle state) {
         power=(PowerManager)getSystemService(POWER_SERVICE);
