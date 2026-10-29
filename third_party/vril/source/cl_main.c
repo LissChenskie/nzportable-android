@@ -20,6 +20,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // cl_main.c  -- client main loop
 
 #include "nzportable_def.h"
+#ifdef PLATFORM_ANDROID
+#include "menu/menu_defs.h"
+#endif
 #include "cl_slist.h"
 
 // we need to declare some mouse variables here, because the menu system
@@ -232,8 +235,18 @@ void CL_EstablishConnection (char *host)
 	CL_Disconnect ();
 
 	cls.netcon = NET_Connect (host);
-	if (!cls.netcon)
+	if (!cls.netcon) {
+#ifdef PLATFORM_ANDROID
+        /* An unreachable/full LAN host must not abort the Android game VM. */
+        extern char m_return_reason[32];
+        Menu_LAN_SetStatus(m_return_reason[0] ?
+                          m_return_reason : "Unable to connect to LAN host.");
+        Menu_LAN_Set();
+        return;
+#else
 		Host_Error ("CL_Connect: connect failed\n");
+#endif
+    }
 	//Con_DPrintf ("CL_EstablishConnection: connected to %s\n", host);
 	Con_Printf ("CL_EstablishConnection: connected to %s\n", host);
 
