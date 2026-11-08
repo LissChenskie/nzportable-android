@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "../../nzportable_def.h"
 #include "../../net_vcr.h"
+#include "net_lan_utils.h"
 
 qsocket_t	*net_activeSockets = NULL;
 qsocket_t	*net_freeSockets = NULL;
@@ -141,6 +142,9 @@ qsocket_t *NET_NewQSocket (void)
 	sock->receiveSequence = 0;
 	sock->unreliableReceiveSequence = 0;
 	sock->receiveMessageLength = 0;
+	sock->srtt = sock->rttvar = 0;
+	sock->rto = LAN_RTO_INITIAL;
+	sock->retransmitted = false;
 
 	return sock;
 }

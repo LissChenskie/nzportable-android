@@ -41,7 +41,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <net/if.h>
 #include <errno.h>
 #include <SDL.h>
+#include "lan_network.h"
 #endif
+#include "net_lan_utils.h"
 
 extern cvar_t hostname;
 
@@ -54,36 +56,66 @@ static unsigned long myAddr;
 // Android Hotspot and Wi-Fi can have different directed broadcast addresses.
 // Refresh each scan: switching networks after app startup must keep discovery alive.
 #ifdef PLATFORM_ANDROID
-static int UDP_SendInterfaceBroadcasts(int socket, byte *buf, int len)
+enum { UDP_MAX_IFACES = 24 };
+/* Snapshot of active IPv4 interfaces. Re-read on every use: hotspot, Wi-Fi and
+ * mobile data come and go while the game is running. */
+static int UDP_ListInterfaces(lan_iface_t *out, struct sockaddr_in *broadcast_out)
 {
     struct ifaddrs *list = NULL, *it;
-    int sent = 0;
+    int n = 0;
     if (getifaddrs(&list) != 0) return 0;
-    for (it = list; it; it = it->ifa_next) {
-        struct sockaddr_in dest;
-        struct sockaddr_in *ip, *mask;
-        if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET ||
-            !(it->ifa_flags & IFF_UP) || (it->ifa_flags & IFF_LOOPBACK))
-            continue;
-        ip = (struct sockaddr_in *)it->ifa_addr;
-        if (ip->sin_addr.s_addr == 0) continue;
-        memset(&dest, 0, sizeof(dest));
-        dest.sin_family = AF_INET;
-        dest.sin_port = htons(net_hostport);
-        if ((it->ifa_flags & IFF_BROADCAST) && it->ifa_broadaddr) {
-            dest.sin_addr = ((struct sockaddr_in *)it->ifa_broadaddr)->sin_addr;
-        } else if (it->ifa_netmask && it->ifa_netmask->sa_family == AF_INET) {
-            mask = (struct sockaddr_in *)it->ifa_netmask;
-            dest.sin_addr.s_addr = (ip->sin_addr.s_addr & mask->sin_addr.s_addr) |
-                                   ~mask->sin_addr.s_addr;
-        } else continue;
-        if (dest.sin_addr.s_addr == 0 || dest.sin_addr.s_addr == INADDR_BROADCAST)
-            continue;
-        if (sendto(socket, (const char *)buf, len, 0,
-                   (struct sockaddr *)&dest, sizeof(dest)) == len) sent++;
+    for (it = list; it && n < UDP_MAX_IFACES; it = it->ifa_next) {
+        lan_iface_t *i = &out[n];
+        if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET) continue;
+        memset(i, 0, sizeof(*i));
+        strncpy(i->name, it->ifa_name ? it->ifa_name : "", sizeof(i->name) - 1);
+        i->ip = ntohl(((struct sockaddr_in *)it->ifa_addr)->sin_addr.s_addr);
+        i->mask = it->ifa_netmask && it->ifa_netmask->sa_family == AF_INET ?
+                  ntohl(((struct sockaddr_in *)it->ifa_netmask)->sin_addr.s_addr) : 0;
+        i->up = (it->ifa_flags & IFF_UP) != 0;
+        i->loopback = (it->ifa_flags & IFF_LOOPBACK) != 0;
+        if (broadcast_out) {
+            memset(&broadcast_out[n], 0, sizeof(broadcast_out[n]));
+            broadcast_out[n].sin_family = AF_INET;
+            if ((it->ifa_flags & IFF_BROADCAST) && it->ifa_broadaddr && it->ifa_broadaddr->sa_family == AF_INET)
+                broadcast_out[n].sin_addr = ((struct sockaddr_in *)it->ifa_broadaddr)->sin_addr;
+            else if (i->mask)
+                broadcast_out[n].sin_addr.s_addr = htonl(LAN_SubnetBroadcast(i->ip, i->mask));
+        }
+        n++;
     }
     freeifaddrs(list);
+    return n;
+}
+/* Address this device should use/advertise; peer (host order, 0 = unknown) selects
+ * the interface whose subnet contains it. Returns network-order s_addr or 0. */
+static unsigned long UDP_LocalAddress(uint32_t peer_ip)
+{
+    lan_iface_t ifaces[UDP_MAX_IFACES];
+    int n = UDP_ListInterfaces(ifaces, NULL), best = LAN_PickInterface(ifaces, n, peer_ip);
+    return best >= 0 ? (unsigned long)htonl(ifaces[best].ip) : 0;
+}
+/* Discovery broadcast on every real local network. Cellular and tunnel
+ * interfaces are skipped: they only waste airtime and can leak packets. */
+static int UDP_SendInterfaceBroadcasts(int socket, byte *buf, int len)
+{
+    lan_iface_t ifaces[UDP_MAX_IFACES];
+    struct sockaddr_in broadcast[UDP_MAX_IFACES];
+    int n = UDP_ListInterfaces(ifaces, broadcast), sent = 0;
+    for (int i = 0; i < n; i++) {
+        struct sockaddr_in dest = broadcast[i];
+        if (LAN_InterfaceScore(&ifaces[i]) < 0) continue;
+        if (dest.sin_addr.s_addr == 0 || dest.sin_addr.s_addr == INADDR_BROADCAST) continue;
+        dest.sin_port = htons(net_hostport);
+        if (sendto(socket, (const char *)buf, len, 0, (struct sockaddr *)&dest, sizeof(dest)) == len) sent++;
+    }
     return sent;
+}
+/* Client sockets follow the Wi-Fi network chosen by Java. Listening (hosting)
+ * sockets are never bound: a hotspot host has no Wi-Fi "Network" to bind to. */
+static void UDP_BindClientSocket(int fd)
+{
+    if (net_acceptsocket == -1) NZP_LanNetwork_BindSocket(fd);
 }
 #endif
 
@@ -121,18 +153,9 @@ int UDP_Init (void)
 				myAddr = inet_addr("127.0.0.1");
 		}
 	#elif defined(PLATFORM_ANDROID)
-		// Bionic has no gethostid(). Choose an actual active IPv4 interface.
-		struct ifaddrs *interfaces = NULL;
-		myAddr = htonl(INADDR_LOOPBACK);
-		if (getifaddrs(&interfaces) == 0) {
-			for (struct ifaddrs *it = interfaces; it; it = it->ifa_next) {
-				if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET ||
-					!(it->ifa_flags & IFF_UP) || (it->ifa_flags & IFF_LOOPBACK)) continue;
-				myAddr = ((struct sockaddr_in *)it->ifa_addr)->sin_addr.s_addr;
-				break;
-			}
-			freeifaddrs(interfaces);
-		}
+		// Bionic has no gethostid(). Prefer the Wi-Fi/hotspot interface over cellular.
+		myAddr = UDP_LocalAddress(0);
+		if (!myAddr) myAddr = htonl(INADDR_LOOPBACK);
 	#else
 		myAddr = gethostid();
 	#endif
@@ -215,6 +238,9 @@ int UDP_OpenSocket (int port)
 		goto ErrorReturn;
 	#endif
 
+#ifdef PLATFORM_ANDROID
+	if (port == 0) UDP_BindClientSocket(newsocket);
+#endif
 	address.sin_family = AF_INET;
 	address.sin_addr.s_addr = htonl(INADDR_ANY);
 	address.sin_port = htons(port);
@@ -334,7 +360,10 @@ int UDP_Read (int socket, byte *buf, int len, struct qsockaddr *addr)
 	ret = recvfrom(socket, (char *)buf, len, 0, (struct sockaddr *)addr, (socklen_t*)&addrlen);
 	if (ret == -1) {
 #ifdef PLATFORM_ANDROID
-		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
+		// Wi-Fi power save, roaming and hotspot toggling produce transient errors
+		// (ENETUNREACH, ECONNREFUSED...). They mean one lost packet, not a dead
+		// connection; returning -1 made Datagram_GetMessage drop the player.
+		if (LAN_IsTransientSocketErrno(errno)) return 0;
 		SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "UDP recvfrom error: %d", errno);
 		return -1;
 #else
@@ -379,6 +408,9 @@ int UDP_Broadcast (int socket, byte *buf, int len)
 		}
 	}
 
+#ifdef PLATFORM_ANDROID
+	UDP_BindClientSocket(socket); // Wi-Fi may have (re)connected since the socket was opened
+#endif
 	ret = UDP_Write (socket, buf, len, &broadcastaddr);
 #ifdef PLATFORM_ANDROID
 	// Some Android tethering routers filter limited broadcast but permit subnet broadcast.
@@ -396,7 +428,7 @@ int UDP_Write (int socket, byte *buf, int len, struct qsockaddr *addr)
 	ret = sendto (socket, (const char *)buf, len, 0, (struct sockaddr *)addr, sizeof(struct qsockaddr));
 	if (ret == -1) {
 #ifdef PLATFORM_ANDROID
-		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
+		if (LAN_IsTransientSocketErrno(errno)) return 0;
 		SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "UDP sendto error: %d", errno);
 		return -1;
 #else
@@ -446,17 +478,9 @@ int UDP_GetSocketAddr (int socket, struct qsockaddr *addr)
 	a = ((struct sockaddr_in *)addr)->sin_addr.s_addr;
 #ifdef PLATFORM_ANDROID
 	if (a == 0 || a == inet_addr("127.0.0.1")) {
-		struct ifaddrs *list = NULL, *it;
-		if (getifaddrs(&list) == 0) {
-			for (it = list; it; it = it->ifa_next) {
-				if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET ||
-				    !(it->ifa_flags & IFF_UP) || (it->ifa_flags & IFF_LOOPBACK))
-					continue;
-				myAddr = ((struct sockaddr_in *)it->ifa_addr)->sin_addr.s_addr;
-				break;
-			}
-			freeifaddrs(list);
-		}
+		// Re-evaluated on every call: the hotspot may be switched on after launch.
+		unsigned long fresh = UDP_LocalAddress(0);
+		if (fresh) myAddr = fresh;
 	}
 #endif
 	if (a == 0 || a == inet_addr("127.0.0.1"))

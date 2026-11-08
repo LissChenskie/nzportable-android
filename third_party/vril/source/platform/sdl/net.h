@@ -146,6 +146,9 @@ typedef struct qsocket_s
 	struct qsockaddr	addr;
 	char				address[NET_NAMELEN];
 
+	// Adaptive retransmit timer for the reliable channel (see net_lan_utils.h).
+	double			srtt, rttvar, rto;
+	qboolean		retransmitted;
 } qsocket_t;
 
 extern qsocket_t	*net_activeSockets;

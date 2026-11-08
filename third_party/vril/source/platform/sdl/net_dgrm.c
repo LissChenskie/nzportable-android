@@ -37,6 +37,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <SDL.h>
 #endif
 #include "net_dgrm.h"
+#include "net_lan_utils.h"
 
 // these two macros are to make the code more readable
 #define sfunc	net_landrivers[sock->landriver]
@@ -187,6 +188,7 @@ int Datagram_SendMessage (qsocket_t *sock, sizebuf_t *data)
 		return -1;
 
 	sock->lastSendTime = net_time;
+	sock->retransmitted = false;
 	packetsSent++;
 	return 1;
 }
@@ -220,6 +222,7 @@ int SendMessageNext (qsocket_t *sock)
 		return -1;
 
 	sock->lastSendTime = net_time;
+	sock->retransmitted = false;
 	packetsSent++;
 	return 1;
 }
@@ -253,6 +256,9 @@ int ReSendMessage (qsocket_t *sock)
 		return -1;
 
 	sock->lastSendTime = net_time;
+	// Karn: a retransmitted packet's ACK is ambiguous, so it yields no RTT sample.
+	sock->retransmitted = true;
+	sock->rto = LAN_RtoBackoff(sock->rto);
 	packetsReSent++;
 	return 1;
 }
@@ -309,7 +315,9 @@ int	Datagram_GetMessage (qsocket_t *sock)
 	unsigned int	count;
 
 	if (!sock->canSend)
-		if ((net_time - sock->lastSendTime) > 1.0)
+		// The fixed 1.0 s timeout froze reliable traffic for a full second after any
+		// lost Wi-Fi packet; the timer now follows the measured round trip time.
+		if ((net_time - sock->lastSendTime) > sock->rto)
 			ReSendMessage (sock);
 
 	while(1)
@@ -388,6 +396,8 @@ int	Datagram_GetMessage (qsocket_t *sock)
 			}
 			if (sequence == sock->ackSequence)
 			{
+				if (!sock->retransmitted)
+					LAN_RtoSample(&sock->srtt, &sock->rttvar, &sock->rto, net_time - sock->lastSendTime);
 				sock->ackSequence++;
 				if (sock->ackSequence != sock->sendSequence)
 					Con_DPrintf("ack sequencing error\n");
@@ -1218,7 +1228,14 @@ static qsocket_t *_Datagram_Connect (char *host)
 	Con_Printf("trying...\n"); SCR_UpdateScreen ();
 	start_time = net_time;
 
+#ifdef PLATFORM_ANDROID
+	// Hotspot clients lose the first packets to ARP resolution and Wi-Fi wakeup.
+	// Retry faster, and always inside the server's 2.0 s duplicate-request window:
+	// a lost ACCEPT then gets a duplicate reply instead of closing the new socket.
+	for (reps = 0; reps < 5; reps++)
+#else
 	for (reps = 0; reps < 3; reps++)
+#endif
 	{
 		SZ_Clear(&net_message);
 		// save space for the header, filled in later
@@ -1279,7 +1296,11 @@ static qsocket_t *_Datagram_Connect (char *host)
 			// No CPU busy-spin while probing a sleeping Wi-Fi server.
 			if (ret == 0) SDL_Delay(1);
 #endif
+#ifdef PLATFORM_ANDROID
+		} while (ret == 0 && (SetNetTime() - start_time) < 1.5);
+#else
 		} while (ret == 0 && (SetNetTime() - start_time) < 2.5);
+#endif
 		if (ret)
 			break;
 		Con_Printf("still trying...\n"); SCR_UpdateScreen ();
