@@ -47,6 +47,17 @@ int main(){
     // Dynamic texture changes, deletion, native HUD over voluntarily scaled 3D.
     assert(NZP_VK_BeginFrame(0,75));quad(u,s,5,255,255,255);NZP_VK_DeleteTexture(5);NZP_VK_BeginUI();u=uniform();s.viewport[2]=16;s.viewport[3]=16;
     quad(u,s,0,255,255,0);end();pixel(8,8,255,255,0);pixel(48,48,255,0,0);s=raster();
+    // GL_ALPHA_TEST must still discard (specialized pipeline), while opaque
+    // draws use the discard-free Mali-friendly specialization.
+    {
+        auto tested=uniform();tested.params[2]=.5f;
+        assert(NZP_VK_BeginFrame(0,100));quad(tested,s,0,255,0,0,76);end();pixel(32,32,16,32,64);
+        assert(NZP_VK_BeginFrame(0,100));quad(tested,s,0,255,0,0,200);end();pixel(32,32,255,0,0);
+        auto opaque=uniform();
+        assert(NZP_VK_BeginFrame(0,100));quad(opaque,s,0,0,255,0,76);end();pixel(32,32,0,255,0);
+        // Alternating tested/untested draws in one frame switch pipelines correctly.
+        assert(NZP_VK_BeginFrame(0,100));quad(opaque,s,0,0,0,255,255);quad(tested,s,0,255,0,0,10);end();pixel(32,32,0,0,255);
+    }
     // Persistent mesh buffers, indexed draw and zero-stride constant attributes.
     float positions[]={-1,-1,0,1,-1,0,1,1,0,-1,1,0};unsigned short indices[]={0,1,2,0,2,3};
     NZP_VK_Buffer(10,sizeof(positions),positions,1);NZP_VK_Buffer(11,sizeof(indices),indices,0);

@@ -82,7 +82,7 @@ struct Layout {
 };
 struct PipelineKey {
     Layout layout;unsigned mode{},blend_src{},blend_dst{},depth_func{},cull_face{};
-    int blend{},depth{},depth_write{},cull{},offset{},lightmapped{};
+    int blend{},depth{},depth_write{},cull{},offset{},lightmapped{},alpha_test{};
     bool operator<(const PipelineKey &b)const{return std::memcmp(this,&b,sizeof(*this))<0;}
 };
 VkInstance instance{}; VkPhysicalDevice physical{};VkDevice device{};VkQueue queue{};
@@ -301,8 +301,8 @@ VkPrimitiveTopology topology(unsigned m){switch(m){case 0:return VK_PRIMITIVE_TO
  case 3:return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;case 4:return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
  case 5:return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;case 6:return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
  default:throw std::runtime_error("Unsupported Vril primitive");}}
-VkPipeline pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,int lightmapped=0){
-    PipelineKey key{};key.lightmapped=lightmapped;key.layout=layout;key.mode=mode;key.blend=s.blend;key.depth=s.depth;key.depth_write=s.depth_write;
+VkPipeline pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,int lightmapped=0,int alpha_test=0){
+    PipelineKey key{};key.lightmapped=lightmapped;key.alpha_test=alpha_test;key.layout=layout;key.mode=mode;key.blend=s.blend;key.depth=s.depth;key.depth_write=s.depth_write;
     key.cull=s.cull;key.offset=s.offset;key.blend_src=s.blend_src;key.blend_dst=s.blend_dst;key.depth_func=s.depth_func;key.cull_face=s.cull_face;
     if(!key.blend){key.blend_src=1;key.blend_dst=0;}
     if(!key.depth){key.depth_func=0x203;key.depth_write=0;}
@@ -316,9 +316,12 @@ VkPipeline pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,in
     for(int i=0;i<2;i++){stages[i].sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[i].stage=i?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;
         stages[i].module=i?fragment_shader:vertex_shader;stages[i].pName="main";}
-    VkBool32 specialized=lightmapped?VK_TRUE:VK_FALSE;
-    VkSpecializationMapEntry entry{0,0,sizeof(specialized)};
-    VkSpecializationInfo specialization{1,&entry,sizeof(specialized),&specialized};
+    // constant_id 0: lightmapped BSP surface, constant_id 1: alpha test.
+    // Opaque pipelines are compiled without discard so Mali can use early-Z
+    // and forward pixel kill; only GL_ALPHA_TEST draws pay for discard.
+    VkBool32 specialized[2]={lightmapped?VK_TRUE:VK_FALSE,alpha_test?VK_TRUE:VK_FALSE};
+    VkSpecializationMapEntry entry[2]={{0,0,sizeof(VkBool32)},{1,sizeof(VkBool32),sizeof(VkBool32)}};
+    VkSpecializationInfo specialization{2,entry,sizeof(specialized),specialized};
     stages[0].pSpecializationInfo=stages[1].pSpecializationInfo=&specialization;
     VkVertexInputBindingDescription bindings[4]{};VkVertexInputAttributeDescription attrs[4]{};
     for(int i=0;i<4;i++){bindings[i]={(unsigned)i,layout.stride[i],VK_VERTEX_INPUT_RATE_VERTEX};attrs[i]={(unsigned)i,(unsigned)i,layout.format[i],0};}
@@ -395,7 +398,7 @@ void begin_pass(bool native){
 void bind_draw(const Layout &layout,unsigned mode,const nzp_vk_uniform &uniform,const nzp_vk_raster &state,VkDescriptorSet texture,VkDescriptorSet lightmap=VK_NULL_HANDLE){
     pass_has_draw=true;
     auto &f=frame();auto &cached=f.draw_state;auto cb=f.draw;
-    const VkPipeline wanted=pipeline(layout,mode,state,lightmap!=VK_NULL_HANDLE);
+    const VkPipeline wanted=pipeline(layout,mode,state,lightmap!=VK_NULL_HANDLE,uniform.params[2]>=0.f);
     if(cached.pipeline!=wanted){
         vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,wanted);
         cached.pipeline=wanted;++f.stats.pipeline_binds;
@@ -561,6 +564,8 @@ int NZP_VK_Init(SDL_Window *w,const char *directory,int enable_validation){
             for(int depth=0;depth<2;depth++)for(int blend=0;blend<2;blend++)for(int cull=0;cull<3;cull++){
                 s.depth=depth;s.blend=blend;s.cull=cull!=0;s.cull_face=cull==2?0x405:0x404;
                 for(int write=0;write<2;write++){s.depth_write=write;pipeline(layout,4,s);if(layout_index==1)pipeline(layout,4,s,1);}
+                // GL_ALPHA_TEST sprites, fences and alias models.
+                if(depth&&!blend)pipeline(layout,4,s,0,1);
             }
         }
         active=true;recreate(1,100);
