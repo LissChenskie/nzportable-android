@@ -14,6 +14,7 @@ import org.libsdl.app.SDLActivity;
 public final class GameActivity extends SDLActivity {
     private PowerManager power;
     private RetroTouchBridge touch;
+    private LanNetwork lanNetwork;
     // Callbacks only enqueue SDL user-events. Engine data is never mutated on the UI thread.
     static native void nativeTouchAction(String action, boolean pressed);
     static native void nativeTouchMove(float x, float y);
@@ -35,6 +36,7 @@ public final class GameActivity extends SDLActivity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if(Build.VERSION.SDK_INT>=28){WindowManager.LayoutParams p=getWindow().getAttributes();
             p.layoutInDisplayCutoutMode=WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER;getWindow().setAttributes(p);}
+        lanNetwork = new LanNetwork(this);
         touch = new RetroTouchBridge(this);
         touch.setPlaying(false);
         Log.i("NZPortable","Device="+Build.MODEL+" hardware="+Build.HARDWARE+" ABI="+android.os.Process.is64Bit());
@@ -99,7 +101,8 @@ public final class GameActivity extends SDLActivity {
         |View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_LAYOUT_STABLE);}
     @Override public void onWindowFocusChanged(boolean focused){super.onWindowFocusChanged(focused);if(focused)immersive();}
     public int getThermalStatus(){return Build.VERSION.SDK_INT>=29&&power!=null?power.getCurrentThermalStatus():0;}
-    @Override protected void onPause(){if(touch!=null)touch.reset();super.onPause();}
+    @Override protected void onResume(){super.onResume();if(lanNetwork!=null)lanNetwork.start();}
+    @Override protected void onPause(){if(touch!=null)touch.reset();if(lanNetwork!=null)lanNetwork.stop();super.onPause();}
     @Override protected void onDestroy(){
         boolean finished=isFinishing()&&!isChangingConfigurations();
         if(touch!=null){touch.reset();touch=null;}
