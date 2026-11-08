@@ -34,6 +34,12 @@ void NZP_VK_Shutdown(void);
 int NZP_VK_Active(void);
 void NZP_VK_NotifySurfaceLost(void);
 void NZP_VK_SetBenchmark(int enabled);
+/* Present with the surface's current transform (Mali: no compositor rotation).
+ * Default on; env NZP_VK_PREROTATE=0 disables. Takes effect on the next frame. */
+void NZP_VK_SetPreRotation(int enabled);
+/* Test hook: rotate the offscreen benchmark target by n*90 degrees (-1 = off). */
+void NZP_VK_SetTestRotation(int quarter_turns);
+int NZP_VK_GetRotation(void);
 void NZP_VK_Finish(void);
 unsigned long long NZP_VK_CompletedFrames(void);
 int NZP_VK_BeginFrame(int vsync,int percent);

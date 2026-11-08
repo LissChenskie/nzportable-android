@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Native Vulkan 1.1 backend for Vril's shared geometry/material frontend.
 #include "renderer.h"
+#include "prerotate.h"
 #include "vendor/volk.h"
 #ifdef __clang__
 #pragma clang diagnostic push
@@ -19,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -102,6 +104,10 @@ std::vector<SwapImage> images;
 SDL_Window *window{};std::string cache_path;
 unsigned family{},frame_index{},image_index{},validation_errors{};
 int width{},height{},world_width{},world_height{},current_vsync=-1,scale=100;
+// Pre-rotation: width/height stay logical (SDL window orientation). phys_* is the
+// native-pass target size (swapped for 90/270). rotation is the effective value;
+// sc_rotation is the real swapchain preTransform, test_rotation is benchmark-only.
+int rotation{},sc_rotation{},phys_w{},phys_h{},drawable_w{},drawable_h{},test_rotation=-1;bool prerotate_wanted=true;
 bool active{},recording{},in_pass{},ui{},resize_pending{},capture_requested{},can_capture{},pass_has_draw{};
 float pass_clear_color[4],pass_clear_depth;
 Buffer readback;std::vector<unsigned char> captured;std::string screenshot_path;
@@ -232,16 +238,46 @@ void write_image_set(VkDescriptorSet set,VkImageView view,VkSampler sampler){
 VkSampler upscale_sampler{};
 bool recreate(int vsync,int percent){
     int w,h;SDL_Vulkan_GetDrawableSize(window,&w,&h);if(w<=0||h<=0)return false;
+    drawable_w=w;drawable_h=h;
     // Only surface/settings transitions drain the device, never the steady frame loop.
     VK_CHECK(vkDeviceWaitIdle(device));destroy_targets();
     VkSurfaceCapabilitiesKHR caps;VkResult caps_result=vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical,surface,&caps);
     if(caps_result==VK_ERROR_SURFACE_LOST_KHR){restore_surface();caps_result=vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical,surface,&caps);}
     VK_CHECK(caps_result);
-    VkExtent2D extent=caps.currentExtent;
-    if(extent.width==UINT32_MAX)extent={std::clamp((unsigned)w,caps.minImageExtent.width,caps.maxImageExtent.width),
-                                    std::clamp((unsigned)h,caps.minImageExtent.height,caps.maxImageExtent.height)};
+    auto rotation_of=[](VkSurfaceTransformFlagsKHR t)->int{
+        return t==VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR?1:t==VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR?2:
+               t==VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR?3:0;};
+    auto pick_extent=[&](int rot){
+        VkExtent2D e=caps.currentExtent;
+        if(e.width==UINT32_MAX){
+            unsigned ew=nzp_rot_odd(rot)?h:w,eh=nzp_rot_odd(rot)?w:h;
+            e={std::clamp(ew,caps.minImageExtent.width,caps.maxImageExtent.width),
+               std::clamp(eh,caps.minImageExtent.height,caps.maxImageExtent.height)};
+        }
+        return e;};
+    // Mali/Android: presenting with preTransform == currentTransform avoids a
+    // compositor/display-processor rotation pass. Fall back to identity only if
+    // the driver exposes it; otherwise use whatever the surface requires
+    // (previously this was a hard failure that forced GLES2).
+    const bool identity_ok=(caps.supportedTransforms&VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)!=0;
+    const int current_rot=(caps.supportedTransforms&caps.currentTransform)?rotation_of(caps.currentTransform):0;
+    sc_rotation=0;
+    if(current_rot&&(prerotate_wanted||!identity_ok))sc_rotation=current_rot;
+    else if(!identity_ok)throw std::runtime_error("Surface has no usable transform; use GLES2");
+    VkExtent2D extent=pick_extent(sc_rotation);
+    if(sc_rotation){
+        // The logical size derived from a rotated extent must equal SDL's drawable size.
+        unsigned lw=nzp_rot_odd(sc_rotation)?extent.height:extent.width,lh=nzp_rot_odd(sc_rotation)?extent.width:extent.height;
+        if((int)lw!=w||(int)lh!=h){
+            SDL_Log("NZP_VULKAN prerotate_disabled extent=%ux%u drawable=%dx%d rot=%d",extent.width,extent.height,w,h,sc_rotation);
+            if(identity_ok){sc_rotation=0;extent=pick_extent(0);}
+        }
+    }
     if(!extent.width||!extent.height)return false;
-    width=extent.width;height=extent.height;
+    width=nzp_rot_odd(sc_rotation)?extent.height:extent.width;height=nzp_rot_odd(sc_rotation)?extent.width:extent.height;
+    const bool bench=requested_benchmark;
+    rotation=(bench&&test_rotation>=0)?test_rotation:sc_rotation;
+    phys_w=nzp_rot_odd(rotation)?height:width;phys_h=nzp_rot_odd(rotation)?width:height;
     uint32_t count=0;VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(physical,surface,&count,nullptr));
     std::vector<VkPresentModeKHR> modes(count);VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(physical,surface,&count,modes.data()));
     VkPresentModeKHR present=VK_PRESENT_MODE_FIFO_KHR;
@@ -256,11 +292,8 @@ bool recreate(int vsync,int percent){
     can_capture=(caps.supportedUsageFlags&VK_IMAGE_USAGE_TRANSFER_SRC_BIT)!=0;
     if(can_capture)ci.imageUsage|=VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ci.imageSharingMode=VK_SHARING_MODE_EXCLUSIVE;
-    // Preserve SDL's logical orientation. Pre-rotating geometry is a separate
-    // optimization; never silently present a rotated image on older drivers.
-    if(!(caps.supportedTransforms&VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR))
-        throw std::runtime_error("Surface requires a non-identity transform; use GLES2");
-    ci.preTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    ci.preTransform=sc_rotation==1?VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR:sc_rotation==2?VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR:
+        sc_rotation==3?VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR:VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     ci.compositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if(!(caps.supportedCompositeAlpha&ci.compositeAlpha))ci.compositeAlpha=(VkCompositeAlphaFlagBitsKHR)(caps.supportedCompositeAlpha&-caps.supportedCompositeAlpha);
     ci.presentMode=present;ci.clipped=VK_TRUE;VK_CHECK(vkCreateSwapchainKHR(device,&ci,nullptr,&swapchain));
@@ -269,8 +302,8 @@ bool recreate(int vsync,int percent){
     for(unsigned j=0;j<count;++j){auto &i=images[j];i.image=handles[j];
         VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};vi.image=i.image;vi.viewType=VK_IMAGE_VIEW_TYPE_2D;
         vi.format=color_format;vi.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};VK_CHECK(vkCreateImageView(device,&vi,nullptr,&i.view));
-        i.depth=make_image(width,height,1,depth_format,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
-        i.fb=framebuffer(i.view,i.depth.view,width,height,native_pass);
+        i.depth=make_image(extent.width,extent.height,1,depth_format,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
+        i.fb=framebuffer(i.view,i.depth.view,extent.width,extent.height,native_pass);
         VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};VK_CHECK(vkCreateSemaphore(device,&si,nullptr,&i.complete));
     }
     scale=percent;world_width=std::max(1,width*percent/100);world_height=std::max(1,height*percent/100);
@@ -282,12 +315,12 @@ bool recreate(int vsync,int percent){
     }
     benchmark=requested_benchmark;
     if(benchmark)for(auto &f:frames){
-        f.benchmark_color=make_image(width,height,1,color_format,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
-        f.benchmark_depth=make_image(width,height,1,depth_format,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
-        f.benchmark_fb=framebuffer(f.benchmark_color.view,f.benchmark_depth.view,width,height,world_pass);
+        f.benchmark_color=make_image(phys_w,phys_h,1,color_format,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
+        f.benchmark_depth=make_image(phys_w,phys_h,1,depth_format,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
+        f.benchmark_fb=framebuffer(f.benchmark_color.view,f.benchmark_depth.view,phys_w,phys_h,world_pass);
     }
     current_vsync=vsync;resize_pending=false;
-    SDL_Log("NZP_VULKAN surface=%dx%d world=%dx%d present=%d frames=%u images=%u",width,height,world_width,world_height,(int)present,Frames,count);
+    SDL_Log("NZP_VULKAN surface=%dx%d world=%dx%d present=%d frames=%u images=%u rotation=%d",width,height,world_width,world_height,(int)present,Frames,count,rotation*90);
     return true;
 }
 VkCompareOp compare(unsigned f){return f>=0x200&&f<=0x207?(VkCompareOp)(f-0x200):VK_COMPARE_OP_LESS_OR_EQUAL;}
@@ -392,8 +425,11 @@ void begin_pass(bool native){
     pass_has_draw=false;std::memcpy(pass_clear_color,clear_color,16);pass_clear_depth=clear_depth;
     VkClearValue values[2]{};std::memcpy(values[0].color.float32,clear_color,16);values[1].depthStencil.depth=clear_depth;
     VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};bi.renderPass=(native&&!benchmark)?native_pass:world_pass;
-    bi.framebuffer=native?(benchmark?frame().benchmark_fb:images[image_index].fb):frame().world_fb;bi.renderArea.extent={(unsigned)(native?width:world_width),(unsigned)(native?height:world_height)};
+    bi.framebuffer=native?(benchmark?frame().benchmark_fb:images[image_index].fb):frame().world_fb;bi.renderArea.extent={(unsigned)(native?phys_w:world_width),(unsigned)(native?phys_h:world_height)};
     bi.clearValueCount=2;bi.pClearValues=values;vkCmdBeginRenderPass(frame().draw,&bi,VK_SUBPASS_CONTENTS_INLINE);in_pass=true;
+    // Vertex-shader pre-rotation applies only to passes that target the (rotated)
+    // swapchain/benchmark image; the offscreen world image stays logical.
+    float rot[4];nzp_rot_matrix(native?rotation:0,rot);vkCmdPushConstants(frame().draw,pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(rot),rot);
 }
 void bind_draw(const Layout &layout,unsigned mode,const nzp_vk_uniform &uniform,const nzp_vk_raster &state,VkDescriptorSet texture,VkDescriptorSet lightmap=VK_NULL_HANDLE){
     pass_has_draw=true;
@@ -403,15 +439,20 @@ void bind_draw(const Layout &layout,unsigned mode,const nzp_vk_uniform &uniform,
         vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,wanted);
         cached.pipeline=wanted;++f.stats.pipeline_binds;
     }
-    float xs=(!ui&&scale<100)?float(world_width)/width:1.f,ys=(!ui&&scale<100)?float(world_height)/height:1.f;
-    int target_h=(!ui&&scale<100)?world_height:height;
+    const bool offscreen=!ui&&scale<100;
+    float xs=offscreen?float(world_width)/width:1.f,ys=offscreen?float(world_height)/height:1.f;
+    int target_h=offscreen?world_height:height;
     VkViewport viewport{state.viewport[0]*xs,target_h-(state.viewport[1]+state.viewport[3])*ys,
         state.viewport[2]*xs,state.viewport[3]*ys,state.depth_near,state.depth_far};
+    VkRect2D scissor{{0,0},{(unsigned)(offscreen?world_width:phys_w),(unsigned)(offscreen?world_height:phys_h)}};
+    if(!offscreen&&rotation){
+        float r[4];nzp_rot_rect(rotation,viewport.x,viewport.y,viewport.width,viewport.height,float(width),float(height),r);
+        viewport.x=r[0];viewport.y=r[1];viewport.width=r[2];viewport.height=r[3];
+    }
     if(!cached.viewport_valid||std::memcmp(&cached.viewport,&viewport,sizeof(viewport))){
         vkCmdSetViewport(cb,0,1,&viewport);
         cached.viewport=viewport;cached.viewport_valid=true;++f.stats.viewport_sets;
     }
-    VkRect2D scissor{{0,0},{(unsigned)(!ui&&scale<100?world_width:width),(unsigned)target_h}};
     if(!cached.scissor_valid||std::memcmp(&cached.scissor,&scissor,sizeof(scissor))){
         vkCmdSetScissor(cb,0,1,&scissor);
         cached.scissor=scissor;cached.scissor_valid=true;++f.stats.scissor_sets;
@@ -445,13 +486,13 @@ void bind_draw(const Layout &layout,unsigned mode,const nzp_vk_uniform &uniform,
 void submit(){
     auto &f=frame();if(in_pass){vkCmdEndRenderPass(f.draw);in_pass=false;}
     if(capture_requested&&(benchmark||can_capture)){
-        size_t bytes=size_t(width)*height*4;
+        size_t bytes=size_t(phys_w)*phys_h*4;
         if(readback.size<bytes){destroy(readback);readback=make_buffer(bytes,VK_BUFFER_USAGE_TRANSFER_DST_BIT);}
         VkImage image=benchmark?f.benchmark_color.handle:images[image_index].image;
         VkImageLayout layout=benchmark?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         barrier(f.draw,image,layout,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT);
-        VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={(unsigned)width,(unsigned)height,1};
+        VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={(unsigned)phys_w,(unsigned)phys_h,1};
         vkCmdCopyImageToBuffer(f.draw,image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,readback.handle,1,&copy);
         barrier(f.draw,image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,layout,
             VK_ACCESS_TRANSFER_READ_BIT,0,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -473,7 +514,8 @@ void submit(){
 
 int NZP_VK_Init(SDL_Window *w,const char *directory,int enable_validation){
     try{
-        window=w;validation_errors=0;cache_path=std::string(directory?directory:".")+"/vulkan-pipeline-cache.bin";
+        window=w;validation_errors=0;{const char *e=std::getenv("NZP_VK_PREROTATE");if(e&&e[0]=='0')prerotate_wanted=false;}
+        cache_path=std::string(directory?directory:".")+"/vulkan-pipeline-cache.bin";
         if(SDL_Vulkan_LoadLibrary(nullptr)!=0)throw std::runtime_error(SDL_GetError());
         volkInitializeCustom((PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr());
     }catch(const std::exception &e){SDL_LogError(SDL_LOG_CATEGORY_RENDER,"Vulkan loader: %s",e.what());return 0;}
@@ -532,6 +574,7 @@ int NZP_VK_Init(SDL_Window *w,const char *directory,int enable_validation){
         VkDescriptorPoolCreateInfo pc{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pc.flags=VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;pc.maxSets=16384+Frames;
         pc.poolSizeCount=2;pc.pPoolSizes=sizes;VK_CHECK(vkCreateDescriptorPool(device,&pc,nullptr,&descriptors));
         VkDescriptorSetLayout layouts[]={uniform_layout,texture_layout,texture_layout};VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};pl.setLayoutCount=3;pl.pSetLayouts=layouts;
+        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT,0,16};pl.pushConstantRangeCount=1;pl.pPushConstantRanges=&push;
         VK_CHECK(vkCreatePipelineLayout(device,&pl,nullptr,&pipeline_layout));
         VkShaderModuleCreateInfo sh{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};sh.codeSize=sizeof(nzp_vk_vert);sh.pCode=nzp_vk_vert;VK_CHECK(vkCreateShaderModule(device,&sh,nullptr,&vertex_shader));
         sh.codeSize=sizeof(nzp_vk_frag);sh.pCode=nzp_vk_frag;VK_CHECK(vkCreateShaderModule(device,&sh,nullptr,&fragment_shader));
@@ -575,6 +618,9 @@ int NZP_VK_Init(SDL_Window *w,const char *directory,int enable_validation){
 }
 int NZP_VK_Active(){return active;}
 void NZP_VK_NotifySurfaceLost(){surface_lost=true;resize_pending=true;}
+void NZP_VK_SetPreRotation(int enabled){if(prerotate_wanted!=bool(enabled)){prerotate_wanted=enabled;resize_pending=true;}}
+void NZP_VK_SetTestRotation(int quarter_turns){if(test_rotation!=quarter_turns){test_rotation=quarter_turns;resize_pending=true;}}
+int NZP_VK_GetRotation(void){return rotation*90;}
 void NZP_VK_SetBenchmark(int enabled){if(requested_benchmark!=bool(enabled)){requested_benchmark=enabled;resize_pending=true;}}
 unsigned long long NZP_VK_CompletedFrames(){return completed_frames;}
 void NZP_VK_Finish(){
@@ -606,7 +652,7 @@ int NZP_VK_BeginFrame(int vsync,int percent){
     int w,h;SDL_Vulkan_GetDrawableSize(window,&w,&h);
     if(w<=0||h<=0)return 0;
     if(surface_lost)restore_surface();
-    if(resize_pending||w!=width||h!=height||vsync!=current_vsync||percent!=scale)if(!recreate(vsync,percent))return 0;
+    if(resize_pending||w!=drawable_w||h!=drawable_h||vsync!=current_vsync||percent!=scale)if(!recreate(vsync,percent))return 0;
     VkResult r=VK_SUCCESS;
     const Uint64 acquire_start=SDL_GetPerformanceCounter();
     if(!benchmark)r=vkAcquireNextImageKHR(device,swapchain,UINT64_MAX,f.acquired,VK_NULL_HANDLE,&image_index);
@@ -639,7 +685,9 @@ void NZP_VK_EndFrame(){
         captured.resize(size_t(width)*height*4);auto *src=(const unsigned char*)readback.mapped;
         // Match GL's bottom-left readback origin and RGBA component order.
         for(int y=0;y<height;y++)for(int x=0;x<width;x++){
-            auto *out=captured.data()+(size_t(y)*width+x)*4;const auto *p=src+(size_t(height-1-y)*width+x)*4;
+            // y is bottom-left (GL); the physical image is top-left and possibly pre-rotated.
+            int px,py;nzp_rot_pixel(rotation,x,height-1-y,width,height,&px,&py);
+            auto *out=captured.data()+(size_t(y)*width+x)*4;const auto *p=src+(size_t(py)*phys_w+px)*4;
             out[0]=p[color_format==VK_FORMAT_B8G8R8A8_UNORM?2:0];out[1]=p[1];out[2]=p[color_format==VK_FORMAT_B8G8R8A8_UNORM?0:2];out[3]=p[3];
         }
         if(!screenshot_path.empty()){
@@ -762,7 +810,7 @@ void NZP_VK_Clear(unsigned mask,const float *color,float depth){
     VkClearAttachment a[2]{};unsigned n=0;
     if(mask&0x4000){std::memcpy(pass_clear_color,clear_color,16);a[n].aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;std::memcpy(a[n].clearValue.color.float32,clear_color,16);n++;}
     if(mask&0x100){pass_clear_depth=depth;a[n].aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;a[n].clearValue.depthStencil.depth=depth;n++;}
-    if(n){VkClearRect r{{{0,0},{(unsigned)(!ui&&scale<100?world_width:width),(unsigned)(!ui&&scale<100?world_height:height)}},0,1};vkCmdClearAttachments(frame().draw,n,a,1,&r);}
+    if(n){VkClearRect r{{{0,0},{(unsigned)(!ui&&scale<100?world_width:phys_w),(unsigned)(!ui&&scale<100?world_height:phys_h)}},0,1};vkCmdClearAttachments(frame().draw,n,a,1,&r);}
 }
 void NZP_VK_RequestCapture(const char *path){capture_requested=true;screenshot_path=path?path:"";}
 int NZP_VK_ReadPixels(int x,int y,int w,int h,void *rgba){
@@ -798,6 +846,6 @@ void NZP_VK_Shutdown(){
     instance={};physical={};device={};surface={};allocator={};debug={};swapchain={};
     descriptors={};uniform_layout={};texture_layout={};pipeline_layout={};pipeline_cache={};vertex_shader={};fragment_shader={};native_pass={};world_pass={};upscale_sampler={};
     last_command_stats={};last_frame_timings={};
-    frame_index=0;recording=in_pass=ui=resize_pending=false;benchmark=requested_benchmark=surface_lost=false;completed_frames=0;current_vsync=-1;width=height=0;gpu_ms=-1;color_format=depth_format=VK_FORMAT_UNDEFINED;
+    frame_index=0;recording=in_pass=ui=resize_pending=false;benchmark=requested_benchmark=surface_lost=false;completed_frames=0;current_vsync=-1;width=height=phys_w=phys_h=drawable_w=drawable_h=rotation=sc_rotation=0;gpu_ms=-1;color_format=depth_format=VK_FORMAT_UNDEFINED;
     SDL_Vulkan_UnloadLibrary();
 }

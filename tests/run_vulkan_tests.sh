@@ -10,5 +10,6 @@ c++ -std=c++17 -O1 $cflags -c android/native/vulkan/renderer.cpp -o build/host-t
 cc -std=gnu99 $cflags -c android/native/gles_compat.c -o build/host-tests/frontend.o
 cc -std=gnu99 $cflags -c tests/vulkan_frontend_test.c -o build/host-tests/frontend_test.o
 c++ -std=c++17 $cflags tests/vulkan_test.cpp build/host-tests/renderer.o build/host-tests/volk.o -o build/host-tests/vulkan_test $(pkg-config --libs sdl2) -ldl
+c++ -std=c++17 $cflags tests/vulkan_rotation_test.cpp build/host-tests/renderer.o build/host-tests/volk.o -o build/host-tests/vulkan_rotation_test $(pkg-config --libs sdl2) -ldl
 c++ build/host-tests/frontend_test.o build/host-tests/frontend.o build/host-tests/renderer.o build/host-tests/volk.o -o build/host-tests/vulkan_frontend_test $(pkg-config --libs sdl2) -lGLESv2 -ldl -lm
-xvfb-run -a env SDL_VIDEODRIVER=x11 sh -c 'build/host-tests/vulkan_test && build/host-tests/vulkan_frontend_test'
+xvfb-run -a env SDL_VIDEODRIVER=x11 sh -c 'build/host-tests/vulkan_test && build/host-tests/vulkan_rotation_test && build/host-tests/vulkan_frontend_test'
