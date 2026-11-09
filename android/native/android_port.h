@@ -2,6 +2,7 @@
 #pragma once
 #include <SDL.h>
 void Android_Init(void);
+void Android_ThreadInit(void);
 int Android_Event(const SDL_Event *event);
 int Android_Foreground(void);
 void Android_Frame(void);

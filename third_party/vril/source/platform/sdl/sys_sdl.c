@@ -416,6 +416,9 @@ int main(int argc, char **argv)
 	COM_InitArgv(startup.argc, startup.argv);
 	parms.argc = com_argc;
 	parms.argv = com_argv;
+#ifdef PLATFORM_ANDROID
+	Android_ThreadInit();
+#endif
 	Host_Init(&parms);
 #ifdef PLATFORM_ANDROID
 	Android_Init();

@@ -5,6 +5,8 @@
 #include "android_port.h"
 #include "vulkan/renderer.h"
 #include "touch_gameplay.h"
+#include "thread_roles.h"
+#include "jobs.h"
 #include "menu/menu_defs.h"
 #include <SDL_mixer.h>
 #include <jni.h>
@@ -171,6 +173,8 @@ JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchNeutr
 
 static cvar_t touch_sensitivity={"touch_sensitivity","1.0",true};
 cvar_t nzp_profile={"nzp_profile","0",true};
+/* Pin the game thread to the performance cores / background work to the efficiency cores (big.LITTLE). */
+static cvar_t nzp_cpu_affinity={"nzp_cpu_affinity","1",true};
 extern cvar_t cl_maxfps;
 extern void Host_WriteConfiguration(void);
 extern void SNDDMA_SetPaused(int paused);
@@ -190,7 +194,17 @@ int Android_FrameRate(void) {
     return user_limit;
 }
 int Android_Foreground(void){return foreground;}
+/* Runs before Host_Init so loading and renderer start-up already use the right cores. */
+void Android_ThreadInit(void){
+    nzp_threads_init();
+    SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH); /* Java Process priority; allowed for apps */
+    nzp_thread_apply_role(NZP_ROLE_GAME);
+    nzp_jobs_init();
+}
 void Android_Init(void){
+    Cvar_RegisterVariable(&nzp_cpu_affinity);
+    nzp_threads_set_affinity_enabled(nzp_cpu_affinity.value!=0);
+    nzp_thread_apply_role(NZP_ROLE_GAME); /* re-apply with the saved cvar value */
     Cvar_RegisterVariable(&touch_sensitivity);
     Cvar_RegisterVariable(&touch_auto_sprint);
     Cvar_RegisterVariable(&nzp_profile);
