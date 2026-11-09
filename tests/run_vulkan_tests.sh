@@ -8,8 +8,10 @@ cflags="-DNZP_VULKAN -DVK_NO_PROTOTYPES -Iandroid/native -Ibuild/host-tests $(pk
 cc $cflags -c android/native/vulkan/vendor/volk.c -o build/host-tests/volk.o
 c++ -std=c++17 -O1 $cflags -c android/native/vulkan/renderer.cpp -o build/host-tests/renderer.o
 cc -std=gnu99 $cflags -c android/native/gles_compat.c -o build/host-tests/frontend.o
+for f in jobs thread_roles cpu_topology; do cc -std=gnu11 -D_GNU_SOURCE $cflags -c android/native/$f.c -o build/host-tests/$f.o; done
+threads="build/host-tests/jobs.o build/host-tests/thread_roles.o build/host-tests/cpu_topology.o -lpthread"
 cc -std=gnu99 $cflags -c tests/vulkan_frontend_test.c -o build/host-tests/frontend_test.o
-c++ -std=c++17 $cflags tests/vulkan_test.cpp build/host-tests/renderer.o build/host-tests/volk.o -o build/host-tests/vulkan_test $(pkg-config --libs sdl2) -ldl
-c++ -std=c++17 $cflags tests/vulkan_rotation_test.cpp build/host-tests/renderer.o build/host-tests/volk.o -o build/host-tests/vulkan_rotation_test $(pkg-config --libs sdl2) -ldl
-c++ build/host-tests/frontend_test.o build/host-tests/frontend.o build/host-tests/renderer.o build/host-tests/volk.o -o build/host-tests/vulkan_frontend_test $(pkg-config --libs sdl2) -lGLESv2 -ldl -lm
-xvfb-run -a env SDL_VIDEODRIVER=x11 sh -c 'build/host-tests/vulkan_test && build/host-tests/vulkan_rotation_test && build/host-tests/vulkan_frontend_test'
+c++ -std=c++17 $cflags tests/vulkan_test.cpp build/host-tests/renderer.o build/host-tests/volk.o $threads -o build/host-tests/vulkan_test $(pkg-config --libs sdl2) -ldl
+c++ -std=c++17 $cflags tests/vulkan_rotation_test.cpp build/host-tests/renderer.o build/host-tests/volk.o $threads -o build/host-tests/vulkan_rotation_test $(pkg-config --libs sdl2) -ldl
+c++ build/host-tests/frontend_test.o build/host-tests/frontend.o build/host-tests/renderer.o build/host-tests/volk.o $threads -o build/host-tests/vulkan_frontend_test $(pkg-config --libs sdl2) -lGLESv2 -ldl -lm
+xvfb-run -a env SDL_VIDEODRIVER=x11 NZP_JOBS_WORKERS=${NZP_JOBS_WORKERS:-4} sh -c 'build/host-tests/vulkan_test && build/host-tests/vulkan_rotation_test && build/host-tests/vulkan_frontend_test'

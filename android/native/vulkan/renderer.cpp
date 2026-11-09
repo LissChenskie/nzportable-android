@@ -2,6 +2,7 @@
 // Native Vulkan 1.1 backend for Vril's shared geometry/material frontend.
 #include "renderer.h"
 #include "prerotate.h"
+#include "../jobs.h"
 #include "vendor/volk.h"
 #ifdef __clang__
 #pragma clang diagnostic push
@@ -21,6 +22,8 @@
 #include <array>
 #include <cstring>
 #include <cstdlib>
+#include <mutex>
+#include <atomic>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -95,7 +98,7 @@ VkPipelineLayout pipeline_layout{};VkPipelineCache pipeline_cache{};
 VkShaderModule vertex_shader{},fragment_shader{};
 VkRenderPass native_pass{},world_pass{};
 VkDebugUtilsMessengerEXT debug{};
-std::map<PipelineKey,VkPipeline> pipelines;
+std::map<PipelineKey,VkPipeline> pipelines;std::mutex pipeline_mutex;
 PipelineKey recent_pipeline_key{};VkPipeline recent_pipeline{};
 nzp_vk_command_stats last_command_stats{};nzp_vk_frame_timings last_frame_timings{};
 std::map<unsigned,Texture> textures;std::map<unsigned,Mesh> meshes;
@@ -334,17 +337,18 @@ VkPrimitiveTopology topology(unsigned m){switch(m){case 0:return VK_PRIMITIVE_TO
  case 3:return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;case 4:return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
  case 5:return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;case 6:return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
  default:throw std::runtime_error("Unsupported Vril primitive");}}
-VkPipeline pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,int lightmapped=0,int alpha_test=0){
+PipelineKey make_key(const Layout &layout,unsigned mode,const nzp_vk_raster &s,int lightmapped,int alpha_test){
     PipelineKey key{};key.lightmapped=lightmapped;key.alpha_test=alpha_test;key.layout=layout;key.mode=mode;key.blend=s.blend;key.depth=s.depth;key.depth_write=s.depth_write;
     key.cull=s.cull;key.offset=s.offset;key.blend_src=s.blend_src;key.blend_dst=s.blend_dst;key.depth_func=s.depth_func;key.cull_face=s.cull_face;
     if(!key.blend){key.blend_src=1;key.blend_dst=0;}
     if(!key.depth){key.depth_func=0x203;key.depth_write=0;}
     if(!key.cull)key.cull_face=0x404;
-    // The current material often repeats for many adjacent BSP surfaces.
-    if(recent_pipeline && !std::memcmp(&key,&recent_pipeline_key,sizeof(key)))return recent_pipeline;
-    auto it=pipelines.find(key);if(it!=pipelines.end()){
-        recent_pipeline_key=key;recent_pipeline=it->second;return it->second;
-    }
+    return key;
+}
+// Builds one pipeline. Touches only immutable objects (shader modules, layout, render
+// pass) and the pipeline cache, which Vulkan synchronizes internally, so several
+// threads may call it concurrently (used to prewarm on all cores).
+VkPipeline create_pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,int lightmapped,int alpha_test){
     VkPipelineShaderStageCreateInfo stages[2]{};
     for(int i=0;i<2;i++){stages[i].sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[i].stage=i?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;
@@ -379,9 +383,28 @@ VkPipeline pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,in
     ci.pVertexInputState=&vertex;ci.pInputAssemblyState=&assembly;ci.pViewportState=&viewport;ci.pRasterizationState=&raster;
     ci.pMultisampleState=&multisample;ci.pDepthStencilState=&depth;ci.pColorBlendState=&blending;ci.pDynamicState=&dyn;
     ci.layout=pipeline_layout;ci.renderPass=native_pass;
-    VkPipeline result;VK_CHECK(vkCreateGraphicsPipelines(device,pipeline_cache,1,&ci,nullptr,&result));pipelines.emplace(key,result);
-    recent_pipeline_key=key;recent_pipeline=result;
-    if(recording)SDL_Log("NZP_VULKAN runtime_pipeline_miss count=%zu",pipelines.size());return result;
+    VkPipeline result;VK_CHECK(vkCreateGraphicsPipelines(device,pipeline_cache,1,&ci,nullptr,&result));
+    return result;
+}
+// Looks up or creates a pipeline. Thread-safe; only the render thread (main_thread)
+// uses the one-entry recent cache and reports runtime misses.
+VkPipeline pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,int lightmapped=0,int alpha_test=0,bool main_thread=true){
+    PipelineKey key=make_key(layout,mode,s,lightmapped,alpha_test);
+    // The current material often repeats for many adjacent BSP surfaces.
+    if(main_thread&&recent_pipeline&&!std::memcmp(&key,&recent_pipeline_key,sizeof(key)))return recent_pipeline;
+    {std::lock_guard<std::mutex> lock(pipeline_mutex);
+     auto it=pipelines.find(key);if(it!=pipelines.end()){
+        if(main_thread){recent_pipeline_key=key;recent_pipeline=it->second;}
+        return it->second;}}
+    VkPipeline result=create_pipeline(layout,mode,s,lightmapped,alpha_test);
+    size_t count;
+    {std::lock_guard<std::mutex> lock(pipeline_mutex);
+     auto inserted=pipelines.emplace(key,result);
+     if(!inserted.second){vkDestroyPipeline(device,result,nullptr);result=inserted.first->second;} // lost a creation race
+     count=pipelines.size();}
+    if(main_thread){recent_pipeline_key=key;recent_pipeline=result;
+        if(recording)SDL_Log("NZP_VULKAN runtime_pipeline_miss count=%zu",count);}
+    return result;
 }
 Layout interleaved(){Layout l{};for(int i=0;i<3;i++)l.stride[i]=sizeof(nzp_vk_vertex);
  l.format[0]=VK_FORMAT_R32G32B32_SFLOAT;l.format[1]=VK_FORMAT_R32G32_SFLOAT;l.format[2]=VK_FORMAT_R8G8B8A8_UNORM;l.stride[3]=l.stride[1];l.format[3]=l.format[1];return l;}
@@ -601,15 +624,29 @@ int NZP_VK_Init(SDL_Window *w,const char *directory,int enable_validation){
         upscale_sampler=sampler_for(0x2601,0x2601,0x812f,0x812f,1);
         // Prewarm common interleaved states. Unseen vertex layouts are logged misses.
         nzp_vk_raster s{};s.blend_src=0x302;s.blend_dst=0x303;s.depth_func=0x203;s.depth_write=1;s.cull_face=0x404;
-        for(int layout_index=0;layout_index<3;layout_index++){
-            Layout layout=interleaved();
-            if(layout_index){layout.stride[0]=layout_index==1?28:12;layout.stride[1]=layout.stride[3]=layout_index==1?28:0;layout.stride[2]=0;}
-            for(int depth=0;depth<2;depth++)for(int blend=0;blend<2;blend++)for(int cull=0;cull<3;cull++){
-                s.depth=depth;s.blend=blend;s.cull=cull!=0;s.cull_face=cull==2?0x405:0x404;
-                for(int write=0;write<2;write++){s.depth_write=write;pipeline(layout,4,s);if(layout_index==1)pipeline(layout,4,s,1);}
-                // GL_ALPHA_TEST sprites, fences and alias models.
-                if(depth&&!blend)pipeline(layout,4,s,0,1);
+        {
+            struct Request{Layout layout;nzp_vk_raster raster;unsigned mode;int lightmapped,alpha_test;};
+            std::vector<Request> requests;
+            for(int layout_index=0;layout_index<3;layout_index++){
+                Layout layout=interleaved();
+                if(layout_index){layout.stride[0]=layout_index==1?28:12;layout.stride[1]=layout.stride[3]=layout_index==1?28:0;layout.stride[2]=0;}
+                for(int depth=0;depth<2;depth++)for(int blend=0;blend<2;blend++)for(int cull=0;cull<3;cull++){
+                    s.depth=depth;s.blend=blend;s.cull=cull!=0;s.cull_face=cull==2?0x405:0x404;
+                    for(int write=0;write<2;write++){s.depth_write=write;requests.push_back({layout,s,4,0,0});if(layout_index==1)requests.push_back({layout,s,4,1,0});}
+                    // GL_ALPHA_TEST sprites, fences and alias models.
+                    if(depth&&!blend)requests.push_back({layout,s,4,0,1});
+                }
             }
+            // Cold-cache pipeline compilation is the slowest part of startup on Mali.
+            // Nothing is rendering yet, so let every core (including the big ones) help.
+            struct Context{std::vector<Request> *requests;std::atomic<int> failed{0};} context{&requests};
+            nzp_jobs_init();nzp_jobs_set_burst(1);
+            nzp_parallel_for((int)requests.size(),[](int index,void *user){
+                auto *c=(Context*)user;const Request &r=(*c->requests)[index];
+                try{pipeline(r.layout,r.mode,r.raster,r.lightmapped,r.alpha_test,false);}catch(...){c->failed++;}
+            },&context);
+            nzp_jobs_set_burst(0);
+            if(context.failed)throw std::runtime_error("Pipeline prewarm failed");
         }
         active=true;recreate(1,100);
         SDL_Log("NZP_VULKAN device=%s api=%u.%u driver=%u",properties.deviceName,VK_VERSION_MAJOR(properties.apiVersion),VK_VERSION_MINOR(properties.apiVersion),properties.driverVersion);
