@@ -83,6 +83,16 @@ int main(){
     double e_bi=mae(bilinear,truth),e_fsr=mae(upscaled,truth);
     printf("static: bilinear MAE %.2f, FSR MAE %.2f (active=%d)\n",e_bi,e_fsr,fsr_on);
     if(!fsr_on){puts("FSR not compiled in; temporal upscaling checks skipped");NZP_VK_Shutdown();SDL_DestroyWindow(win);SDL_Quit();return 0;}
+    // A swapchain rebuild (here forced via the pre-rotation setting) must not rebuild the upscaler:
+    // creating it compiles dozens of pipelines, and doing it every frame made the game run at ~1 fps.
+    {
+        const int before=NZP_VK_FSRContextsCreated();assert(before==1);
+        for(int i=0;i<3;i++){NZP_VK_SetPreRotation(i&1);(void)run(50,true,2,0.f,1);assert(NZP_VK_FSRActive());}
+        assert(NZP_VK_FSRContextsCreated()==before);
+        assert(NZP_VK_FSRState()==1);
+        NZP_VK_SetFSR(0);assert(NZP_VK_BeginFrame(0,50));assert(NZP_VK_FSRState()==0&&!NZP_VK_FSRActive());NZP_VK_EndFrame();
+        NZP_VK_SetFSR(1);
+    }
     assert(e_fsr<e_bi*1.4); /* sanity: not broken (detail this thin is not recoverable by any 2x upscaler) */
     {   /* The outermost pixels must not be darker than their neighbours (kernel edge energy loss). */
         double edge=0,inner=0;for(int x=0;x<W;x++)for(int c=0;c<3;c++){edge+=upscaled[(size_t(0)*W+x)*4+c];inner+=upscaled[(size_t(4)*W+x)*4+c];}

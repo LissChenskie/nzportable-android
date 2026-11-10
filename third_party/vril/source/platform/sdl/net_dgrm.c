@@ -258,7 +258,8 @@ int ReSendMessage (qsocket_t *sock)
 	sock->lastSendTime = net_time;
 	// Karn: a retransmitted packet's ACK is ambiguous, so it yields no RTT sample.
 	sock->retransmitted = true;
-	sock->rto = LAN_RtoBackoff(sock->rto);
+	if (!LAN_LEGACY_MODE)
+		sock->rto = LAN_RtoBackoff(sock->rto);
 	packetsReSent++;
 	return 1;
 }
@@ -396,7 +397,7 @@ int	Datagram_GetMessage (qsocket_t *sock)
 			}
 			if (sequence == sock->ackSequence)
 			{
-				if (!sock->retransmitted)
+				if (!sock->retransmitted && !LAN_LEGACY_MODE)
 					LAN_RtoSample(&sock->srtt, &sock->rttvar, &sock->rto, net_time - sock->lastSendTime);
 				sock->ackSequence++;
 				if (sock->ackSequence != sock->sendSequence)
@@ -1228,14 +1229,9 @@ static qsocket_t *_Datagram_Connect (char *host)
 	Con_Printf("trying...\n"); SCR_UpdateScreen ();
 	start_time = net_time;
 
-#ifdef PLATFORM_ANDROID
-	// Hotspot clients lose the first packets to ARP resolution and Wi-Fi wakeup.
-	// Retry faster, and always inside the server's 2.0 s duplicate-request window:
-	// a lost ACCEPT then gets a duplicate reply instead of closing the new socket.
-	for (reps = 0; reps < 5; reps++)
-#else
-	for (reps = 0; reps < 3; reps++)
-#endif
+	// Hotspot clients lose the first packets to ARP resolution and Wi-Fi wakeup, so retry faster
+	// than the original 3 x 2.5 s (legacy mode keeps the original timing).
+	for (reps = 0; reps < (LAN_LEGACY_MODE ? 3 : 5); reps++)
 	{
 		SZ_Clear(&net_message);
 		// save space for the header, filled in later
@@ -1296,11 +1292,7 @@ static qsocket_t *_Datagram_Connect (char *host)
 			// No CPU busy-spin while probing a sleeping Wi-Fi server.
 			if (ret == 0) SDL_Delay(1);
 #endif
-#ifdef PLATFORM_ANDROID
-		} while (ret == 0 && (SetNetTime() - start_time) < 1.5);
-#else
-		} while (ret == 0 && (SetNetTime() - start_time) < 2.5);
-#endif
+		} while (ret == 0 && (SetNetTime() - start_time) < (LAN_LEGACY_MODE ? 2.5 : 1.5));
 		if (ret)
 			break;
 		Con_Printf("still trying...\n"); SCR_UpdateScreen ();

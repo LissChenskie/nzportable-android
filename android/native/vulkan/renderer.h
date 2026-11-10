@@ -48,6 +48,10 @@ int NZP_VK_GetRotation(void);
  * below 100%. Returns/keeps 0 when the library is not built in or cannot be created. */
 void NZP_VK_SetFSR(int enabled);
 int NZP_VK_FSRActive(void);
+int NZP_VK_FSRSupported(void);
+int NZP_VK_FSRContextsCreated(void); /* diagnostics/tests: creating one is expensive */
+/* 0 off, 1 running, 2 unsupported by this device, 3 turned itself off (failed or too slow), 4 on but render scale is 100% */
+int NZP_VK_FSRState(void);
 /* Camera of the current 3D view (vertical FOV in radians); call once per rendered frame. */
 void NZP_VK_SetCamera(float near_plane,float far_plane,float fov_y_radians);
 /* Discontinuity (teleport, level change): drop temporal history on the next frame. */

@@ -65,6 +65,7 @@ int unreliableMessagesSent = 0;
 int unreliableMessagesReceived = 0;
 
 cvar_t	net_messagetimeout = {"net_messagetimeout","300"};
+cvar_t	net_lan_legacy = {"net_lan_legacy","0",true};
 cvar_t	hostname = {"hostname", "UNNAMED"};
 
 qboolean	configRestored = false;
@@ -143,7 +144,7 @@ qsocket_t *NET_NewQSocket (void)
 	sock->unreliableReceiveSequence = 0;
 	sock->receiveMessageLength = 0;
 	sock->srtt = sock->rttvar = 0;
-	sock->rto = LAN_RTO_INITIAL;
+	sock->rto = LAN_LEGACY_MODE ? 1.0 : LAN_RTO_INITIAL;
 	sock->retransmitted = false;
 
 	return sock;
@@ -870,6 +871,7 @@ void NET_Init (void)
 	SZ_Alloc (&net_message, NET_MAXMESSAGE);
 
 	Cvar_RegisterVariable (&net_messagetimeout);
+	Cvar_RegisterVariable (&net_lan_legacy);
 	Cvar_RegisterVariable (&hostname);
 	Cvar_RegisterVariable (&config_com_port);
 	Cvar_RegisterVariable (&config_com_irq);

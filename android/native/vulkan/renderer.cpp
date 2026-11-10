@@ -116,7 +116,10 @@ int rotation{},sc_rotation{},phys_w{},phys_h{},drawable_w{},drawable_h{},test_ro
 // and depth is stored/sampled (D32), which costs bandwidth that bilinear upscaling does not.
 bool fsr_wanted=false,fsr_active=false,fsr_reset=true,fsr_failed=false,fsr_supported=false;nzp_fsr::Context *fsr_ctx=nullptr;
 int fsr_phase=0,fsr_phase_count=1;float jitter_px[2]{},cam_near=4.f,cam_far=4096.f,cam_fov=1.2f;
-float fsr_sharpness=0.2f;Uint64 last_frame_ticks=0;unsigned long long frame_serial=0;bool mrt_prewarmed=false;
+float fsr_sharpness=0.2f;Uint64 last_frame_ticks=0;
+int fsr_contexts_created=0,fsr_slow_frames=0,fsr_frames_alive=0,fsr_ctx_rw=0,fsr_ctx_rh=0,fsr_ctx_dw=0,fsr_ctx_dh=0,fsr_ctx_quality=0;
+// What the swapchain was built against; a VK_SUBOPTIMAL_KHR only triggers a rebuild if this changed.
+VkSurfaceTransformFlagBitsKHR sc_seen_transform{};uint32_t sc_seen_w=0,sc_seen_h=0;unsigned long long frame_serial=0;bool mrt_prewarmed=false;
 const VkFormat FsrColorFormat=VK_FORMAT_R8G8B8A8_UNORM,FsrMotionFormat=VK_FORMAT_R16G16_SFLOAT,FsrDepthFormat=VK_FORMAT_D32_SFLOAT;
 bool active{},recording{},in_pass{},ui{},resize_pending{},capture_requested{},can_capture{},pass_has_draw{};
 float pass_clear_color[4],pass_clear_depth;
@@ -242,11 +245,12 @@ VkFramebuffer framebuffer(VkImageView color,VkImageView depth,int w,int h,VkRend
     ci.renderPass=pass;ci.attachmentCount=2;ci.pAttachments=views;ci.width=w;ci.height=h;ci.layers=1;
     VkFramebuffer fb;VK_CHECK(vkCreateFramebuffer(device,&ci,nullptr,&fb));return fb;
 }
+void destroy_fsr_context(){if(fsr_ctx){nzp_fsr::destroy(fsr_ctx);fsr_ctx=nullptr;}fsr_ctx_rw=fsr_ctx_rh=fsr_ctx_dw=fsr_ctx_dh=0;}
 void destroy_targets(){
     for(auto &f:frames){if(f.benchmark_fb)vkDestroyFramebuffer(device,f.benchmark_fb,nullptr);f.benchmark_fb={};destroy(f.benchmark_color);destroy(f.benchmark_depth);if(f.world_fb)vkDestroyFramebuffer(device,f.world_fb,nullptr);f.world_fb={};
         if(f.world_set)vkFreeDescriptorSets(device,descriptors,1,&f.world_set);f.world_set={};
         destroy(f.world);destroy(f.world_depth);destroy(f.world_mv);destroy(f.fsr_out);}
-    if(fsr_ctx){nzp_fsr::destroy(fsr_ctx);fsr_ctx=nullptr;}fsr_active=false;
+    fsr_active=false; // the FSR context itself survives swapchain rebuilds (it is expensive to create)
     for(auto &i:images){if(i.fb)vkDestroyFramebuffer(device,i.fb,nullptr);destroy(i.depth);
         if(i.view)vkDestroyImageView(device,i.view,nullptr);if(i.complete)vkDestroySemaphore(device,i.complete,nullptr);}
     images.clear();if(swapchain)vkDestroySwapchainKHR(device,swapchain,nullptr);swapchain={};
@@ -277,6 +281,16 @@ void write_image_set(VkDescriptorSet set,VkImageView view,VkSampler sampler){
 }
 VkSampler upscale_sampler{};
 void prewarm_pipelines(bool mrt);
+// A driver may keep reporting VK_SUBOPTIMAL_KHR forever (for example when it prefers a different
+// pre-transform). Rebuilding on every such report meant a swapchain rebuild per frame; only rebuild
+// when the surface really differs from what the swapchain was built for.
+void note_suboptimal(){
+    VkSurfaceCapabilitiesKHR caps;
+    if(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical,surface,&caps)!=VK_SUCCESS){resize_pending=true;return;}
+    if(caps.currentTransform!=sc_seen_transform||caps.currentExtent.width!=sc_seen_w||caps.currentExtent.height!=sc_seen_h){resize_pending=true;return;}
+    static bool logged=false;
+    if(!logged){logged=true;SDL_Log("NZP_VULKAN ignoring persistent VK_SUBOPTIMAL_KHR (surface unchanged, transform=%d)",(int)caps.currentTransform);}
+}
 bool recreate(int vsync,int percent){
     int w,h;SDL_Vulkan_GetDrawableSize(window,&w,&h);if(w<=0||h<=0)return false;
     drawable_w=w;drawable_h=h;
@@ -315,6 +329,7 @@ bool recreate(int vsync,int percent){
         }
     }
     if(!extent.width||!extent.height)return false;
+    sc_seen_transform=caps.currentTransform;sc_seen_w=caps.currentExtent.width;sc_seen_h=caps.currentExtent.height;
     width=nzp_rot_odd(sc_rotation)?extent.height:extent.width;height=nzp_rot_odd(sc_rotation)?extent.width:extent.height;
     const bool bench=requested_benchmark;
     rotation=(bench&&test_rotation>=0)?test_rotation:sc_rotation;
@@ -352,11 +367,20 @@ bool recreate(int vsync,int percent){
     if(percent<100&&fsr_wanted&&!fsr_failed&&fsr_supported&&nzp_fsr::available()){
         // Quality mode follows the render ratio; Arm ASR trades shader cost for stability.
         const float ratio=float(width)/float(world_width);
-        fsr_ctx=nzp_fsr::create(physical,device,world_width,world_height,width,height,ratio>=1.9f?3:ratio>=1.5f?2:1);
-        if(fsr_ctx){fsr_active=true;fsr_reset=true;fsr_phase=0;fsr_phase_count=std::max(1,nzp_fsr::phase_count(world_width,width));
+        const int quality=ratio>=1.9f?3:ratio>=1.5f?2:1;
+        // Creating the context compiles dozens of pipelines (seconds on Mali): reuse it across
+        // swapchain rebuilds when nothing about the upscale itself changed.
+        if(fsr_ctx&&(fsr_ctx_rw!=world_width||fsr_ctx_rh!=world_height||fsr_ctx_dw!=width||fsr_ctx_dh!=height||fsr_ctx_quality!=quality))
+            destroy_fsr_context();
+        if(!fsr_ctx){
+            fsr_ctx=nzp_fsr::create(physical,device,world_width,world_height,width,height,quality);
+            if(fsr_ctx){++fsr_contexts_created;fsr_ctx_rw=world_width;fsr_ctx_rh=world_height;fsr_ctx_dw=width;fsr_ctx_dh=height;fsr_ctx_quality=quality;}
+        }
+        if(fsr_ctx){fsr_active=true;fsr_reset=true;fsr_phase=0;fsr_slow_frames=0;fsr_frames_alive=0;
+            fsr_phase_count=std::max(1,nzp_fsr::phase_count(world_width,width));
             if(!mrt_prewarmed){prewarm_pipelines(true);mrt_prewarmed=true;}}
         else fsr_failed=true; // fall back to bilinear for the rest of the session
-    }
+    }else destroy_fsr_context();
     if(percent<100)for(auto &f:frames){
         const VkFormat world_format=fsr_active?FsrColorFormat:color_format;
         f.world=make_image(world_width,world_height,1,world_format,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
@@ -773,6 +797,15 @@ void NZP_VK_SetTestRotation(int quarter_turns){if(test_rotation!=quarter_turns){
 int NZP_VK_GetRotation(void){return rotation*90;}
 void NZP_VK_SetFSR(int enabled){if(fsr_wanted!=bool(enabled)){fsr_wanted=enabled;fsr_failed=false;resize_pending=true;}}
 int NZP_VK_FSRActive(void){return fsr_active;}
+int NZP_VK_FSRContextsCreated(void){return fsr_contexts_created;}
+int NZP_VK_FSRSupported(void){return fsr_supported&&nzp_fsr::available();}
+// 0 off, 1 running, 2 unsupported on this device, 3 turned itself off (failure/too slow), 4 on but render scale is 100%
+int NZP_VK_FSRState(void){
+    if(!fsr_supported||!nzp_fsr::available())return 2;
+    if(!fsr_wanted)return 0;
+    if(fsr_failed)return 3;
+    return fsr_active?1:4;
+}
 void NZP_VK_SetCamera(float near_plane,float far_plane,float fov_y){cam_near=near_plane;cam_far=far_plane;cam_fov=fov_y;}
 void NZP_VK_ResetHistory(void){fsr_reset=true;}
 void NZP_VK_SetFSRSharpness(float value){fsr_sharpness=std::min(std::max(value,0.f),1.f);}
@@ -814,7 +847,7 @@ int NZP_VK_BeginFrame(int vsync,int percent){
     if(!benchmark)r=vkAcquireNextImageKHR(device,swapchain,UINT64_MAX,f.acquired,VK_NULL_HANDLE,&image_index);
     f.timings.acquire_ms=1000.0*(SDL_GetPerformanceCounter()-acquire_start)/SDL_GetPerformanceFrequency();
     if(r==VK_ERROR_SURFACE_LOST_KHR){surface_lost=true;resize_pending=true;return 0;}
-    if(r==VK_ERROR_OUT_OF_DATE_KHR){resize_pending=true;return 0;}if(r!=VK_SUBOPTIMAL_KHR)VK_CHECK(r);else resize_pending=true;
+    if(r==VK_ERROR_OUT_OF_DATE_KHR){resize_pending=true;return 0;}if(r!=VK_SUBOPTIMAL_KHR)VK_CHECK(r);else note_suboptimal();
     VK_CHECK(vkResetCommandPool(device,f.pool,0));VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};bi.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(f.upload,&bi));VK_CHECK(vkBeginCommandBuffer(f.draw,&bi));
     if(f.queries){vkCmdResetQueryPool(f.draw,f.queries,0,2);vkCmdWriteTimestamp(f.draw,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,f.queries,0);}
@@ -840,6 +873,15 @@ void record_fsr(){
         SDL_Log("NZP_FSR dispatch failed; disabling temporal upscaling");fsr_failed=true;resize_pending=true;
     }
     fsr_reset=false;
+    // Safety net: if temporal upscaling makes the game unplayable on this GPU, switch it off
+    // instead of leaving the player at a few frames per second.
+    if(++fsr_frames_alive>45){
+        if(dt>180.f)++fsr_slow_frames;else if(fsr_slow_frames>0)fsr_slow_frames-=2;
+        if(fsr_slow_frames>=20){
+            SDL_Log("NZP_FSR frames take %.0f ms with temporal upscaling; turning it off for this session",dt);
+            fsr_failed=true;resize_pending=true;
+        }
+    }
     barrier(cb,f.fsr_out.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 }
@@ -886,7 +928,7 @@ void NZP_VK_EndFrame(){
     auto r=benchmark?VK_SUCCESS:vkQueuePresentKHR(queue,&pi);
     frame().timings.present_ms=benchmark?0:1000.0*(SDL_GetPerformanceCounter()-present_start)/SDL_GetPerformanceFrequency();
     if(r==VK_ERROR_SURFACE_LOST_KHR){surface_lost=true;resize_pending=true;}
-    else if(r==VK_ERROR_OUT_OF_DATE_KHR||r==VK_SUBOPTIMAL_KHR)resize_pending=true;else VK_CHECK(r);
+    else if(r==VK_ERROR_OUT_OF_DATE_KHR)resize_pending=true;else if(r==VK_SUBOPTIMAL_KHR)note_suboptimal();else VK_CHECK(r);
     last_command_stats=frame().stats;last_frame_timings=frame().timings;
     frame_index=(frame_index+1)%Frames;
 }
@@ -1013,7 +1055,7 @@ void NZP_VK_Shutdown(){
         if(pipeline_cache){size_t size=0;if(vkGetPipelineCacheData(device,pipeline_cache,&size,nullptr)==VK_SUCCESS&&size<32*1024*1024){std::vector<unsigned char> data(size);
             if(vkGetPipelineCacheData(device,pipeline_cache,&size,data.data())==VK_SUCCESS){std::string temp=cache_path+".tmp";FILE *f=std::fopen(temp.c_str(),"wb");if(f){bool ok=std::fwrite(data.data(),1,size,f)==size;std::fclose(f);if(ok)std::rename(temp.c_str(),cache_path.c_str());}}}}
         destroy(readback);captured.clear();capture_requested=false;screenshot_path.clear();
-        destroy_targets();for(auto &f:frames){f.textures.clear();f.meshes.clear();}textures.clear();meshes.clear();
+        destroy_fsr_context();destroy_targets();for(auto &f:frames){f.textures.clear();f.meshes.clear();}textures.clear();meshes.clear();
         for(auto &p:pipelines)vkDestroyPipeline(device,p.second,nullptr);pipelines.clear();
         recent_pipeline=VK_NULL_HANDLE;recent_pipeline_key={};
         for(auto &f:frames){for(auto &b:f.staging)destroy(b);destroy(f.arena);if(f.queries)vkDestroyQueryPool(device,f.queries,nullptr);if(f.pool)vkDestroyCommandPool(device,f.pool,nullptr);

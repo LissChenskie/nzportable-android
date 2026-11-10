@@ -53,7 +53,8 @@ void Menu_Video_ApplyParticles(void);
 void Menu_Video_ApplyTextureFiltering(void);
 void Menu_Video_ApplyDithering(void);
 void Menu_Video_ApplyUltrawide(void);
-extern cvar_t vid_render_scale,vid_ui_scale,r_vsync,nzp_profile,vid_benchmark,vid_performance_mode;
+extern cvar_t vid_render_scale,vid_ui_scale,r_vsync,nzp_profile,vid_benchmark,vid_performance_mode,vk_fsr,vk_prerotate,net_lan_legacy;
+int VID_FSRState(void);
 void VID_SetGraphicsAPIChoice(void);
 char *VID_GraphicsAPIName(void);
 extern int Android_FrameRate(void);
@@ -95,6 +96,28 @@ static void Menu_Video_PerformanceMode(void){
 }
 int VID_StartRendererBenchmark(void);
 static void Menu_Video_Benchmark(void){if(VID_StartRendererBenchmark()){key_dest=key_game;m_state=m_none;}}
+static void Menu_Video_ToggleFSR(void) {
+    if(VID_FSRState()==2) {Con_Printf("FSR needs Vulkan with fp16/SPIR-V 1.4 support; not available on this device.\n");return;}
+    Cvar_SetValue("vk_fsr",vk_fsr.value?0:1);
+    Menu_Video_Save();
+}
+static void Menu_Video_TogglePreRotation(void) {
+    Cvar_SetValue("vk_prerotate",vk_prerotate.value?0:1);
+    Menu_Video_Save();
+}
+static void Menu_Video_ToggleLanLegacy(void) {
+    Cvar_SetValue("net_lan_legacy",net_lan_legacy.value?0:1);
+    Menu_Video_Save();
+}
+static const char *Menu_Video_FSRText(void) {
+    switch(VID_FSRState()) {
+    case 1: return "ON";
+    case 2: return "NOT SUPPORTED";
+    case 3: return "AUTO-OFF (TOO SLOW)";
+    case 4: return "ON, NEEDS RES < 100%";
+    default: return "OFF";
+    }
+}
 static void Menu_Video_ToggleProfiling(void) {
     Cvar_SetValue("nzp_profile",nzp_profile.value?0:1);
     Menu_Video_Save();
@@ -104,7 +127,7 @@ static void Menu_Video_SetVsyncAndroid(void) {
     Menu_Video_Save();
 }
 static void Menu_Video_NextPageAndroid(void) {
-    android_video_page=(android_video_page+1)%4;
+    android_video_page=(android_video_page+1)%5;
     Menu_ResetMenuButtons();
 }
 static void Menu_Video_BackAndroid(void) {
@@ -143,16 +166,17 @@ static void Menu_Video_DrawAndroid(void) {
             "Native 100% default, lower values only when selected.",
             Menu_Video_SetRenderScale);
         Menu_DrawOptionButton(1,android_resolution_string);
-        Menu_DrawButton(2,i++,"UI SCALE","Adjust HUD and menu size separately.",
+        Menu_DrawButton(2,i++,"FSR UPSCALING",
+            "Sharper image when RESOLUTION is below 100%. Experimental; switches itself off if too slow.",
+            Menu_Video_ToggleFSR);
+        Menu_DrawOptionButton(2,Menu_Video_FSRText());
+        Menu_DrawButton(3,i++,"UI SCALE","Adjust HUD and menu size separately.",
             Menu_Video_SetUIScale);
-        Menu_DrawOptionButton(2,android_ui_string);
-        Menu_DrawButton(3,i++,"FPS LIMIT",
+        Menu_DrawOptionButton(3,android_ui_string);
+        Menu_DrawButton(4,i++,"FPS LIMIT",
             "30 / 45 / 60 / 90 / 120 / Unlimited",
             Menu_Video_SetFPSLimit);
-        Menu_DrawOptionButton(3,android_fps_string);
-        Menu_DrawButton(4,i++,"SHOW FPS","Display real frame rate.",
-            Menu_Video_ApplyShowFPS);
-        Menu_DrawOptionButton(4,fps_string);
+        Menu_DrawOptionButton(4,android_fps_string);
     } else if(android_video_page==1) {
         Menu_DrawButton(1,i++,"FIELD OF VIEW","Set camera field of view.",NULL);
         Menu_DrawOptionSlider(1,i-1,60,160,scr_fov,"fov",false,true,10.f);
@@ -187,6 +211,14 @@ static void Menu_Video_DrawAndroid(void) {
         Menu_DrawButton(2,i++,"PERFORMANCE MODE","Balanced 60 / Maximum 120 / Battery 30. No quality changes.",Menu_Video_PerformanceMode);
         Menu_DrawOptionButton(2,(int)vid_performance_mode.value==1?"MAXIMUM":(int)vid_performance_mode.value==2?"BATTERY SAVER":"BALANCED");
         Menu_DrawButton(3,i++,"OFFSCREEN BENCHMARK","600 frames without presentation. See renderer-benchmark.csv; use a demo for repeatable load.",Menu_Video_Benchmark);
+    }
+    if(android_video_page==4){
+        Menu_DrawButton(1,i++,"SHOW FPS","Display real frame rate.",Menu_Video_ApplyShowFPS);
+        Menu_DrawOptionButton(1,fps_string);
+        Menu_DrawButton(2,i++,"PRE-ROTATION","Vulkan: present with the screen rotation (Mali). Restart the app after changing.",Menu_Video_TogglePreRotation);
+        Menu_DrawOptionButton(2,vk_prerotate.value?"ON":"OFF");
+        Menu_DrawButton(3,i++,"LAN COMPATIBILITY","ON = original networking. Try it if joining a co-op game fails.",Menu_Video_ToggleLanLegacy);
+        Menu_DrawOptionButton(3,net_lan_legacy.value?"ON (ORIGINAL)":"OFF (NEW)");
     }
     Menu_DrawButton(-2,i++,"NEXT PAGE","More video options.",
         Menu_Video_NextPageAndroid);

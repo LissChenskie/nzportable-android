@@ -9,7 +9,7 @@ Khronos validation layers and on the host; **nothing was measured on a physical 
 * **Fragment shader**: `ALPHA_TEST` is a specialization constant, so opaque pipelines contain no
   `discard` (keeps early-Z / forward pixel kill on Bifrost/Valhall). Colour and fog-blend maths is
   `mediump` (fp16 on Mali); UVs, lightmap UVs and fog distance stay `highp`.
-* **Pre-rotation** (`vk_prerotate`, default 1, env `NZP_VK_PREROTATE=0` disables): the swapchain uses
+* **Pre-rotation** (`vk_prerotate`, **default 0 = off** until it is verified on devices; Video options, page 5, "PRE-ROTATION"; restart after changing): the swapchain uses
   the surface `currentTransform` so the compositor does not rotate every frame. A surface that only
   supports a rotated transform no longer forces GLES2. If the rotated extent disagrees with SDL's
   drawable size the renderer falls back to identity. Whether a given Mali driver reports a rotated
@@ -18,6 +18,8 @@ Khronos validation layers and on the host; **nothing was measured on a physical 
 * **Pipeline prewarm** runs on all cores (see threading).
 
 ## 2. Network: Android phone hosting a hotspot, other phones joining
+
+**Escape hatch:** Video options, page 5, "LAN COMPATIBILITY" (cvar `net_lan_legacy`) restores the original networking behaviour exactly (no Wi-Fi binding, first-interface address, fixed 1 s retransmit, 3x2.5 s connect). If co-op fails with the new code but works with this on, the cause is in these changes; the log lines `NZP_NET bind ...` show what the socket binding did.
 
 * `LanNetwork.java` holds a low-latency Wi-Fi lock and a multicast lock while the game is in the
   foreground and tracks the Wi-Fi `Network` (even when it has no internet). Client sockets are bound to
@@ -56,7 +58,9 @@ FidelityFX Super Resolution **2.2** - the temporal upscaler that FSR 3 is built 
 What is **not** included: **FSR 3 frame generation** (optical-flow interpolation of extra frames).
 It needs accurate per-pixel motion and a GPU budget that a Mali-G72 class device does not have.
 
-How it works: with `vid_render_scale` below 100 and `vk_fsr 1` (default), the world pass renders
+Where to switch it: **Video options, page 1, "FSR UPSCALING"** (cvar `vk_fsr`, **default off**). It shows OFF / ON / NOT SUPPORTED / AUTO-OFF (TOO SLOW) / ON but needs RESOLUTION below 100%. A frame-time watchdog turns it off for the session if frames stay above ~180 ms for a while.
+
+How it works: with `vid_render_scale` below 100 and `vk_fsr 1`, the world pass renders
 jittered, writes motion vectors (camera reprojection) and depth, Arm ASR upscales to the display size,
 and the HUD is drawn at native resolution on top. `vk_fsr_sharpness` controls RCAS (default 0.2).
 
@@ -78,3 +82,7 @@ Limits to know about:
 * The HDR input mode is used for 8-bit content because it is the configuration validated here; the LDR
   permutation produced dark, grid-patterned output under software Vulkan.
 * Licences: Arm ASR is MIT (derived from AMD FSR 2.2, MIT). See the notices in `third_party/arm_asr/LICENSES`.
+
+## Recreate-loop fix
+
+A driver that keeps returning `VK_SUBOPTIMAL_KHR` used to trigger a swapchain rebuild on every frame (and with FSR, a new upscaler context with dozens of pipelines each time, i.e. ~1 fps). The renderer now rebuilds only if the surface transform/extent really changed, and the FSR context survives swapchain rebuilds. Look for `NZP_VULKAN ignoring persistent VK_SUBOPTIMAL_KHR` in the log.

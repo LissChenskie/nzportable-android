@@ -93,6 +93,11 @@ static unsigned long UDP_LocalAddress(uint32_t peer_ip)
 {
     lan_iface_t ifaces[UDP_MAX_IFACES];
     int n = UDP_ListInterfaces(ifaces, NULL), best = LAN_PickInterface(ifaces, n, peer_ip);
+    if (LAN_LEGACY_MODE) { /* original behaviour: first active non-loopback interface */
+        best = -1;
+        for (int i = 0; i < n; i++)
+            if (ifaces[i].up && !ifaces[i].loopback && ifaces[i].ip) { best = i; break; }
+    }
     return best >= 0 ? (unsigned long)htonl(ifaces[best].ip) : 0;
 }
 /* Discovery broadcast on every real local network. Cellular and tunnel
@@ -104,7 +109,7 @@ static int UDP_SendInterfaceBroadcasts(int socket, byte *buf, int len)
     int n = UDP_ListInterfaces(ifaces, broadcast), sent = 0;
     for (int i = 0; i < n; i++) {
         struct sockaddr_in dest = broadcast[i];
-        if (LAN_InterfaceScore(&ifaces[i]) < 0) continue;
+        if (LAN_LEGACY_MODE ? (!ifaces[i].up || ifaces[i].loopback || !ifaces[i].ip) : (LAN_InterfaceScore(&ifaces[i]) < 0)) continue;
         if (dest.sin_addr.s_addr == 0 || dest.sin_addr.s_addr == INADDR_BROADCAST) continue;
         dest.sin_port = htons(net_hostport);
         if (sendto(socket, (const char *)buf, len, 0, (struct sockaddr *)&dest, sizeof(dest)) == len) sent++;
@@ -115,7 +120,11 @@ static int UDP_SendInterfaceBroadcasts(int socket, byte *buf, int len)
  * sockets are never bound: a hotspot host has no Wi-Fi "Network" to bind to. */
 static void UDP_BindClientSocket(int fd)
 {
-    if (net_acceptsocket == -1) NZP_LanNetwork_BindSocket(fd);
+    int rc;
+    static int logged;
+    if (LAN_LEGACY_MODE || net_acceptsocket != -1) return;
+    rc = NZP_LanNetwork_BindSocket(fd);
+    if (logged < 6) { logged++; SDL_Log("NZP_NET bind fd=%d wifi_handle=%llu rc=%d", fd, (unsigned long long)NZP_LanNetwork_Get(), rc); }
 }
 #endif
 
@@ -363,7 +372,7 @@ int UDP_Read (int socket, byte *buf, int len, struct qsockaddr *addr)
 		// Wi-Fi power save, roaming and hotspot toggling produce transient errors
 		// (ENETUNREACH, ECONNREFUSED...). They mean one lost packet, not a dead
 		// connection; returning -1 made Datagram_GetMessage drop the player.
-		if (LAN_IsTransientSocketErrno(errno)) return 0;
+		if (LAN_LEGACY_MODE ? (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) : LAN_IsTransientSocketErrno(errno)) return 0;
 		SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "UDP recvfrom error: %d", errno);
 		return -1;
 #else
@@ -428,7 +437,7 @@ int UDP_Write (int socket, byte *buf, int len, struct qsockaddr *addr)
 	ret = sendto (socket, (const char *)buf, len, 0, (struct sockaddr *)addr, sizeof(struct qsockaddr));
 	if (ret == -1) {
 #ifdef PLATFORM_ANDROID
-		if (LAN_IsTransientSocketErrno(errno)) return 0;
+		if (LAN_LEGACY_MODE ? (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) : LAN_IsTransientSocketErrno(errno)) return 0;
 		SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "UDP sendto error: %d", errno);
 		return -1;
 #else

@@ -211,6 +211,10 @@ extern int			net_hostport;
 
 extern int net_driverlevel;
 extern cvar_t		hostname;
+/* 1 = original networking behaviour (no Wi-Fi binding, first-interface address, fixed 1 s retransmit,
+ * 3x2.5 s connect). A bisect/escape hatch for the mobile networking changes. */
+extern cvar_t		net_lan_legacy;
+#define LAN_LEGACY_MODE (net_lan_legacy.value != 0)
 extern char			playername[];
 extern int			playercolor;
 

@@ -13,10 +13,10 @@
  * its execution. A separate tiny file avoids reparsing arbitrary console code. */
 cvar_t vk_single_pass={"vk_single_pass","1",true};
 /* Present with the surface transform (no compositor rotation on Mali). 0 = legacy identity. */
-cvar_t vk_prerotate={"vk_prerotate","1",true};
+cvar_t vk_prerotate={"vk_prerotate","0",true};
 /* Temporal upscaling (Arm ASR, FSR 2.2 class) when the 3D render scale is below 100%. Needs fp16/SPIR-V 1.4
  * capable Vulkan; otherwise silently stays on the bilinear upscale. */
-cvar_t vk_fsr={"vk_fsr","1",true};
+cvar_t vk_fsr={"vk_fsr","0",true};
 cvar_t vk_fsr_sharpness={"vk_fsr_sharpness","0.2",true};
 cvar_t vid_benchmark={"vid_benchmark","0",false};
 cvar_t vid_performance_mode={"vid_performance_mode","0",true};
@@ -140,6 +140,7 @@ static int render_percent(void) {
     if(percent>=68)return 75;
     return 60;
 }
+int VID_FSRState(void){return NZP_VK_Active()?NZP_VK_FSRState():2;}
 void VID_SDLResize(void) {
     if(!sdl_window)return;
     int width=0,height=0;
