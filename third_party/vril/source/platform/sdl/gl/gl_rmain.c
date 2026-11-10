@@ -53,6 +53,9 @@ vec3_t	vpn;
 vec3_t	vright;
 vec3_t	r_origin;
 
+#ifdef PLATFORM_ANDROID
+void NZP_GLES_SetCamera (float znear, float zfar, float fov_y_degrees);
+#endif
 float	r_world_matrix[16];
 float	r_base_world_matrix[16];
 
@@ -1547,6 +1550,9 @@ void R_SetupGL (void)
     glTranslatef (-r_refdef.vieworg[0],  -r_refdef.vieworg[1],  -r_refdef.vieworg[2]);
 
 	glGetFloatv (GL_MODELVIEW_MATRIX, r_world_matrix);
+#ifdef PLATFORM_ANDROID
+	NZP_GLES_SetCamera (4, 4096, r_refdef.fov_y); // temporal upscaler motion vectors
+#endif
 
 	//
 	// set drawing parms

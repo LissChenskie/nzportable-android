@@ -14,6 +14,10 @@
 cvar_t vk_single_pass={"vk_single_pass","1",true};
 /* Present with the surface transform (no compositor rotation on Mali). 0 = legacy identity. */
 cvar_t vk_prerotate={"vk_prerotate","1",true};
+/* Temporal upscaling (Arm ASR, FSR 2.2 class) when the 3D render scale is below 100%. Needs fp16/SPIR-V 1.4
+ * capable Vulkan; otherwise silently stays on the bilinear upscale. */
+cvar_t vk_fsr={"vk_fsr","1",true};
+cvar_t vk_fsr_sharpness={"vk_fsr_sharpness","0.2",true};
 cvar_t vid_benchmark={"vid_benchmark","0",false};
 cvar_t vid_performance_mode={"vid_performance_mode","0",true};
 cvar_t vid_graphics_api={"vid_graphics_api","0",true};
@@ -218,7 +222,12 @@ void GL_BeginRendering(int *x,int *y,int *w,int *h){
     }
     render_frame_available=1;
     if(NZP_VK_Active())NZP_VK_SetBenchmark(vid_benchmark.value!=0);
-    if(NZP_VK_Active())NZP_VK_SetPreRotation(vk_prerotate.value!=0);
+    if(NZP_VK_Active()){
+        NZP_VK_SetPreRotation(vk_prerotate.value!=0);
+        NZP_VK_SetFSR(vk_fsr.value!=0);NZP_VK_SetFSRSharpness(vk_fsr_sharpness.value);
+        /* A new map must not blend with the previous map's history. */
+        static void *last_world;if(cl.worldmodel!=last_world){last_world=cl.worldmodel;NZP_VK_ResetHistory();}
+    }
     if(NZP_VK_Active())render_frame_available=NZP_VK_BeginFrame(r_vsync.value!=0,render_percent());
     VID_SDLResize();
     hud_active=0;
@@ -321,7 +330,7 @@ void VID_Init(unsigned char *palette){
     if(pref){if(fscanf(pref,"%d",&preference)!=1)preference=0;fclose(pref);}
     if(preference<0||preference>2)preference=0;
     SDL_Log("NZP_GRAPHICS preference=%d path=%s",preference,api_path);
-    Cvar_RegisterVariable(&vk_single_pass);Cvar_RegisterVariable(&vk_prerotate);Cvar_RegisterVariable(&vid_benchmark);Cvar_RegisterVariable(&vid_performance_mode);
+    Cvar_RegisterVariable(&vk_single_pass);Cvar_RegisterVariable(&vk_prerotate);Cvar_RegisterVariable(&vk_fsr);Cvar_RegisterVariable(&vk_fsr_sharpness);Cvar_RegisterVariable(&vid_benchmark);Cvar_RegisterVariable(&vid_performance_mode);
     Cvar_RegisterVariable(&vid_graphics_api);Cvar_SetValue("vid_graphics_api",preference);
     Cvar_RegisterVariable(&vid_width);Cvar_RegisterVariable(&vid_height);
     Cvar_RegisterVariable(&vid_render_scale);Cvar_RegisterVariable(&vid_ui_scale);

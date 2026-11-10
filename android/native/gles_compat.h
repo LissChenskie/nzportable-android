@@ -36,6 +36,9 @@ typedef double GLclampd;
 
 void NZP_GLES_Init(void);
 void NZP_GLES_BeginFrame(void);
+/* Report the 3D camera (current projection/modelview) once per rendered frame: used for the
+ * temporal upscaler's motion vectors. No-op without the Vulkan backend. fov in degrees. */
+void NZP_GLES_SetCamera(float znear,float zfar,float fov_y_degrees);
 void NZP_GLES_Shutdown(void);
 void NZP_GLES_Flush(void);
 void NZP_GLES_Present(GLuint texture, int width, int height);

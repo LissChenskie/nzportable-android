@@ -45,6 +45,7 @@ Minimum Android API level: **26 (Android 8.0)**. Actual compatibility depends on
 | **LAN co-op** | Host over Wi-Fi or a phone hotspot; browse LAN servers or connect by IP; separate server name and editable player nickname (up to 15 characters) |
 | **Map selection** | Built-in and user maps; swipe/page/wheel navigation on Android (three built-in or four custom maps per page) |
 | **Android lifecycle** | Audio, pause/resume handling, input reset, app-private game-data import |
+| **Mobile performance** | Mali-oriented Vulkan shaders and pre-rotation, hotspot-aware LAN networking, big.LITTLE thread placement, optional FSR-2.2-class temporal upscaling (Arm ASR) - see [docs/MOBILE_PERFORMANCE_AND_COOP.md](docs/MOBILE_PERFORMANCE_AND_COOP.md); not yet measured on a device |
 | **Profiling** | Renderer performance counters, Vulkan CPU-stage diagnostics and offscreen benchmark CSV |
 
 Graphics and performance presets are user choices. They are **not** evidence of achieved frame rate. See [Vulkan implementation and measurements](docs/VULKAN_ANDROID.md) and the [fog, co-op and memory fixes](docs/A51_COOP_MAP_FOG_FIXES.md).

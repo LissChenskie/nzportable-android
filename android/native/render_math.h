@@ -13,6 +13,15 @@ static inline void nzp_multiply(float *out, const float *a, const float *b) {
     }
     memcpy(out,result,sizeof(result));
 }
+/* Inverse of a view matrix made of rotation and translation only (column-major):
+ * R^T and -R^T*t. Cheaper and more exact than a general 4x4 inverse. */
+static inline void nzp_rigid_inverse(float *out, const float *m) {
+    float result[16]={0};
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) result[c*4+r]=m[r*4+c];
+    for (int r=0;r<3;r++) result[12+r]=-(result[0+r]*m[12]+result[4+r]*m[13]+result[8+r]*m[14]);
+    result[15]=1.f;
+    memcpy(out,result,sizeof(result));
+}
 // Bound BOTH dimensions while preserving the real landscape aspect ratio.
 static inline void nzp_render_size(int w, int h, int max_w, int max_h, int *rw, int *rh) {
     if (w<1) w=1;

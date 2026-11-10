@@ -151,12 +151,52 @@ static nzp_vk_raster vk_raster(void) {
     s.offset_factor=driver_state.polygon_factor;s.offset_units=driver_state.polygon_units;
     memcpy(s.viewport,driver_state.viewport,sizeof(s.viewport));return s;
 }
+#ifdef NZP_VULKAN
+/* Camera history for the temporal upscaler. The engine reports the 3D camera once per rendered
+ * frame (NZP_GLES_SetCamera). A draw that uses the camera projection gets prev_mvp =
+ * P_prev * V_prev * (V_cur^-1 * modelview), i.e. the same world-space geometry seen by last
+ * frame's camera. Moving entities are treated as static in the world (their own motion is not
+ * known here); the weapon, drawn with a compressed depth range, is camera-locked (zero motion). */
+typedef struct { float proj[16],view[16],inv_view[16],proj_view[16];unsigned long long serial;int valid; } camera_state;
+static camera_state cam_cur,cam_prev;
+void NZP_GLES_SetCamera(float znear,float zfar,float fov_y_degrees) {
+    camera_state next;const unsigned long long serial=NZP_VK_FrameSerial();
+    memcpy(next.proj,matrices[1][matrix_depth[1]],64);memcpy(next.view,matrices[0][matrix_depth[0]],64);
+    nzp_rigid_inverse(next.inv_view,next.view);nzp_multiply(next.proj_view,next.proj,next.view);
+    next.serial=serial;next.valid=1;
+    if(cam_cur.valid&&cam_cur.serial!=serial) {
+        /* First call this frame: the previous camera becomes history. A large jump (teleport,
+         * map change) must not be reprojected. */
+        const float dx=next.inv_view[12]-cam_cur.inv_view[12],dy=next.inv_view[13]-cam_cur.inv_view[13],dz=next.inv_view[14]-cam_cur.inv_view[14];
+        cam_prev=cam_cur;
+        if(dx*dx+dy*dy+dz*dz>256.f*256.f)NZP_VK_ResetHistory();
+    }
+    else if(!cam_cur.valid)cam_prev=next; /* no history yet */
+    /* Later calls in the same frame (mirrors, second pass) keep the same history. */
+    cam_cur=next;
+    NZP_VK_SetCamera(znear,zfar,fov_y_degrees*3.14159265f/180.f);
+}
+static void vk_motion(nzp_vk_uniform *u) {
+    if(cam_cur.valid&&cam_prev.valid&&!memcmp(matrices[1][matrix_depth[1]],cam_cur.proj,64)) {
+        float model[16];
+        nzp_multiply(model,cam_cur.inv_view,matrices[0][matrix_depth[0]]);
+        nzp_multiply(u->prev_mvp,cam_prev.proj_view,model);
+    }
+    if((driver_state.valid&DS_DEPTHRANGE)&&driver_state.depth_far<1.f)u->motion[0]=1.f; /* weapon */
+}
+#else
+void NZP_GLES_SetCamera(float znear,float zfar,float fov_y_degrees){(void)znear;(void)zfar;(void)fov_y_degrees;}
+#endif
 static nzp_vk_uniform vk_uniform(void) {
     nzp_vk_uniform u={0};memcpy(u.mvp,mvp_matrix(),64);
     memcpy(u.mv,matrices[0][matrix_depth[0]],64);memcpy(u.tm,matrices[2][matrix_depth[2]],64);
     u.fog[0]=fog_enabled?(fog_mode==GL_LINEAR?1.f:fog_mode==GL_EXP?2.f:3.f):0.f;
     u.fog[1]=fog_start;u.fog[2]=fog_end;u.fog[3]=fog_density;memcpy(u.fogcolor,fog_color,16);
-    u.params[0]=textured;u.params[1]=replace_mode;u.params[2]=alpha_test?alpha_threshold:-1.f;return u;
+    u.params[0]=textured;u.params[1]=replace_mode;u.params[2]=alpha_test?alpha_threshold:-1.f;
+#ifdef NZP_VULKAN
+    vk_motion(&u);
+#endif
+    return u;
 }
 void NZP_GLES_Init(void) {
     static const char *vs=
