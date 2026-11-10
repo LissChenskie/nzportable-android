@@ -81,7 +81,7 @@ if(EXISTS "${ASR}/src/components/fsr2/ffxm_fsr2.cpp")
     target_include_directories(nzp_arm_asr PRIVATE "${ASR}" "${ASR}/include/gpu" "${ASR}/src" "${ASR}/src/shared" "${ASR}/src/components"
         "${ASR}/src/backends/shared" "${ASR}/src/backends/vk" "${ASR}/src/backends/shared/blob_accessors/prebuilt_shaders")
     target_compile_definitions(nzp_arm_asr PUBLIC FFXM_VKLOADER_VOLK=1 VK_NO_PROTOTYPES PRIVATE FFXM_FSR)
-    target_compile_options(nzp_arm_asr PRIVATE -std=c++20 -w -fvisibility=hidden -include wchar.h -include stddef.h)
+    target_compile_options(nzp_arm_asr PRIVATE -std=c++20 -w -fvisibility=hidden "SHELL:-include wchar.h -include stddef.h")
     set_target_properties(nzp_arm_asr PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_compile_definitions(main PRIVATE NZP_FSR)
     target_link_libraries(main PRIVATE nzp_arm_asr)
