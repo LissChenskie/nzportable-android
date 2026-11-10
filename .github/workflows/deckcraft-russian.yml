@@ -25,6 +25,8 @@ jobs:
           git clone --no-tags --filter=blob:none --branch i18n/russian https://github.com/vov4ig/deckcraft.git deckcraft
           if ($LASTEXITCODE -ne 0) { throw "Failed to clone the Russian localization branch." }
           git -C deckcraft remote add upstream https://github.com/storytold/deckcraft.git
+          git -C deckcraft config user.name "DeckCraft Build Bot"
+          git -C deckcraft config user.email "actions@users.noreply.github.com"
           git -C deckcraft fetch --filter=blob:none upstream main
           if ($LASTEXITCODE -ne 0) { throw "Failed to fetch current upstream." }
           git -C deckcraft merge --no-edit upstream/main
