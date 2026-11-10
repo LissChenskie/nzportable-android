@@ -126,7 +126,7 @@ jobs:
                       continue
                   for pattern in patterns:
                       def replace(match):
-                          nonlocal changed_labels
+                          global changed_labels
                           try:
                               english = json.loads(match.group(2))
                           except json.JSONDecodeError:
