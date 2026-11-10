@@ -69,7 +69,7 @@ target_link_libraries(main PRIVATE dl)
 # Temporal upscaling: Arm Accuracy Super Resolution (MIT, derived from AMD FSR 2.2) with its prebuilt
 # Vulkan shaders. Built as a static library using the project's volk (FFXM_VKLOADER_VOLK).
 set(ASR "${ROOT}/third_party/arm_asr")
-if(EXISTS "${ASR}/src/components/fsr2/ffxm_fsr2.cpp")
+if(ANDROID_ABI STREQUAL "arm64-v8a" AND EXISTS "${ASR}/src/components/fsr2/ffxm_fsr2.cpp")
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/asr_shim/Volk")
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/asr_shim/Volk/volk.h" "#undef VK_USE_PLATFORM_XCB_KHR\n#undef VK_USE_PLATFORM_XLIB_KHR\n#include \"${CMAKE_CURRENT_LIST_DIR}/native/vulkan/vendor/volk.h\"\n")
     add_library(nzp_arm_asr STATIC
@@ -87,5 +87,5 @@ if(EXISTS "${ASR}/src/components/fsr2/ffxm_fsr2.cpp")
     target_link_libraries(main PRIVATE nzp_arm_asr)
     set_source_files_properties(native/vulkan/fsr.cpp PROPERTIES COMPILE_OPTIONS "-std=c++20;-Wno-missing-field-initializers;-Wno-unused-parameter")
 else()
-    message(WARNING "third_party/arm_asr missing (run scripts/bootstrap.py): FSR upscaling is compiled out")
+    message(STATUS "Arm ASR/FSR is enabled only for arm64-v8a; FSR upscaling is compiled out for this ABI")
 endif()
