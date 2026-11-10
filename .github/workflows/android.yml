@@ -22,6 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers glslang-tools libgles2-mesa-dev xvfb
+      - run: python3 scripts/bootstrap.py --only arm_asr
       - run: sh tests/run_vulkan_tests.sh
 
       - uses: actions/upload-artifact@v4

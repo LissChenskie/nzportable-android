@@ -33,7 +33,7 @@ file(GLOB PLATFORM CONFIGURE_DEPENDS "${ENGINE}/platform/sdl/*.c" "${ENGINE}/pla
 list(FILTER PLATFORM EXCLUDE REGEX "/gl_vidsdl\\.c$")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/_build_info.h"
     "#define GIT_HASH \"7a31c3d-android\"\n#define GIT_BRANCH \"android\"\n#define BUILD_DATE \"2026-10-29\"\n")
-add_library(main SHARED ${CORE} ${PLATFORM} native/gles_compat.c native/video_android.c native/android_port.c native/lan_endpoint.c native/lan_network.c native/cpu_topology.c native/thread_roles.c native/jobs.c native/vulkan/renderer.cpp native/vulkan/vendor/volk.c)
+add_library(main SHARED ${CORE} ${PLATFORM} native/gles_compat.c native/video_android.c native/android_port.c native/lan_endpoint.c native/lan_network.c native/cpu_topology.c native/thread_roles.c native/jobs.c native/vulkan/renderer.cpp native/vulkan/fsr.cpp native/vulkan/vendor/volk.c)
 target_include_directories(main PRIVATE "${ENGINE}" native "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_definitions(main PRIVATE GLQUAKE PLATFORM_SDL PLATFORM_ANDROID PLATFORM_CONFIRM_IS_ENTER
     PLATFORM_DIRECTORY=sdl PLATFORM_RENDERER=gl MAX_AI_COUNT=24 PLATFORM_USES_GENERIC_GLYPHS
@@ -65,3 +65,27 @@ target_sources(main PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_shaders.h")
 target_compile_definitions(main PRIVATE NZP_VULKAN VK_NO_PROTOTYPES)
 set_source_files_properties(native/vulkan/renderer.cpp PROPERTIES COMPILE_OPTIONS "-std=c++17;-Wno-missing-field-initializers;-Wno-unused-parameter")
 target_link_libraries(main PRIVATE dl)
+
+# Temporal upscaling: Arm Accuracy Super Resolution (MIT, derived from AMD FSR 2.2) with its prebuilt
+# Vulkan shaders. Built as a static library using the project's volk (FFXM_VKLOADER_VOLK).
+set(ASR "${ROOT}/third_party/arm_asr")
+if(EXISTS "${ASR}/src/components/fsr2/ffxm_fsr2.cpp")
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/asr_shim/Volk")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/asr_shim/Volk/volk.h" "#undef VK_USE_PLATFORM_XCB_KHR\n#undef VK_USE_PLATFORM_XLIB_KHR\n#include \"${CMAKE_CURRENT_LIST_DIR}/native/vulkan/vendor/volk.h\"\n")
+    add_library(nzp_arm_asr STATIC
+        "${ASR}/src/shared/ffxm_assert.cpp" "${ASR}/src/shared/ffxm_object_management.cpp"
+        "${ASR}/src/components/fsr2/ffxm_fsr2.cpp" "${ASR}/src/backends/shared/ffxm_shader_blobs.cpp"
+        "${ASR}/src/backends/shared/blob_accessors/ffxm_fsr2_shaderblobs.cpp"
+        "${ASR}/src/backends/vk/ffxm_vk.cpp" "${ASR}/src/backends/vk/ffxm_hash.cpp")
+    target_include_directories(nzp_arm_asr PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/asr_shim" "${ASR}/include" "${ASR}/include/host")
+    target_include_directories(nzp_arm_asr PRIVATE "${ASR}" "${ASR}/include/gpu" "${ASR}/src" "${ASR}/src/shared" "${ASR}/src/components"
+        "${ASR}/src/backends/shared" "${ASR}/src/backends/vk" "${ASR}/src/backends/shared/blob_accessors/prebuilt_shaders")
+    target_compile_definitions(nzp_arm_asr PUBLIC FFXM_VKLOADER_VOLK=1 VK_NO_PROTOTYPES PRIVATE FFXM_FSR)
+    target_compile_options(nzp_arm_asr PRIVATE -std=c++20 -w -fvisibility=hidden -include wchar.h -include stddef.h)
+    set_target_properties(nzp_arm_asr PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_compile_definitions(main PRIVATE NZP_FSR)
+    target_link_libraries(main PRIVATE nzp_arm_asr)
+    set_source_files_properties(native/vulkan/fsr.cpp PROPERTIES COMPILE_OPTIONS "-std=c++20;-Wno-missing-field-initializers;-Wno-unused-parameter")
+else()
+    message(WARNING "third_party/arm_asr missing (run scripts/bootstrap.py): FSR upscaling is compiled out")
+endif()

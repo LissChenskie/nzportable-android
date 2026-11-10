@@ -10,7 +10,14 @@ layout(constant_id=0) const bool LIGHTMAPPED=false;
 layout(constant_id=1) const bool ALPHA_TEST=true;
 layout(set=0,binding=0,std140) uniform State {
     mat4 mvp; mat4 mv; mat4 tm; vec4 fog; vec4 fogcolor; vec4 params;
+    mat4 prev_mvp; vec4 motion;
 } u;
+#ifdef MRT
+layout(push_constant) uniform Push { vec4 rot; vec4 jitter_size; } pc;
+layout(location=4) in vec4 v_cur;
+layout(location=5) in vec4 v_prev;
+layout(location=1) out vec2 out_motion; // pixels, previous minus current (Arm ASR/FSR convention)
+#endif
 layout(set=1,binding=0) uniform mediump sampler2D base_texture;
 layout(set=2,binding=0) uniform mediump sampler2D lightmap;
 layout(location=3) in vec2 v_lightmap_uv;
@@ -25,6 +32,13 @@ void main() {
         c=u.params.y!=0?t:t*c;
     }
     if(ALPHA_TEST && c.a<=u.params.z)discard;
+#ifdef MRT
+    // motion.x != 0: camera-locked geometry (weapon model) has no motion relative to the view.
+    vec2 mv=vec2(0);
+    if(u.motion.x<0.5&&v_cur.w>1e-4&&v_prev.w>1e-4)
+        mv=(v_prev.xy/v_prev.w-v_cur.xy/v_cur.w)*0.5*pc.jitter_size.zw;
+    out_motion=mv;
+#endif
     float f=1;
     if(u.fog.x==1)f=clamp((u.fog.z-v_depth)/max(u.fog.z-u.fog.y,0.0001),0,1);
     else if(u.fog.x==2)f=exp(-u.fog.w*v_depth);

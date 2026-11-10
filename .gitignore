@@ -4,6 +4,7 @@ build-dir
 build/
 third_party/SDL/
 third_party/SDL_mixer/
+third_party/arm_asr/
 android/.gradle/
 android/.cxx/
 android/app/.cxx/

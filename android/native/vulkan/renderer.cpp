@@ -3,6 +3,7 @@
 #include "renderer.h"
 #include "prerotate.h"
 #include "../jobs.h"
+#include "fsr.h"
 #include "vendor/volk.h"
 #ifdef __clang__
 #pragma clang diagnostic push
@@ -75,7 +76,7 @@ struct Frame {
     VkDescriptorSet uniform_set{};
     std::vector<std::shared_ptr<TextureGPU>> textures;
     std::vector<std::shared_ptr<Buffer>> meshes;
-    Image world,world_depth;VkFramebuffer world_fb{};
+    Image world,world_depth,world_mv,fsr_out;VkFramebuffer world_fb{};
     Image benchmark_color,benchmark_depth;VkFramebuffer benchmark_fb{};
     VkDescriptorSet world_set{};
     VkQueryPool queries{}; bool submitted{};
@@ -87,7 +88,7 @@ struct Layout {
 };
 struct PipelineKey {
     Layout layout;unsigned mode{},blend_src{},blend_dst{},depth_func{},cull_face{};
-    int blend{},depth{},depth_write{},cull{},offset{},lightmapped{},alpha_test{};
+    int blend{},depth{},depth_write{},cull{},offset{},lightmapped{},alpha_test{},mrt{};
     bool operator<(const PipelineKey &b)const{return std::memcmp(this,&b,sizeof(*this))<0;}
 };
 VkInstance instance{}; VkPhysicalDevice physical{};VkDevice device{};VkQueue queue{};
@@ -95,8 +96,8 @@ VkSurfaceKHR surface{};VkSwapchainKHR swapchain{};VmaAllocator allocator{};
 VkPhysicalDeviceProperties properties{};
 VkDescriptorPool descriptors{}; VkDescriptorSetLayout uniform_layout{},texture_layout{};
 VkPipelineLayout pipeline_layout{};VkPipelineCache pipeline_cache{};
-VkShaderModule vertex_shader{},fragment_shader{};
-VkRenderPass native_pass{},world_pass{};
+VkShaderModule vertex_shader{},fragment_shader{},fragment_shader_mrt{};
+VkRenderPass native_pass{},world_pass{},fsr_pass{};
 VkDebugUtilsMessengerEXT debug{};
 std::map<PipelineKey,VkPipeline> pipelines;std::mutex pipeline_mutex;
 PipelineKey recent_pipeline_key{};VkPipeline recent_pipeline{};
@@ -111,6 +112,12 @@ int width{},height{},world_width{},world_height{},current_vsync=-1,scale=100;
 // native-pass target size (swapped for 90/270). rotation is the effective value;
 // sc_rotation is the real swapchain preTransform, test_rotation is benchmark-only.
 int rotation{},sc_rotation{},phys_w{},phys_h{},drawable_w{},drawable_h{},test_rotation=-1;bool prerotate_wanted=true;
+// Temporal upscaling (Arm ASR). fsr_active implies the offscreen world pass also writes motion vectors
+// and depth is stored/sampled (D32), which costs bandwidth that bilinear upscaling does not.
+bool fsr_wanted=false,fsr_active=false,fsr_reset=true,fsr_failed=false,fsr_supported=false;nzp_fsr::Context *fsr_ctx=nullptr;
+int fsr_phase=0,fsr_phase_count=1;float jitter_px[2]{},cam_near=4.f,cam_far=4096.f,cam_fov=1.2f;
+float fsr_sharpness=0.2f;Uint64 last_frame_ticks=0;unsigned long long frame_serial=0;bool mrt_prewarmed=false;
+const VkFormat FsrColorFormat=VK_FORMAT_R8G8B8A8_UNORM,FsrMotionFormat=VK_FORMAT_R16G16_SFLOAT,FsrDepthFormat=VK_FORMAT_D32_SFLOAT;
 bool active{},recording{},in_pass{},ui{},resize_pending{},capture_requested{},can_capture{},pass_has_draw{};
 float pass_clear_color[4],pass_clear_depth;
 Buffer readback;std::vector<unsigned char> captured;std::string screenshot_path;
@@ -201,6 +208,35 @@ VkRenderPass make_pass(bool offscreen) {
     ci.subpassCount=1;ci.pSubpasses=&sub;ci.dependencyCount=2;ci.pDependencies=deps;
     VkRenderPass p;VK_CHECK(vkCreateRenderPass(device,&ci,nullptr,&p));return p;
 }
+// World pass for the temporal upscaler: colour + motion vectors + stored depth, all left in
+// shader-readable layouts for Arm ASR (depth: DEPTH_STENCIL_READ_ONLY, as the library expects).
+VkRenderPass make_fsr_pass(){
+    VkAttachmentDescription a[3]{};
+    for(int i=0;i<3;i++){a[i].samples=VK_SAMPLE_COUNT_1_BIT;a[i].loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;a[i].storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+        a[i].stencilLoadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;a[i].stencilStoreOp=VK_ATTACHMENT_STORE_OP_DONT_CARE;a[i].initialLayout=VK_IMAGE_LAYOUT_UNDEFINED;}
+    a[0].format=FsrColorFormat;a[0].finalLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    a[1].format=FsrMotionFormat;a[1].finalLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    a[2].format=FsrDepthFormat;a[2].finalLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    VkAttachmentReference colors[2]{{0,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},{1,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}},depth{2,VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription sub{};sub.pipelineBindPoint=VK_PIPELINE_BIND_POINT_GRAPHICS;sub.colorAttachmentCount=2;sub.pColorAttachments=colors;sub.pDepthStencilAttachment=&depth;
+    VkSubpassDependency deps[2]{};
+    deps[0].srcSubpass=VK_SUBPASS_EXTERNAL;deps[0].dstSubpass=0;
+    deps[0].srcStageMask=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT|VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    deps[0].dstStageMask=deps[0].srcStageMask;
+    deps[0].dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    deps[1].srcSubpass=0;deps[1].dstSubpass=VK_SUBPASS_EXTERNAL;
+    deps[1].srcStageMask=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT|VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    deps[1].dstStageMask=VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    deps[1].srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;deps[1].dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+    VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};ci.attachmentCount=3;ci.pAttachments=a;
+    ci.subpassCount=1;ci.pSubpasses=&sub;ci.dependencyCount=2;ci.pDependencies=deps;
+    VkRenderPass p;VK_CHECK(vkCreateRenderPass(device,&ci,nullptr,&p));return p;
+}
+VkFramebuffer framebuffer3(VkImageView color,VkImageView motion,VkImageView depth,int w,int h,VkRenderPass pass){
+    VkImageView views[]={color,motion,depth};VkFramebufferCreateInfo ci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    ci.renderPass=pass;ci.attachmentCount=3;ci.pAttachments=views;ci.width=w;ci.height=h;ci.layers=1;
+    VkFramebuffer fb;VK_CHECK(vkCreateFramebuffer(device,&ci,nullptr,&fb));return fb;
+}
 VkFramebuffer framebuffer(VkImageView color,VkImageView depth,int w,int h,VkRenderPass pass){
     VkImageView views[]={color,depth};VkFramebufferCreateInfo ci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     ci.renderPass=pass;ci.attachmentCount=2;ci.pAttachments=views;ci.width=w;ci.height=h;ci.layers=1;
@@ -209,7 +245,8 @@ VkFramebuffer framebuffer(VkImageView color,VkImageView depth,int w,int h,VkRend
 void destroy_targets(){
     for(auto &f:frames){if(f.benchmark_fb)vkDestroyFramebuffer(device,f.benchmark_fb,nullptr);f.benchmark_fb={};destroy(f.benchmark_color);destroy(f.benchmark_depth);if(f.world_fb)vkDestroyFramebuffer(device,f.world_fb,nullptr);f.world_fb={};
         if(f.world_set)vkFreeDescriptorSets(device,descriptors,1,&f.world_set);f.world_set={};
-        destroy(f.world);destroy(f.world_depth);}
+        destroy(f.world);destroy(f.world_depth);destroy(f.world_mv);destroy(f.fsr_out);}
+    if(fsr_ctx){nzp_fsr::destroy(fsr_ctx);fsr_ctx=nullptr;}fsr_active=false;
     for(auto &i:images){if(i.fb)vkDestroyFramebuffer(device,i.fb,nullptr);destroy(i.depth);
         if(i.view)vkDestroyImageView(device,i.view,nullptr);if(i.complete)vkDestroySemaphore(device,i.complete,nullptr);}
     images.clear();if(swapchain)vkDestroySwapchainKHR(device,swapchain,nullptr);swapchain={};
@@ -239,6 +276,7 @@ void write_image_set(VkDescriptorSet set,VkImageView view,VkSampler sampler){
     w.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;w.pImageInfo=&info;vkUpdateDescriptorSets(device,1,&w,0,nullptr);
 }
 VkSampler upscale_sampler{};
+void prewarm_pipelines(bool mrt);
 bool recreate(int vsync,int percent){
     int w,h;SDL_Vulkan_GetDrawableSize(window,&w,&h);if(w<=0||h<=0)return false;
     drawable_w=w;drawable_h=h;
@@ -310,11 +348,29 @@ bool recreate(int vsync,int percent){
         VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};VK_CHECK(vkCreateSemaphore(device,&si,nullptr,&i.complete));
     }
     scale=percent;world_width=std::max(1,width*percent/100);world_height=std::max(1,height*percent/100);
+    fsr_active=false;
+    if(percent<100&&fsr_wanted&&!fsr_failed&&fsr_supported&&nzp_fsr::available()){
+        // Quality mode follows the render ratio; Arm ASR trades shader cost for stability.
+        const float ratio=float(width)/float(world_width);
+        fsr_ctx=nzp_fsr::create(physical,device,world_width,world_height,width,height,ratio>=1.9f?3:ratio>=1.5f?2:1);
+        if(fsr_ctx){fsr_active=true;fsr_reset=true;fsr_phase=0;fsr_phase_count=std::max(1,nzp_fsr::phase_count(world_width,width));
+            if(!mrt_prewarmed){prewarm_pipelines(true);mrt_prewarmed=true;}}
+        else fsr_failed=true; // fall back to bilinear for the rest of the session
+    }
     if(percent<100)for(auto &f:frames){
-        f.world=make_image(world_width,world_height,1,color_format,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
-        f.world_depth=make_image(world_width,world_height,1,depth_format,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
-        f.world_fb=framebuffer(f.world.view,f.world_depth.view,world_width,world_height,world_pass);
-        f.world_set=descriptor(texture_layout);write_image_set(f.world_set,f.world.view,upscale_sampler);
+        const VkFormat world_format=fsr_active?FsrColorFormat:color_format;
+        f.world=make_image(world_width,world_height,1,world_format,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
+        if(fsr_active){
+            f.world_depth=make_image(world_width,world_height,1,FsrDepthFormat,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
+            f.world_mv=make_image(world_width,world_height,1,FsrMotionFormat,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
+            f.fsr_out=make_image(width,height,1,FsrColorFormat,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
+            f.world_fb=framebuffer3(f.world.view,f.world_mv.view,f.world_depth.view,world_width,world_height,fsr_pass);
+            f.world_set=descriptor(texture_layout);write_image_set(f.world_set,f.fsr_out.view,upscale_sampler);
+        }else{
+            f.world_depth=make_image(world_width,world_height,1,depth_format,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
+            f.world_fb=framebuffer(f.world.view,f.world_depth.view,world_width,world_height,world_pass);
+            f.world_set=descriptor(texture_layout);write_image_set(f.world_set,f.world.view,upscale_sampler);
+        }
     }
     benchmark=requested_benchmark;
     if(benchmark)for(auto &f:frames){
@@ -323,7 +379,7 @@ bool recreate(int vsync,int percent){
         f.benchmark_fb=framebuffer(f.benchmark_color.view,f.benchmark_depth.view,phys_w,phys_h,world_pass);
     }
     current_vsync=vsync;resize_pending=false;
-    SDL_Log("NZP_VULKAN surface=%dx%d world=%dx%d present=%d frames=%u images=%u rotation=%d",width,height,world_width,world_height,(int)present,Frames,count,rotation*90);
+    SDL_Log("NZP_VULKAN surface=%dx%d world=%dx%d present=%d frames=%u images=%u rotation=%d fsr=%d",width,height,world_width,world_height,(int)present,Frames,count,rotation*90,(int)fsr_active);
     return true;
 }
 VkCompareOp compare(unsigned f){return f>=0x200&&f<=0x207?(VkCompareOp)(f-0x200):VK_COMPARE_OP_LESS_OR_EQUAL;}
@@ -337,8 +393,8 @@ VkPrimitiveTopology topology(unsigned m){switch(m){case 0:return VK_PRIMITIVE_TO
  case 3:return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;case 4:return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
  case 5:return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;case 6:return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
  default:throw std::runtime_error("Unsupported Vril primitive");}}
-PipelineKey make_key(const Layout &layout,unsigned mode,const nzp_vk_raster &s,int lightmapped,int alpha_test){
-    PipelineKey key{};key.lightmapped=lightmapped;key.alpha_test=alpha_test;key.layout=layout;key.mode=mode;key.blend=s.blend;key.depth=s.depth;key.depth_write=s.depth_write;
+PipelineKey make_key(const Layout &layout,unsigned mode,const nzp_vk_raster &s,int lightmapped,int alpha_test,int mrt){
+    PipelineKey key{};key.lightmapped=lightmapped;key.alpha_test=alpha_test;key.mrt=mrt;key.layout=layout;key.mode=mode;key.blend=s.blend;key.depth=s.depth;key.depth_write=s.depth_write;
     key.cull=s.cull;key.offset=s.offset;key.blend_src=s.blend_src;key.blend_dst=s.blend_dst;key.depth_func=s.depth_func;key.cull_face=s.cull_face;
     if(!key.blend){key.blend_src=1;key.blend_dst=0;}
     if(!key.depth){key.depth_func=0x203;key.depth_write=0;}
@@ -348,17 +404,18 @@ PipelineKey make_key(const Layout &layout,unsigned mode,const nzp_vk_raster &s,i
 // Builds one pipeline. Touches only immutable objects (shader modules, layout, render
 // pass) and the pipeline cache, which Vulkan synchronizes internally, so several
 // threads may call it concurrently (used to prewarm on all cores).
-VkPipeline create_pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,int lightmapped,int alpha_test){
+VkPipeline create_pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,int lightmapped,int alpha_test,int mrt){
     VkPipelineShaderStageCreateInfo stages[2]{};
     for(int i=0;i<2;i++){stages[i].sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[i].stage=i?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;
-        stages[i].module=i?fragment_shader:vertex_shader;stages[i].pName="main";}
+        stages[i].module=i?(mrt?fragment_shader_mrt:fragment_shader):vertex_shader;stages[i].pName="main";}
     // constant_id 0: lightmapped BSP surface, constant_id 1: alpha test.
     // Opaque pipelines are compiled without discard so Mali can use early-Z
     // and forward pixel kill; only GL_ALPHA_TEST draws pay for discard.
-    VkBool32 specialized[2]={lightmapped?VK_TRUE:VK_FALSE,alpha_test?VK_TRUE:VK_FALSE};
-    VkSpecializationMapEntry entry[2]={{0,0,sizeof(VkBool32)},{1,sizeof(VkBool32),sizeof(VkBool32)}};
-    VkSpecializationInfo specialization{2,entry,sizeof(specialized),specialized};
+    // constant_id 2: motion vectors/jitter (temporal upscaler world pass only).
+    VkBool32 specialized[3]={lightmapped?VK_TRUE:VK_FALSE,alpha_test?VK_TRUE:VK_FALSE,mrt?VK_TRUE:VK_FALSE};
+    VkSpecializationMapEntry entry[3]={{0,0,sizeof(VkBool32)},{1,sizeof(VkBool32),sizeof(VkBool32)},{2,2*sizeof(VkBool32),sizeof(VkBool32)}};
+    VkSpecializationInfo specialization{3,entry,sizeof(specialized),specialized};
     stages[0].pSpecializationInfo=stages[1].pSpecializationInfo=&specialization;
     VkVertexInputBindingDescription bindings[4]{};VkVertexInputAttributeDescription attrs[4]{};
     for(int i=0;i<4;i++){bindings[i]={(unsigned)i,layout.stride[i],VK_VERTEX_INPUT_RATE_VERTEX};attrs[i]={(unsigned)i,(unsigned)i,layout.format[i],0};}
@@ -373,30 +430,32 @@ VkPipeline create_pipeline(const Layout &layout,unsigned mode,const nzp_vk_raste
     VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};multisample.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
     VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};depth.depthTestEnable=s.depth;
     depth.depthWriteEnable=s.depth_write;depth.depthCompareOp=compare(s.depth_func);
-    VkPipelineColorBlendAttachmentState attachment{};attachment.colorWriteMask=15;attachment.blendEnable=s.blend;
-    attachment.srcColorBlendFactor=attachment.srcAlphaBlendFactor=blend_factor(s.blend_src);
-    attachment.dstColorBlendFactor=attachment.dstAlphaBlendFactor=blend_factor(s.blend_dst);
-    VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};blending.attachmentCount=1;blending.pAttachments=&attachment;
+    VkPipelineColorBlendAttachmentState attachment[2]{};attachment[0].colorWriteMask=15;attachment[0].blendEnable=s.blend;
+    // Second target (motion vectors): translucent surfaces keep the vector of what is behind them.
+    attachment[1].colorWriteMask=s.blend?0:(VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT);
+    attachment[0].srcColorBlendFactor=attachment[0].srcAlphaBlendFactor=blend_factor(s.blend_src);
+    attachment[0].dstColorBlendFactor=attachment[0].dstAlphaBlendFactor=blend_factor(s.blend_dst);
+    VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};blending.attachmentCount=mrt?2:1;blending.pAttachments=attachment;
     VkDynamicState dynamic[]={VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR,VK_DYNAMIC_STATE_DEPTH_BIAS};
     VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};dyn.dynamicStateCount=3;dyn.pDynamicStates=dynamic;
     VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};ci.stageCount=2;ci.pStages=stages;
     ci.pVertexInputState=&vertex;ci.pInputAssemblyState=&assembly;ci.pViewportState=&viewport;ci.pRasterizationState=&raster;
     ci.pMultisampleState=&multisample;ci.pDepthStencilState=&depth;ci.pColorBlendState=&blending;ci.pDynamicState=&dyn;
-    ci.layout=pipeline_layout;ci.renderPass=native_pass;
+    ci.layout=pipeline_layout;ci.renderPass=mrt?fsr_pass:native_pass;
     VkPipeline result;VK_CHECK(vkCreateGraphicsPipelines(device,pipeline_cache,1,&ci,nullptr,&result));
     return result;
 }
 // Looks up or creates a pipeline. Thread-safe; only the render thread (main_thread)
 // uses the one-entry recent cache and reports runtime misses.
-VkPipeline pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,int lightmapped=0,int alpha_test=0,bool main_thread=true){
-    PipelineKey key=make_key(layout,mode,s,lightmapped,alpha_test);
+VkPipeline pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,int lightmapped=0,int alpha_test=0,bool main_thread=true,int mrt=0){
+    PipelineKey key=make_key(layout,mode,s,lightmapped,alpha_test,mrt);
     // The current material often repeats for many adjacent BSP surfaces.
     if(main_thread&&recent_pipeline&&!std::memcmp(&key,&recent_pipeline_key,sizeof(key)))return recent_pipeline;
     {std::lock_guard<std::mutex> lock(pipeline_mutex);
      auto it=pipelines.find(key);if(it!=pipelines.end()){
         if(main_thread){recent_pipeline_key=key;recent_pipeline=it->second;}
         return it->second;}}
-    VkPipeline result=create_pipeline(layout,mode,s,lightmapped,alpha_test);
+    VkPipeline result=create_pipeline(layout,mode,s,lightmapped,alpha_test,mrt);
     size_t count;
     {std::lock_guard<std::mutex> lock(pipeline_mutex);
      auto inserted=pipelines.emplace(key,result);
@@ -408,6 +467,33 @@ VkPipeline pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,in
 }
 Layout interleaved(){Layout l{};for(int i=0;i<3;i++)l.stride[i]=sizeof(nzp_vk_vertex);
  l.format[0]=VK_FORMAT_R32G32B32_SFLOAT;l.format[1]=VK_FORMAT_R32G32_SFLOAT;l.format[2]=VK_FORMAT_R8G8B8A8_UNORM;l.stride[3]=l.stride[1];l.format[3]=l.format[1];return l;}
+// Creates the common pipeline set in parallel. mrt=true prepares the temporal-upscaler
+// variants (second colour target) the first time FSR is activated.
+void prewarm_pipelines(bool mrt){
+    nzp_vk_raster s{};s.blend_src=0x302;s.blend_dst=0x303;s.depth_func=0x203;s.depth_write=1;s.cull_face=0x404;
+    struct Request{Layout layout;nzp_vk_raster raster;unsigned mode;int lightmapped,alpha_test;};
+    std::vector<Request> requests;
+    for(int layout_index=0;layout_index<3;layout_index++){
+        Layout layout=interleaved();
+        if(layout_index){layout.stride[0]=layout_index==1?28:12;layout.stride[1]=layout.stride[3]=layout_index==1?28:0;layout.stride[2]=0;}
+        for(int depth=0;depth<2;depth++)for(int blend=0;blend<2;blend++)for(int cull=0;cull<3;cull++){
+            s.depth=depth;s.blend=blend;s.cull=cull!=0;s.cull_face=cull==2?0x405:0x404;
+            for(int write=0;write<2;write++){s.depth_write=write;requests.push_back({layout,s,4,0,0});if(layout_index==1)requests.push_back({layout,s,4,1,0});}
+            // GL_ALPHA_TEST sprites, fences and alias models.
+            if(depth&&!blend)requests.push_back({layout,s,4,0,1});
+        }
+    }
+    // Cold-cache pipeline compilation is the slowest part of startup on Mali.
+    // Nothing is rendering yet, so let every core (including the big ones) help.
+    struct Context{std::vector<Request> *requests;int mrt;std::atomic<int> failed{0};} context{&requests,mrt?1:0};
+    nzp_jobs_init();nzp_jobs_set_burst(1);
+    nzp_parallel_for((int)requests.size(),[](int index,void *user){
+        auto *c=(Context*)user;const Request &r=(*c->requests)[index];
+        try{pipeline(r.layout,r.mode,r.raster,r.lightmapped,r.alpha_test,false,c->mrt);}catch(...){c->failed++;}
+    },&context);
+    nzp_jobs_set_burst(0);
+    if(context.failed)throw std::runtime_error("Pipeline prewarm failed");
+}
 std::shared_ptr<TextureGPU> material(unsigned id){
     auto &t=textures[id];if(!t.dirty&&t.gpu)return t.gpu;
     if(t.mips.empty()||t.mips[0].rgba.empty()){t.mips.resize(1);t.mips[0]={1,1,{255,255,255,255}};}
@@ -446,18 +532,31 @@ void begin_pass(bool native){
     // explicitly invalidate here to also cover the offscreen-to-HUD pass.
     frame().draw_state=DrawState{};
     pass_has_draw=false;std::memcpy(pass_clear_color,clear_color,16);pass_clear_depth=clear_depth;
-    VkClearValue values[2]{};std::memcpy(values[0].color.float32,clear_color,16);values[1].depthStencil.depth=clear_depth;
-    VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};bi.renderPass=(native&&!benchmark)?native_pass:world_pass;
+    const bool motion_pass=!native&&fsr_active;
+    VkClearValue values[3]{};std::memcpy(values[0].color.float32,clear_color,16);
+    if(motion_pass)values[2].depthStencil.depth=clear_depth;else values[1].depthStencil.depth=clear_depth;
+    VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    bi.renderPass=motion_pass?fsr_pass:(native&&!benchmark)?native_pass:world_pass;
     bi.framebuffer=native?(benchmark?frame().benchmark_fb:images[image_index].fb):frame().world_fb;bi.renderArea.extent={(unsigned)(native?phys_w:world_width),(unsigned)(native?phys_h:world_height)};
-    bi.clearValueCount=2;bi.pClearValues=values;vkCmdBeginRenderPass(frame().draw,&bi,VK_SUBPASS_CONTENTS_INLINE);in_pass=true;
-    // Vertex-shader pre-rotation applies only to passes that target the (rotated)
-    // swapchain/benchmark image; the offscreen world image stays logical.
-    float rot[4];nzp_rot_matrix(native?rotation:0,rot);vkCmdPushConstants(frame().draw,pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(rot),rot);
+    bi.clearValueCount=motion_pass?3:2;bi.pClearValues=values;vkCmdBeginRenderPass(frame().draw,&bi,VK_SUBPASS_CONTENTS_INLINE);in_pass=true;
+    // Push constants: vertex-shader pre-rotation (only for passes that target the rotated
+    // swapchain/benchmark image; the offscreen world image stays logical) and the
+    // temporal upscaler's jitter (NDC, y down) and render size.
+    struct {float rot[4];float jitter_size[4];} pc{};nzp_rot_matrix(native?rotation:0,pc.rot);
+    if(motion_pass){pc.jitter_size[0]=2.f*jitter_px[0]/world_width;pc.jitter_size[1]=2.f*jitter_px[1]/world_height;
+        pc.jitter_size[2]=float(world_width);pc.jitter_size[3]=float(world_height);}
+    vkCmdPushConstants(frame().draw,pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pc),&pc);
 }
-void bind_draw(const Layout &layout,unsigned mode,const nzp_vk_uniform &uniform,const nzp_vk_raster &state,VkDescriptorSet texture,VkDescriptorSet lightmap=VK_NULL_HANDLE){
+void bind_draw(const Layout &layout,unsigned mode,const nzp_vk_uniform &uniform_in,const nzp_vk_raster &state,VkDescriptorSet texture,VkDescriptorSet lightmap=VK_NULL_HANDLE){
     pass_has_draw=true;
     auto &f=frame();auto &cached=f.draw_state;auto cb=f.draw;
-    const VkPipeline wanted=pipeline(layout,mode,state,lightmap!=VK_NULL_HANDLE,uniform.params[2]>=0.f);
+    const bool motion_draw=fsr_active&&!ui&&scale<100;
+    // Callers that do not track history (tests, UI) leave prev_mvp zero: treat as "no motion".
+    nzp_vk_uniform with_history;const nzp_vk_uniform *uniform_ptr=&uniform_in;
+    if(motion_draw){static const float zero[16]{};
+        if(!std::memcmp(uniform_in.prev_mvp,zero,sizeof(zero))){with_history=uniform_in;std::memcpy(with_history.prev_mvp,uniform_in.mvp,64);uniform_ptr=&with_history;}}
+    const nzp_vk_uniform &uniform=*uniform_ptr;
+    const VkPipeline wanted=pipeline(layout,mode,state,lightmap!=VK_NULL_HANDLE,uniform.params[2]>=0.f,true,motion_draw?1:0);
     if(cached.pipeline!=wanted){
         vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,wanted);
         cached.pipeline=wanted;++f.stats.pipeline_binds;
@@ -574,8 +673,44 @@ int NZP_VK_Init(SDL_Window *w,const char *directory,int enable_validation){
             if(physical)break;}
         if(!physical)throw std::runtime_error("No compatible graphics/present queue");
         float priority=1;VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};qi.queueFamilyIndex=family;qi.queueCount=1;qi.pQueuePriorities=&priority;
-        const char *ext=VK_KHR_SWAPCHAIN_EXTENSION_NAME;VkDeviceCreateInfo dc{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};dc.queueCreateInfoCount=1;dc.pQueueCreateInfos=&qi;
-        dc.enabledExtensionCount=1;dc.ppEnabledExtensionNames=&ext;VK_CHECK(vkCreateDevice(physical,&dc,nullptr,&device));volkLoadDevice(device);vkGetDeviceQueue(device,family,0,&queue);
+        // Optional capabilities of the temporal upscaler (Arm ASR). Its prebuilt Vulkan shaders are
+        // all 16-bit HLSL->SPIR-V 1.4, so it needs: fp16 + int16 shader arithmetic, SPIR-V 1.4
+        // (VK_KHR_spirv_1_4 and its VK_KHR_shader_float_controls dependency), independent blend for
+        // the motion vector target and storage writes in fragment shaders. Anything missing simply
+        // leaves FSR unavailable and the renderer on the bilinear upscale.
+        std::vector<const char*> device_extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+        VkPhysicalDeviceShaderFloat16Int8Features float16_supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
+        VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures subgroup_supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES};
+        float16_supported.pNext=&subgroup_supported;
+        VkPhysicalDeviceFeatures2 features_supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};features_supported.pNext=&float16_supported;
+        vkGetPhysicalDeviceFeatures2(physical,&features_supported);
+        bool has_float16=false,has_spirv14=false,has_float_controls=false,has_subgroup_types=false;
+        {uint32_t n=0;vkEnumerateDeviceExtensionProperties(physical,nullptr,&n,nullptr);std::vector<VkExtensionProperties> list(n);
+         vkEnumerateDeviceExtensionProperties(physical,nullptr,&n,list.data());
+         for(auto &e:list){
+            has_float16|=!std::strcmp(e.extensionName,VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+            has_spirv14|=!std::strcmp(e.extensionName,VK_KHR_SPIRV_1_4_EXTENSION_NAME);
+            has_float_controls|=!std::strcmp(e.extensionName,VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+            has_subgroup_types|=!std::strcmp(e.extensionName,VK_KHR_SHADER_SUBGROUP_EXTENDED_TYPES_EXTENSION_NAME);}}
+        const auto &f=features_supported.features;
+        fsr_supported=f.independentBlend&&f.fragmentStoresAndAtomics&&f.shaderInt16&&has_float16&&float16_supported.shaderFloat16&&has_spirv14&&has_float_controls&&has_subgroup_types&&subgroup_supported.shaderSubgroupExtendedTypes;
+        SDL_Log("NZP_VULKAN fsr_supported=%d independentBlend=%d fragmentStoresAndAtomics=%d int16=%d float16=%d/%d spirv1_4=%d float_controls=%d subgroup_ext_types=%d",
+                (int)fsr_supported,(int)f.independentBlend,(int)f.fragmentStoresAndAtomics,(int)f.shaderInt16,(int)has_float16,(int)float16_supported.shaderFloat16,(int)has_spirv14,(int)has_float_controls,(int)subgroup_supported.shaderSubgroupExtendedTypes);
+        VkPhysicalDeviceShaderFloat16Int8Features float16_enabled{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
+        VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures subgroup_enabled{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES};
+        VkPhysicalDeviceFeatures2 features_enabled{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        if(fsr_supported){
+            features_enabled.features.independentBlend=features_enabled.features.fragmentStoresAndAtomics=features_enabled.features.shaderInt16=VK_TRUE;
+            float16_enabled.shaderFloat16=VK_TRUE;features_enabled.pNext=&float16_enabled;
+            subgroup_enabled.shaderSubgroupExtendedTypes=VK_TRUE;float16_enabled.pNext=&subgroup_enabled;
+            device_extensions.push_back(VK_KHR_SHADER_SUBGROUP_EXTENDED_TYPES_EXTENSION_NAME);
+            device_extensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+            device_extensions.push_back(VK_KHR_SPIRV_1_4_EXTENSION_NAME);
+            device_extensions.push_back(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+        }
+        VkDeviceCreateInfo dc{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};dc.queueCreateInfoCount=1;dc.pQueueCreateInfos=&qi;
+        dc.pNext=&features_enabled;dc.enabledExtensionCount=(uint32_t)device_extensions.size();dc.ppEnabledExtensionNames=device_extensions.data();
+        VK_CHECK(vkCreateDevice(physical,&dc,nullptr,&device));volkLoadDevice(device);vkGetDeviceQueue(device,family,0,&queue);
         VmaVulkanFunctions funcs{};funcs.vkGetInstanceProcAddr=vkGetInstanceProcAddr;funcs.vkGetDeviceProcAddr=vkGetDeviceProcAddr;
         VmaAllocatorCreateInfo ac{};ac.instance=instance;ac.physicalDevice=physical;ac.device=device;ac.vulkanApiVersion=VK_API_VERSION_1_1;ac.pVulkanFunctions=&funcs;
         VK_CHECK(vmaCreateAllocator(&ac,&allocator));
@@ -587,7 +722,7 @@ int NZP_VK_Init(SDL_Window *w,const char *directory,int enable_validation){
         for(auto f:{VK_FORMAT_D16_UNORM,VK_FORMAT_D32_SFLOAT}){VkFormatProperties fp;vkGetPhysicalDeviceFormatProperties(physical,f,&fp);
             if(fp.optimalTilingFeatures&VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT){depth_format=f;break;}}
         if(!depth_format)throw std::runtime_error("No depth attachment format");
-        native_pass=make_pass(false);world_pass=make_pass(true);
+        native_pass=make_pass(false);world_pass=make_pass(true);fsr_pass=make_fsr_pass();
         VkDescriptorSetLayoutBinding ub{0,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,1,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
         VkDescriptorSetLayoutCreateInfo lc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};lc.bindingCount=1;lc.pBindings=&ub;
         VK_CHECK(vkCreateDescriptorSetLayout(device,&lc,nullptr,&uniform_layout));
@@ -597,10 +732,11 @@ int NZP_VK_Init(SDL_Window *w,const char *directory,int enable_validation){
         VkDescriptorPoolCreateInfo pc{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pc.flags=VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;pc.maxSets=16384+Frames;
         pc.poolSizeCount=2;pc.pPoolSizes=sizes;VK_CHECK(vkCreateDescriptorPool(device,&pc,nullptr,&descriptors));
         VkDescriptorSetLayout layouts[]={uniform_layout,texture_layout,texture_layout};VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};pl.setLayoutCount=3;pl.pSetLayouts=layouts;
-        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT,0,16};pl.pushConstantRangeCount=1;pl.pPushConstantRanges=&push;
+        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,32};pl.pushConstantRangeCount=1;pl.pPushConstantRanges=&push;
         VK_CHECK(vkCreatePipelineLayout(device,&pl,nullptr,&pipeline_layout));
         VkShaderModuleCreateInfo sh{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};sh.codeSize=sizeof(nzp_vk_vert);sh.pCode=nzp_vk_vert;VK_CHECK(vkCreateShaderModule(device,&sh,nullptr,&vertex_shader));
         sh.codeSize=sizeof(nzp_vk_frag);sh.pCode=nzp_vk_frag;VK_CHECK(vkCreateShaderModule(device,&sh,nullptr,&fragment_shader));
+        sh.codeSize=sizeof(nzp_vk_frag_mrt);sh.pCode=nzp_vk_frag_mrt;VK_CHECK(vkCreateShaderModule(device,&sh,nullptr,&fragment_shader_mrt));
         std::vector<unsigned char> cache;FILE *file=std::fopen(cache_path.c_str(),"rb");
         if(file){std::fseek(file,0,SEEK_END);long len=std::ftell(file);std::rewind(file);if(len>=32&&len<32*1024*1024){cache.resize(len);if(std::fread(cache.data(),1,len,file)!=(size_t)len)cache.clear();}std::fclose(file);}
         // VkPipelineCacheHeaderVersionOne: reject incompatible devices/driver UUID.
@@ -624,30 +760,7 @@ int NZP_VK_Init(SDL_Window *w,const char *directory,int enable_validation){
         upscale_sampler=sampler_for(0x2601,0x2601,0x812f,0x812f,1);
         // Prewarm common interleaved states. Unseen vertex layouts are logged misses.
         nzp_vk_raster s{};s.blend_src=0x302;s.blend_dst=0x303;s.depth_func=0x203;s.depth_write=1;s.cull_face=0x404;
-        {
-            struct Request{Layout layout;nzp_vk_raster raster;unsigned mode;int lightmapped,alpha_test;};
-            std::vector<Request> requests;
-            for(int layout_index=0;layout_index<3;layout_index++){
-                Layout layout=interleaved();
-                if(layout_index){layout.stride[0]=layout_index==1?28:12;layout.stride[1]=layout.stride[3]=layout_index==1?28:0;layout.stride[2]=0;}
-                for(int depth=0;depth<2;depth++)for(int blend=0;blend<2;blend++)for(int cull=0;cull<3;cull++){
-                    s.depth=depth;s.blend=blend;s.cull=cull!=0;s.cull_face=cull==2?0x405:0x404;
-                    for(int write=0;write<2;write++){s.depth_write=write;requests.push_back({layout,s,4,0,0});if(layout_index==1)requests.push_back({layout,s,4,1,0});}
-                    // GL_ALPHA_TEST sprites, fences and alias models.
-                    if(depth&&!blend)requests.push_back({layout,s,4,0,1});
-                }
-            }
-            // Cold-cache pipeline compilation is the slowest part of startup on Mali.
-            // Nothing is rendering yet, so let every core (including the big ones) help.
-            struct Context{std::vector<Request> *requests;std::atomic<int> failed{0};} context{&requests};
-            nzp_jobs_init();nzp_jobs_set_burst(1);
-            nzp_parallel_for((int)requests.size(),[](int index,void *user){
-                auto *c=(Context*)user;const Request &r=(*c->requests)[index];
-                try{pipeline(r.layout,r.mode,r.raster,r.lightmapped,r.alpha_test,false);}catch(...){c->failed++;}
-            },&context);
-            nzp_jobs_set_burst(0);
-            if(context.failed)throw std::runtime_error("Pipeline prewarm failed");
-        }
+        prewarm_pipelines(false);
         active=true;recreate(1,100);
         SDL_Log("NZP_VULKAN device=%s api=%u.%u driver=%u",properties.deviceName,VK_VERSION_MAJOR(properties.apiVersion),VK_VERSION_MINOR(properties.apiVersion),properties.driverVersion);
         return 1;
@@ -658,6 +771,12 @@ void NZP_VK_NotifySurfaceLost(){surface_lost=true;resize_pending=true;}
 void NZP_VK_SetPreRotation(int enabled){if(prerotate_wanted!=bool(enabled)){prerotate_wanted=enabled;resize_pending=true;}}
 void NZP_VK_SetTestRotation(int quarter_turns){if(test_rotation!=quarter_turns){test_rotation=quarter_turns;resize_pending=true;}}
 int NZP_VK_GetRotation(void){return rotation*90;}
+void NZP_VK_SetFSR(int enabled){if(fsr_wanted!=bool(enabled)){fsr_wanted=enabled;fsr_failed=false;resize_pending=true;}}
+int NZP_VK_FSRActive(void){return fsr_active;}
+void NZP_VK_SetCamera(float near_plane,float far_plane,float fov_y){cam_near=near_plane;cam_far=far_plane;cam_fov=fov_y;}
+void NZP_VK_ResetHistory(void){fsr_reset=true;}
+void NZP_VK_SetFSRSharpness(float value){fsr_sharpness=std::min(std::max(value,0.f),1.f);}
+unsigned long long NZP_VK_FrameSerial(void){return frame_serial;}
 void NZP_VK_SetBenchmark(int enabled){if(requested_benchmark!=bool(enabled)){requested_benchmark=enabled;resize_pending=true;}}
 unsigned long long NZP_VK_CompletedFrames(){return completed_frames;}
 void NZP_VK_Finish(){
@@ -699,16 +818,43 @@ int NZP_VK_BeginFrame(int vsync,int percent){
     VK_CHECK(vkResetCommandPool(device,f.pool,0));VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};bi.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(f.upload,&bi));VK_CHECK(vkBeginCommandBuffer(f.draw,&bi));
     if(f.queries){vkCmdResetQueryPool(f.draw,f.queries,0,2);vkCmdWriteTimestamp(f.draw,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,f.queries,0);}
+    ++frame_serial;
+    if(fsr_active){nzp_fsr::jitter(fsr_phase%fsr_phase_count,fsr_phase_count,&jitter_px[0],&jitter_px[1]);++fsr_phase;}
+    else jitter_px[0]=jitter_px[1]=0.f;
     recording=true;ui=false;begin_pass(scale==100);return 1;
+}
+// Runs Arm ASR between the world pass and the HUD pass. Output lands in fsr_out, which the
+// full-screen quad of the HUD pass samples instead of the raw world image.
+void record_fsr(){
+    auto &f=frame();auto cb=f.draw;
+    const Uint64 now=SDL_GetPerformanceCounter();
+    float dt=last_frame_ticks?float(1000.0*(now-last_frame_ticks)/SDL_GetPerformanceFrequency()):16.6f;
+    last_frame_ticks=now;dt=std::min(std::max(dt,0.5f),100.f);
+    barrier(cb,f.fsr_out.handle,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT|VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT|VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    nzp_fsr::Inputs in{cb,f.world.handle,f.world_depth.handle,f.world_mv.handle,f.fsr_out.handle,world_width,world_height,
+        jitter_px[0],jitter_px[1],dt,cam_near,cam_far,cam_fov,fsr_sharpness,fsr_reset};
+    if(!nzp_fsr::dispatch(fsr_ctx,in)){
+        // Fall back to the bilinear path from the next frame on.
+        SDL_Log("NZP_FSR dispatch failed; disabling temporal upscaling");fsr_failed=true;resize_pending=true;
+    }
+    fsr_reset=false;
+    barrier(cb,f.fsr_out.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 }
 void NZP_VK_BeginUI(){
     if(!recording||ui)return;
-    if(scale<100){vkCmdEndRenderPass(frame().draw);in_pass=false;ui=true;begin_pass(true);
+    if(scale<100){vkCmdEndRenderPass(frame().draw);in_pass=false;if(fsr_active)record_fsr();ui=true;begin_pass(true);
         nzp_vk_uniform u{};for(int i=0;i<4;i++)u.mvp[i*5]=u.mv[i*5]=u.tm[i*5]=1;
         u.params[0]=u.params[1]=1;u.params[2]=-1;
         nzp_vk_raster s{};s.blend_src=1;s.blend_dst=0;s.depth_func=0x203;s.depth_far=1;s.viewport[2]=width;s.viewport[3]=height;
-        const nzp_vk_vertex quad[]={{{-1,-1,0},{0,1},{255,255,255,255}},{{1,-1,0},{1,1},{255,255,255,255}},{{1,1,0},{1,0},{255,255,255,255}},
-            {{-1,-1,0},{0,1},{255,255,255,255}},{{1,1,0},{1,0},{255,255,255,255}},{{-1,1,0},{0,0},{255,255,255,255}}};
+        // The upscaler's outermost output pixels lose energy (kernel support runs off the image),
+        // so sample one display pixel inside the border. Invisible, and avoids a dark frame.
+        const float iu=fsr_active?1.f/width:0.f,iv=fsr_active?1.f/height:0.f;
+        const float u0=iu,u1=1.f-iu,v0=iv,v1=1.f-iv;
+        const nzp_vk_vertex quad[]={{{-1,-1,0},{u0,v1},{255,255,255,255}},{{1,-1,0},{u1,v1},{255,255,255,255}},{{1,1,0},{u1,v0},{255,255,255,255}},
+            {{-1,-1,0},{u0,v1},{255,255,255,255}},{{1,1,0},{u1,v0},{255,255,255,255}},{{-1,1,0},{u0,v0},{255,255,255,255}}};
         size_t offset=allocate(sizeof(quad),4);std::memcpy((char*)frame().arena.mapped+offset,quad,sizeof(quad));
         VkBuffer buffers[]={frame().arena.handle,frame().arena.handle,frame().arena.handle,frame().arena.handle};VkDeviceSize offsets[]={offset,offset+12,offset+20,offset+12};
         bind_draw(interleaved(),4,u,s,frame().world_set);vkCmdBindVertexBuffers(frame().draw,0,4,buffers,offsets);vkCmdDraw(frame().draw,6,1,0,0);
@@ -873,15 +1019,15 @@ void NZP_VK_Shutdown(){
         for(auto &f:frames){for(auto &b:f.staging)destroy(b);destroy(f.arena);if(f.queries)vkDestroyQueryPool(device,f.queries,nullptr);if(f.pool)vkDestroyCommandPool(device,f.pool,nullptr);
             if(f.fence)vkDestroyFence(device,f.fence,nullptr);if(f.acquired)vkDestroySemaphore(device,f.acquired,nullptr);f={};}
         if(upscale_sampler)vkDestroySampler(device,upscale_sampler,nullptr);
-        if(vertex_shader)vkDestroyShaderModule(device,vertex_shader,nullptr);if(fragment_shader)vkDestroyShaderModule(device,fragment_shader,nullptr);
+        if(vertex_shader)vkDestroyShaderModule(device,vertex_shader,nullptr);if(fragment_shader)vkDestroyShaderModule(device,fragment_shader,nullptr);if(fragment_shader_mrt)vkDestroyShaderModule(device,fragment_shader_mrt,nullptr);
         if(pipeline_cache)vkDestroyPipelineCache(device,pipeline_cache,nullptr);if(pipeline_layout)vkDestroyPipelineLayout(device,pipeline_layout,nullptr);
         if(descriptors)vkDestroyDescriptorPool(device,descriptors,nullptr);if(uniform_layout)vkDestroyDescriptorSetLayout(device,uniform_layout,nullptr);if(texture_layout)vkDestroyDescriptorSetLayout(device,texture_layout,nullptr);
-        if(native_pass)vkDestroyRenderPass(device,native_pass,nullptr);if(world_pass)vkDestroyRenderPass(device,world_pass,nullptr);
+        if(native_pass)vkDestroyRenderPass(device,native_pass,nullptr);if(world_pass)vkDestroyRenderPass(device,world_pass,nullptr);if(fsr_pass)vkDestroyRenderPass(device,fsr_pass,nullptr);
         if(allocator)vmaDestroyAllocator(allocator);vkDestroyDevice(device,nullptr);}
     if(debug)vkDestroyDebugUtilsMessengerEXT(instance,debug,nullptr);if(surface)vkDestroySurfaceKHR(instance,surface,nullptr);
     if(instance)vkDestroyInstance(instance,nullptr);
     instance={};physical={};device={};surface={};allocator={};debug={};swapchain={};
-    descriptors={};uniform_layout={};texture_layout={};pipeline_layout={};pipeline_cache={};vertex_shader={};fragment_shader={};native_pass={};world_pass={};upscale_sampler={};
+    descriptors={};uniform_layout={};texture_layout={};pipeline_layout={};pipeline_cache={};vertex_shader={};fragment_shader={};fragment_shader_mrt={};native_pass={};world_pass={};fsr_pass={};upscale_sampler={};fsr_active=fsr_failed=fsr_supported=mrt_prewarmed=false;fsr_reset=true;last_frame_ticks=0;
     last_command_stats={};last_frame_timings={};
     frame_index=0;recording=in_pass=ui=resize_pending=false;benchmark=requested_benchmark=surface_lost=false;completed_frames=0;current_vsync=-1;width=height=phys_w=phys_h=drawable_w=drawable_h=rotation=sc_rotation=0;gpu_ms=-1;color_format=depth_format=VK_FORMAT_UNDEFINED;
     SDL_Vulkan_UnloadLibrary();

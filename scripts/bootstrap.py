@@ -45,8 +45,10 @@ def game_data():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--with-data", action="store_true")
+    parser.add_argument("--only", action="append", choices=("SDL", "SDL_mixer", "arm_asr"),
+                        help="fetch only this dependency (repeatable)")
     args = parser.parse_args()
-    for name in ("SDL", "SDL_mixer"):
+    for name in args.only or ("SDL", "SDL_mixer", "arm_asr"):
         prepare(name)
     if args.with_data:
         game_data()

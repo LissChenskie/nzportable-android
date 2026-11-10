@@ -31,5 +31,12 @@
     "tag": "v3.1.0",
     "storage": "android/native/vulkan/vendor/vk_mem_alloc.h",
     "license": "MIT"
+  },
+  "arm_asr": {
+    "repository": "https://github.com/arm/accuracy-super-resolution-generic-library",
+    "commit": "0501f490bd9946a2e1806b5363d7ab8a9a6a5e0a",
+    "tag": "25.06",
+    "license": "MIT",
+    "note": "Arm Accuracy Super Resolution: Mali-oriented derivative of AMD FidelityFX Super Resolution 2.2 with prebuilt Vulkan shaders"
   }
 }

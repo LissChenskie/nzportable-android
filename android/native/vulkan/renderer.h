@@ -11,6 +11,10 @@ extern "C" {
 typedef struct {float xyz[3],uv[2]; unsigned char color[4];} nzp_vk_vertex;
 typedef struct {
     float mvp[16],mv[16],tm[16],fog[4],fogcolor[4],params[4];
+    /* Temporal upscaler inputs (unused otherwise): previous-frame MVP of the same
+     * geometry; motion[0] != 0 marks camera-locked geometry (weapon) with zero motion.
+     * An all-zero prev_mvp means "no history": the renderer then uses mvp. */
+    float prev_mvp[16],motion[4];
 } nzp_vk_uniform;
 typedef struct {
     int blend,depth,cull,offset;
@@ -40,6 +44,17 @@ void NZP_VK_SetPreRotation(int enabled);
 /* Test hook: rotate the offscreen benchmark target by n*90 degrees (-1 = off). */
 void NZP_VK_SetTestRotation(int quarter_turns);
 int NZP_VK_GetRotation(void);
+/* Temporal upscaling (FSR 2.2-class Arm ASR). Used only while the 3D render scale is
+ * below 100%. Returns/keeps 0 when the library is not built in or cannot be created. */
+void NZP_VK_SetFSR(int enabled);
+int NZP_VK_FSRActive(void);
+/* Camera of the current 3D view (vertical FOV in radians); call once per rendered frame. */
+void NZP_VK_SetCamera(float near_plane,float far_plane,float fov_y_radians);
+/* Discontinuity (teleport, level change): drop temporal history on the next frame. */
+void NZP_VK_ResetHistory(void);
+/* RCAS sharpening 0..1 (0 = off). */
+void NZP_VK_SetFSRSharpness(float value);
+unsigned long long NZP_VK_FrameSerial(void);
 void NZP_VK_Finish(void);
 unsigned long long NZP_VK_CompletedFrames(void);
 int NZP_VK_BeginFrame(int vsync,int percent);
