@@ -31,7 +31,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Failed to fetch current upstream." }
           git -C deckcraft merge --no-edit upstream/main
           if ($LASTEXITCODE -ne 0) { throw "Russian localization does not merge cleanly with current upstream." }
-          $versionLine = Select-String -Path "deckcraft/Cargo.toml" -Pattern '^\s*version\s*=\s*"0\.18\.1"\s*
+          $cargoManifest = Get-Content "deckcraft/Cargo.toml" -Raw
+          if (-not $cargoManifest.Contains('version = "0.18.1"')) { throw "Expected DeckCraft 0.18.1, refusing to build an outdated version." }
+          $sourceSha = git -C deckcraft rev-parse HEAD
           "DECKCRAFT_SOURCE_SHA=$sourceSha" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Get the pinned DeckCraft fonts
@@ -185,6 +187,7 @@ jobs:
             "Source repository: https://github.com/storytold/deckcraft"
             "Russian translation source: https://github.com/storytold/deckcraft/pull/1672"
             "DeckCraft version: 0.18.1"
+            "DeckCraft version: 0.18.1"
             "Integrated source commit: $env:DECKCRAFT_SOURCE_SHA"
             "Build platform: Windows x86_64"
             "Tests: cargo test --locked -p deckcraft-ui-egui (passed)"
@@ -201,7 +204,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
  | Select-Object -First 1
-          if (-not $versionLine) { throw "Expected DeckCraft 0.18.1, refusing to build an outdated version." }
           $sourceSha = git -C deckcraft rev-parse HEAD
           "DECKCRAFT_SOURCE_SHA=$sourceSha" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
