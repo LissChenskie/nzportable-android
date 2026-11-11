@@ -1,4 +1,4 @@
-name: Temporary DeckCraft Russian Windows build
+name: DeckCraft 0.18.1 Russian Windows build
 
 on:
   push:
@@ -31,6 +31,177 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Failed to fetch current upstream." }
           git -C deckcraft merge --no-edit upstream/main
           if ($LASTEXITCODE -ne 0) { throw "Russian localization does not merge cleanly with current upstream." }
+          $versionLine = Select-String -Path "deckcraft/Cargo.toml" -Pattern '^\s*version\s*=\s*"0\.18\.1"\s*
+          "DECKCRAFT_SOURCE_SHA=$sourceSha" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Get the pinned DeckCraft fonts
+        shell: pwsh
+        run: |
+          git clone --no-tags --filter=blob:none https://github.com/storytold/craft-fonts.git craft-fonts
+          if ($LASTEXITCODE -ne 0) { throw "Failed to clone craft-fonts." }
+          git -C craft-fonts checkout 37827adc41fd165f9a9234ac40f94dbad353aa69
+          if ($LASTEXITCODE -ne 0) { throw "Failed to check out the pinned font revision." }
+          $fontsPath = (Resolve-Path "craft-fonts").Path
+          "CRAFT_FONTS_DIR=$fontsPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CRAFT_FONTS_REQUIRED=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Expand Russian catalog and localize direct UI labels
+        shell: pwsh
+        run: |
+          @'
+          import json
+          import re
+          from pathlib import Path
+
+          root = Path("deckcraft")
+          src = root / "crates/ui-egui/src"
+          catalog_file = src / "i18n.rs"
+          tsv_file = root / "tools/ru_ui.tsv"
+          catalog = catalog_file.read_text(encoding="utf-8")
+          translations = {}
+          for line in tsv_file.read_text(encoding="utf-8").splitlines():
+              if "|" in line:
+                  key, value = line.split("|", 1)
+                  translations[key] = value
+
+          start = catalog.index("const RUSSIAN_CATALOG")
+          end = catalog.index("\n];", start)
+          existing = set()
+          entry_re = re.compile(r'^\s*\(\s*("(?:\\.|[^"\\])*")\s*,', re.M)
+          for match in entry_re.finditer(catalog[start:end]):
+              try:
+                  existing.add(json.loads(match.group(1)))
+              except json.JSONDecodeError:
+                  pass
+
+          missing = [(key, value) for key, value in translations.items() if key not in existing]
+          if missing:
+              block = "".join(
+                  "    (" + json.dumps(key, ensure_ascii=False) + ", " +
+                  json.dumps(value, ensure_ascii=False) + "),\n"
+                  for key, value in missing
+              )
+              catalog = catalog[:end] + "\n" + block.rstrip("\n") + catalog[end:]
+              catalog_file.write_text(catalog, encoding="utf-8")
+
+          # Extend the safe, explicit translation pass to direct egui widget text.
+          full_catalog = {}
+          for match in re.finditer(
+              r'^\s*\(\s*("(?:\\.|[^"\\])*")\s*,\s*("(?:\\.|[^"\\])*")\s*\),',
+              catalog, re.M
+          ):
+              try:
+                  full_catalog[json.loads(match.group(1))] = json.loads(match.group(2))
+              except json.JSONDecodeError:
+                  continue
+          full_catalog.update({k: v for k, v in translations.items() if k not in full_catalog})
+
+          patterns = [
+              re.compile(r'(\bui\.(?:label|button|small|heading|menu_button)\(\s*)("(?:\\.|[^"\\])*")'),
+              re.compile(r'(\bui\.(?:checkbox|radio|selectable_label)\(\s*[^,\n]*,\s*)("(?:\\.|[^"\\])*")'),
+              re.compile(r'(\.hint_text\(\s*)("(?:\\.|[^"\\])*")'),
+              re.compile(r'(\.on_hover_text\(\s*)("(?:\\.|[^"\\])*")'),
+              re.compile(r'(\.selected_text\(\s*)("(?:\\.|[^"\\])*")'),
+          ]
+
+          changed_files = 0
+          changed_labels = 0
+          for path in src.rglob("*.rs"):
+              if path.name == "i18n.rs" or "status.rs" == path.name:
+                  continue
+              if "test" in path.stem or "tests" in path.parts:
+                  continue
+              original = path.read_text(encoding="utf-8")
+              test_marker = re.search(r'#\[cfg\(test\)\]\s*mod\s+\w+\s*\{', original)
+              code, tests = (original[:test_marker.start()], original[test_marker.start():]) if test_marker else (original, "")
+              lines = code.splitlines(keepends=True)
+              for i, line in enumerate(lines):
+                  stripped = line.lstrip()
+                  if stripped.startswith(("//", "/*", "*")):
+                      continue
+                  for pattern in patterns:
+                      def replace(match):
+                          global changed_labels
+                          try:
+                              english = json.loads(match.group(2))
+                          except json.JSONDecodeError:
+                              return match.group(0)
+                          if english not in full_catalog:
+                              return match.group(0)
+                          changed_labels += 1
+                          return match.group(1) + "crate::i18n::context_text(ui.ctx(), " + match.group(2) + ")"
+                      line = pattern.sub(replace, line)
+                  lines[i] = line
+              updated = "".join(lines) + tests
+              if updated != original:
+                  path.write_text(updated, encoding="utf-8")
+                  changed_files += 1
+
+          print(f"Added {len(missing)} catalog entries from ru_ui.tsv.")
+          print(f"Localized {changed_labels} direct UI labels in {changed_files} Rust files.")
+          print("Existing document text and command IDs are left untouched.")
+          '@ | Set-Content -Path extend_ru.py -Encoding utf8
+          python extend_ru.py
+          if ($LASTEXITCODE -ne 0) { throw "Russian localization expansion failed." }
+
+      - name: Format Rust workspace
+        working-directory: deckcraft
+        shell: pwsh
+        run: |
+          cargo fmt --all
+          if ($LASTEXITCODE -ne 0) { throw "cargo fmt failed." }
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw "cargo fmt check failed." }
+
+      - name: Test localized UI crate
+        working-directory: deckcraft
+        shell: pwsh
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          cargo test --locked -p deckcraft-ui-egui
+          if ($LASTEXITCODE -ne 0) { throw "deckcraft-ui-egui tests failed." }
+
+      - name: Build DeckCraft for Windows x64
+        working-directory: deckcraft
+        shell: pwsh
+        run: |
+          cargo build --locked --release -p deckcraft --bin deckcraft
+          if ($LASTEXITCODE -ne 0) { throw "Windows x64 DeckCraft build failed." }
+
+      - name: Prepare verified output
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path output | Out-Null
+          Copy-Item deckcraft/target/release/deckcraft.exe output/deckcraft.exe
+          $hash = (Get-FileHash output/deckcraft.exe -Algorithm SHA256).Hash
+          @(
+            "DeckCraft Russian UI build"
+            "Source repository: https://github.com/storytold/deckcraft"
+            "Russian translation source: https://github.com/storytold/deckcraft/pull/1672"
+            "DeckCraft version: 0.18.1"
+            "Integrated source commit: $env:DECKCRAFT_SOURCE_SHA"
+            "Build platform: Windows x86_64"
+            "Tests: cargo test --locked -p deckcraft-ui-egui (passed)"
+            "SHA256: $hash"
+          ) | Set-Content output/BUILD-INFO.txt -Encoding utf8
+          Get-Item output/deckcraft.exe | Format-List Name,Length
+          Write-Host "SHA256: $hash"
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: deckcraft-russian-windows-x64
+          path: output/*
+          if-no-files-found: error
+          retention-days: 14
+ | Select-Object -First 1
+          if (-not $versionLine) { throw "Expected DeckCraft 0.18.1, refusing to build an outdated version." }
           $sourceSha = git -C deckcraft rev-parse HEAD
           "DECKCRAFT_SOURCE_SHA=$sourceSha" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
