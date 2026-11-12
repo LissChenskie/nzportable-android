@@ -16,6 +16,7 @@ public final class GameActivity extends SDLActivity {
     private RetroTouchBridge touch;
     private LanNetwork lanNetwork;
     // Callbacks only enqueue SDL user-events. Engine data is never mutated on the UI thread.
+    static native void nativeSetLogDirectory(String path);
     static native void nativeTouchAction(String action, boolean pressed);
     static native void nativeTouchMove(float x, float y);
     static native void nativeTouchLook(float dx, float dy);
@@ -33,6 +34,9 @@ public final class GameActivity extends SDLActivity {
     @Override protected void onCreate(Bundle state) {
         power=(PowerManager)getSystemService(POWER_SERVICE);
         super.onCreate(state);
+        java.io.File logDir = getExternalFilesDir(null);
+        if (logDir != null) nativeSetLogDirectory(logDir.getAbsolutePath());
+        installJavaCrashHandler();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if(Build.VERSION.SDK_INT>=28){WindowManager.LayoutParams p=getWindow().getAttributes();
             p.layoutInDisplayCutoutMode=WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER;getWindow().setAttributes(p);}
@@ -42,6 +46,27 @@ public final class GameActivity extends SDLActivity {
         Log.i("NZPortable","Device="+Build.MODEL+" hardware="+Build.HARDWARE+" ABI="+android.os.Process.is64Bit());
         immersive();
     }
+
+    private void installJavaCrashHandler() {
+        final Thread.UncaughtExceptionHandler previous =
+            Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
+            java.io.File dir = getExternalFilesDir(null);
+            if (dir != null) {
+                java.io.File report = new java.io.File(dir, "nzp-java-crash.txt");
+                try (java.io.PrintWriter out = new java.io.PrintWriter(
+                        new java.io.FileWriter(report, false))) {
+                    out.println("NZPortable Java crash");
+                    out.println("Device=" + Build.MODEL + " hardware=" + Build.HARDWARE
+                        + " SDK=" + Build.VERSION.SDK_INT);
+                    out.println("Thread=" + thread.getName());
+                    error.printStackTrace(out);
+                } catch (java.io.IOException ignored) { }
+            }
+            if (previous != null) previous.uncaughtException(thread, error);
+        });
+    }
+
     // Called from the SDL render thread on state changes, not on every frame.
     public void setTouchControlsVisible(final boolean playing) {
         runOnUiThread(new Runnable() {

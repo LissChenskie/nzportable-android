@@ -13,6 +13,113 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <sys/resource.h>
+#include <stdio.h>
+#include <signal.h>
+#include <execinfo.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <pthread.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+
+
+/* Persistent Android diagnostics. The Java side supplies getExternalFilesDir(). */
+#define NZP_LOG_LIMIT (3u * 1024u * 1024u)
+static char nzp_log_dir[PATH_MAX];
+static int nzp_log_fd = -1;
+static size_t nzp_log_bytes;
+static pthread_mutex_t nzp_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static SDL_LogOutputFunction nzp_previous_log;
+static void *nzp_previous_log_userdata;
+
+static void nzp_android_log_output(void *userdata, int category,
+                                  SDL_LogPriority priority, const char *message)
+{
+    if (nzp_previous_log)
+        nzp_previous_log(nzp_previous_log_userdata, category, priority, message);
+    if (!message || nzp_log_fd < 0) return;
+    pthread_mutex_lock(&nzp_log_mutex);
+    if (nzp_log_bytes < NZP_LOG_LIMIT) {
+        size_t len = strlen(message);
+        size_t left = NZP_LOG_LIMIT - nzp_log_bytes;
+        if (len > left) len = left;
+        if (len) {
+            ssize_t n = write(nzp_log_fd, message, len);
+            if (n > 0) nzp_log_bytes += (size_t)n;
+        }
+        if (nzp_log_bytes < NZP_LOG_LIMIT) {
+            if (write(nzp_log_fd, "\n", 1) == 1) nzp_log_bytes++;
+        }
+    }
+    pthread_mutex_unlock(&nzp_log_mutex);
+}
+
+static void nzp_android_crash_signal(int sig, siginfo_t *info, void *context)
+{
+    (void)context;
+    if (nzp_log_fd >= 0) {
+        char line[192];
+        int n = snprintf(line, sizeof(line),
+            "\n=== NATIVE CRASH: signal=%d address=%p ===\n",
+            sig, info ? info->si_addr : NULL);
+        if (n > 0) (void)write(nzp_log_fd, line,
+            (size_t)n < sizeof(line) ? (size_t)n : sizeof(line));
+        void *frames[32];
+        int count = backtrace(frames, 32);
+        if (count > 0) backtrace_symbols_fd(frames, count, nzp_log_fd);
+        (void)write(nzp_log_fd, "\n", 1);
+        (void)fsync(nzp_log_fd);
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void nzp_android_install_crash_handlers(void)
+{
+    const int signals[] = { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE, SIGTRAP };
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_sigaction = nzp_android_crash_signal;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_SIGINFO | SA_RESETHAND;
+    for (unsigned i = 0; i < sizeof(signals)/sizeof(signals[0]); ++i)
+        sigaction(signals[i], &action, NULL);
+}
+
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeSetLogDirectory(
+        JNIEnv *env, jclass unused, jstring directory)
+{
+    (void)unused;
+    if (!directory) return;
+    const char *path = (*env)->GetStringUTFChars(env, directory, NULL);
+    if (!path) return;
+    snprintf(nzp_log_dir, sizeof(nzp_log_dir), "%s", path);
+    (*env)->ReleaseStringUTFChars(env, directory, path);
+
+    char last[PATH_MAX], previous[PATH_MAX];
+    snprintf(last, sizeof(last), "%s/nzp-last-run.log", nzp_log_dir);
+    snprintf(previous, sizeof(previous), "%s/nzp-previous-run.log", nzp_log_dir);
+    if (nzp_log_fd >= 0) close(nzp_log_fd);
+    (void)rename(last, previous);
+    nzp_log_fd = open(last, O_CREAT | O_TRUNC | O_WRONLY | O_APPEND, 0600);
+    nzp_log_bytes = 0;
+    if (nzp_log_fd >= 0) {
+        char header[256];
+        int n = snprintf(header, sizeof(header),
+            "NZPortable Android run log; SDK=%d; ABI=%s\n",
+            (int)android_get_device_api_level(),
+            sizeof(void*) == 8 ? "arm64" : "arm32");
+        if (n > 0) {
+            (void)write(nzp_log_fd, header,
+                (size_t)n < sizeof(header) ? (size_t)n : sizeof(header));
+            nzp_log_bytes = (size_t)n;
+        }
+        SDL_LogGetOutputFunction(&nzp_previous_log, &nzp_previous_log_userdata);
+        SDL_LogSetOutputFunction(nzp_android_log_output, NULL);
+        nzp_android_install_crash_handlers();
+    }
+}
 
 typedef struct {float x,y,r;int key;const char *label;} touch_button;
 // Coordinates normalized to the rendered area, with radii relative to height.
