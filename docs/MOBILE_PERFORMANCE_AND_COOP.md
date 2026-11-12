@@ -49,39 +49,46 @@ mixing lazily loads samples through the engine cache; the server/QuakeC and clie
 * The only consumer today is **pipeline creation at start-up** (thread-safe per the Vulkan spec).
   `NZP_JOBS_WORKERS=n` overrides the worker count.
 
-## 4. FSR upscaling
+## 4. Upscaling: FSR Lite and FSR full
 
-What is included: **Arm Accuracy Super Resolution** (MIT), the Mali-oriented derivative of AMD
-FidelityFX Super Resolution **2.2** - the temporal upscaler that FSR 3 is built on. It is fetched by
-`scripts/bootstrap.py` (pinned in `dependencies.lock.json`) and linked statically.
+Video options, page 1, "FSR UPSCALING" cycles **OFF -> LITE -> FULL** (cvar `vk_fsr`: 0 off, 2 lite, 1 full;
+default off). Both only work while `vid_render_scale` is below 100%, and both turn themselves off for the
+session if frames stay very slow (the menu then shows AUTO-OFF).
 
-What is **not** included: **FSR 3 frame generation** (optical-flow interpolation of extra frames).
-It needs accurate per-pixel motion and a GPU budget that a Mali-G72 class device does not have.
+* **LITE** (any Vulkan GPU with independent blend): my own cheap single-pass temporal upscaler, *not* AMD or
+  Arm code. The world renders jittered and writes camera motion vectors; one full-screen pass reads 7
+  textures per display pixel (5 current-frame taps for a range-limited unsharp mask and a clamp box, the
+  motion vector, the history), blends the clamped history in and writes the next history image. Depth never
+  leaves tile memory (not stored). No compute, no extra passes. `vk_fsr_sharpness` sets the sharpening.
+* **FULL**: Arm Accuracy Super Resolution (MIT), the Mali-oriented derivative of AMD FidelityFX Super
+  Resolution **2.2**, the temporal upscaler FSR 3 builds on. Fetched by `scripts/bootstrap.py`. It stores depth
+  and is several full-resolution passes, which is what made it 12 fps on a Mali-G72 and 30 fps on an Adreno 642L
+  in the first tests; it is meant for modern GPUs. Needs `VK_KHR_shader_float16_int8`, `VK_KHR_spirv_1_4`,
+  `VK_KHR_shader_float_controls`, `VK_KHR_shader_subgroup_extended_types`, `shaderInt16`, `independentBlend`,
+  `fragmentStoresAndAtomics` (all of Arm ASR's prebuilt shaders are 16-bit SPIR-V 1.4); `NZP_VULKAN fsr_supported=`
+  in the log lists each one.
 
-Where to switch it: **Video options, page 1, "FSR UPSCALING"** (cvar `vk_fsr`, **default off**). It shows OFF / ON / NOT SUPPORTED / AUTO-OFF (TOO SLOW) / ON but needs RESOLUTION below 100%. A frame-time watchdog turns it off for the session if frames stay above ~180 ms for a while.
-
-How it works: with `vid_render_scale` below 100 and `vk_fsr 1`, the world pass renders
-jittered, writes motion vectors (camera reprojection) and depth, Arm ASR upscales to the display size,
-and the HUD is drawn at native resolution on top. `vk_fsr_sharpness` controls RCAS (default 0.2).
+What is **not** included: FSR 3 frame generation.
 
 Limits to know about:
 
-* Needs `VK_KHR_shader_float16_int8`, `VK_KHR_spirv_1_4`, `VK_KHR_shader_float_controls`,
-  `VK_KHR_shader_subgroup_extended_types`, `shaderInt16`, `independentBlend`, `fragmentStoresAndAtomics`
-  (all of Arm ASR's prebuilt shaders are 16-bit SPIR-V 1.4). The log line `NZP_VULKAN fsr_supported=`
-  lists each capability; on devices without them the renderer silently keeps the bilinear upscale.
-  An older Mali-G72 phone with a Vulkan 1.1 driver may well be in that group.
-* Motion vectors cover the camera only. Moving entities are treated as static in the world, so fast
-  zombies can leave trails; the weapon model is marked camera-locked. There is no reactive mask.
-* The depth buffer is stored (D32) and a motion-vector target is added, which costs bandwidth that the
-  bilinear path does not pay.
-* On the synthetic test card FSR was **not** better than bilinear (detail thinner than half a render
-  pixel is not recoverable); the automated tests prove that it runs without validation errors, that
-  jitter and the motion-vector sign are right, and that output does not have a dark border. Judging
-  image quality needs real content on a real device.
-* The HDR input mode is used for 8-bit content because it is the configuration validated here; the LDR
+* Whether an upscaler helps at all depends on the frame time. At 350 fps (2.9 ms) any extra pass costing a
+  few milliseconds is a loss; upscaling pays off only when the scene is clearly GPU-bound.
+* Motion vectors cover the camera only. Moving entities are treated as static in the world, so fast zombies
+  can leave trails; the weapon model is marked camera-locked. There is no reactive mask.
+* On the synthetic test card (lavapipe, not a phone) Lite reduces the detail error vs. bilinear on a static
+  view (20.9 vs 23.4) and equals it while panning; FULL does not beat bilinear there. Neither recovers detail
+  thinner than half a render pixel. Real image quality and GPU cost need real devices.
+* FULL uses the HDR input mode for 8-bit content because it is the configuration that was validated; the LDR
   permutation produced dark, grid-patterned output under software Vulkan.
-* Licences: Arm ASR is MIT (derived from AMD FSR 2.2, MIT). See the notices in `third_party/arm_asr/LICENSES`.
+* Licences: Arm ASR is MIT (derived from AMD FSR 2.2, MIT), see `third_party/arm_asr/LICENSES`.
+
+## 5. Run log and crash report (no adb needed)
+
+`<Android/data/<package>/files>/nzp-last-run.log` holds everything the game logs (starting with the device
+model), `nzp-previous-run.log` the run before it. A native crash (SIGSEGV, SIGABRT, ...) appends a report with
+the fault address and a backtrace; an uncaught Java exception goes to `nzp-java-crash.txt`. After a failed
+co-op attempt, send the files of both phones.
 
 ## Recreate-loop fix
 

@@ -76,7 +76,7 @@ struct Frame {
     VkDescriptorSet uniform_set{};
     std::vector<std::shared_ptr<TextureGPU>> textures;
     std::vector<std::shared_ptr<Buffer>> meshes;
-    Image world,world_depth,world_mv,fsr_out;VkFramebuffer world_fb{};
+    Image world,world_depth,world_mv,fsr_out;VkFramebuffer world_fb{};VkDescriptorSet lite_set[2]{};
     Image benchmark_color,benchmark_depth;VkFramebuffer benchmark_fb{};
     VkDescriptorSet world_set{};
     VkQueryPool queries{}; bool submitted{};
@@ -103,6 +103,7 @@ std::map<PipelineKey,VkPipeline> pipelines;std::mutex pipeline_mutex;
 PipelineKey recent_pipeline_key{};VkPipeline recent_pipeline{};
 nzp_vk_command_stats last_command_stats{};nzp_vk_frame_timings last_frame_timings{};
 std::map<unsigned,Texture> textures;std::map<unsigned,Mesh> meshes;
+Image lite_hist[2];
 std::array<Frame,Frames> frames;
 std::vector<SwapImage> images;
 SDL_Window *window{};std::string cache_path;
@@ -117,6 +118,13 @@ int rotation{},sc_rotation{},phys_w{},phys_h{},drawable_w{},drawable_h{},test_ro
 bool fsr_wanted=false,fsr_active=false,fsr_reset=true,fsr_failed=false,fsr_supported=false;nzp_fsr::Context *fsr_ctx=nullptr;
 int fsr_phase=0,fsr_phase_count=1;float jitter_px[2]{},cam_near=4.f,cam_far=4096.f,cam_fov=1.2f;
 float fsr_sharpness=0.2f;Uint64 last_frame_ticks=0;
+// "FSR Lite": cheap single-pass temporal upscaler for old GPUs (lite.frag). upscaler_mode: 0 off, 1 Arm ASR, 2 Lite.
+int upscaler_mode=0;bool lite_active=false,lite_failed=false,lite_supported=false;
+VkRenderPass lite_pass{},resolve_pass{};VkShaderModule lite_vert{},lite_frag{};
+VkDescriptorSetLayout lite_set_layout{};VkPipelineLayout lite_pipeline_layout{};VkPipeline lite_pipeline{};
+VkSampler nearest_sampler{};VkFramebuffer lite_fb[2]{};VkDescriptorSet lite_ui_set[2]{};
+bool lite_history_valid=false;VkDescriptorSet lite_ui_current{};
+int lite_out=0,lite_state[2]{0,0},lite_phase=0,lite_slow_frames=0,lite_frames_alive=0;float lite_sharpness=0.3f;
 int fsr_contexts_created=0,fsr_slow_frames=0,fsr_frames_alive=0,fsr_ctx_rw=0,fsr_ctx_rh=0,fsr_ctx_dw=0,fsr_ctx_dh=0,fsr_ctx_quality=0;
 // What the swapchain was built against; a VK_SUBOPTIMAL_KHR only triggers a rebuild if this changed.
 VkSurfaceTransformFlagBitsKHR sc_seen_transform{};uint32_t sc_seen_w=0,sc_seen_h=0;unsigned long long frame_serial=0;bool mrt_prewarmed=false;
@@ -213,13 +221,16 @@ VkRenderPass make_pass(bool offscreen) {
 }
 // World pass for the temporal upscaler: colour + motion vectors + stored depth, all left in
 // shader-readable layouts for Arm ASR (depth: DEPTH_STENCIL_READ_ONLY, as the library expects).
-VkRenderPass make_fsr_pass(){
+VkRenderPass make_fsr_pass(bool store_depth){
     VkAttachmentDescription a[3]{};
     for(int i=0;i<3;i++){a[i].samples=VK_SAMPLE_COUNT_1_BIT;a[i].loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;a[i].storeOp=VK_ATTACHMENT_STORE_OP_STORE;
         a[i].stencilLoadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;a[i].stencilStoreOp=VK_ATTACHMENT_STORE_OP_DONT_CARE;a[i].initialLayout=VK_IMAGE_LAYOUT_UNDEFINED;}
     a[0].format=FsrColorFormat;a[0].finalLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     a[1].format=FsrMotionFormat;a[1].finalLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    a[2].format=FsrDepthFormat;a[2].finalLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    a[2].format=FsrDepthFormat;
+    // Arm ASR samples the depth; Lite does not, so its depth stays in tile memory (never written back).
+    a[2].storeOp=store_depth?VK_ATTACHMENT_STORE_OP_STORE:VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    a[2].finalLayout=store_depth?VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     VkAttachmentReference colors[2]{{0,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},{1,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}},depth{2,VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     VkSubpassDescription sub{};sub.pipelineBindPoint=VK_PIPELINE_BIND_POINT_GRAPHICS;sub.colorAttachmentCount=2;sub.pColorAttachments=colors;sub.pDepthStencilAttachment=&depth;
     VkSubpassDependency deps[2]{};
@@ -235,6 +246,25 @@ VkRenderPass make_fsr_pass(){
     ci.subpassCount=1;ci.pSubpasses=&sub;ci.dependencyCount=2;ci.pDependencies=deps;
     VkRenderPass p;VK_CHECK(vkCreateRenderPass(device,&ci,nullptr,&p));return p;
 }
+// Lite resolve pass: one RGBA8 target that is sampled afterwards (and next frame as history).
+VkRenderPass make_resolve_pass(){
+    VkAttachmentDescription a{};a.format=FsrColorFormat;a.samples=VK_SAMPLE_COUNT_1_BIT;a.loadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;a.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+    a.stencilLoadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;a.stencilStoreOp=VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    a.initialLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;a.finalLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkAttachmentReference ref{0,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription sub{};sub.pipelineBindPoint=VK_PIPELINE_BIND_POINT_GRAPHICS;sub.colorAttachmentCount=1;sub.pColorAttachments=&ref;
+    VkSubpassDependency deps[2]{};
+    deps[0].srcSubpass=VK_SUBPASS_EXTERNAL;deps[0].dstSubpass=0;deps[0].srcStageMask=deps[0].dstStageMask=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[1].srcSubpass=0;deps[1].dstSubpass=VK_SUBPASS_EXTERNAL;deps[1].srcStageMask=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[1].dstStageMask=VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;deps[1].srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;deps[1].dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+    VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};ci.attachmentCount=1;ci.pAttachments=&a;ci.subpassCount=1;ci.pSubpasses=&sub;ci.dependencyCount=2;ci.pDependencies=deps;
+    VkRenderPass p;VK_CHECK(vkCreateRenderPass(device,&ci,nullptr,&p));return p;
+}
+VkFramebuffer framebuffer1(VkImageView color,int w,int h,VkRenderPass pass){
+    VkFramebufferCreateInfo ci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};ci.renderPass=pass;ci.attachmentCount=1;ci.pAttachments=&color;ci.width=w;ci.height=h;ci.layers=1;
+    VkFramebuffer fb;VK_CHECK(vkCreateFramebuffer(device,&ci,nullptr,&fb));return fb;
+}
 VkFramebuffer framebuffer3(VkImageView color,VkImageView motion,VkImageView depth,int w,int h,VkRenderPass pass){
     VkImageView views[]={color,motion,depth};VkFramebufferCreateInfo ci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     ci.renderPass=pass;ci.attachmentCount=3;ci.pAttachments=views;ci.width=w;ci.height=h;ci.layers=1;
@@ -249,7 +279,11 @@ void destroy_fsr_context(){if(fsr_ctx){nzp_fsr::destroy(fsr_ctx);fsr_ctx=nullptr
 void destroy_targets(){
     for(auto &f:frames){if(f.benchmark_fb)vkDestroyFramebuffer(device,f.benchmark_fb,nullptr);f.benchmark_fb={};destroy(f.benchmark_color);destroy(f.benchmark_depth);if(f.world_fb)vkDestroyFramebuffer(device,f.world_fb,nullptr);f.world_fb={};
         if(f.world_set)vkFreeDescriptorSets(device,descriptors,1,&f.world_set);f.world_set={};
+        for(auto &set:f.lite_set){if(set)vkFreeDescriptorSets(device,descriptors,1,&set);set={};}
         destroy(f.world);destroy(f.world_depth);destroy(f.world_mv);destroy(f.fsr_out);}
+    for(int k=0;k<2;k++){if(lite_fb[k])vkDestroyFramebuffer(device,lite_fb[k],nullptr);lite_fb[k]={};
+        if(lite_ui_set[k])vkFreeDescriptorSets(device,descriptors,1,&lite_ui_set[k]);lite_ui_set[k]={};destroy(lite_hist[k]);lite_state[k]=0;}
+    lite_active=false;lite_history_valid=false;
     fsr_active=false; // the FSR context itself survives swapchain rebuilds (it is expensive to create)
     for(auto &i:images){if(i.fb)vkDestroyFramebuffer(device,i.fb,nullptr);destroy(i.depth);
         if(i.view)vkDestroyImageView(device,i.view,nullptr);if(i.complete)vkDestroySemaphore(device,i.complete,nullptr);}
@@ -281,6 +315,7 @@ void write_image_set(VkDescriptorSet set,VkImageView view,VkSampler sampler){
 }
 VkSampler upscale_sampler{};
 void prewarm_pipelines(bool mrt);
+void write_lite_set(VkDescriptorSet set,VkImageView cur,VkImageView mv,VkImageView history);
 // A driver may keep reporting VK_SUBOPTIMAL_KHR forever (for example when it prefers a different
 // pre-transform). Rebuilding on every such report meant a swapchain rebuild per frame; only rebuild
 // when the surface really differs from what the swapchain was built for.
@@ -381,8 +416,13 @@ bool recreate(int vsync,int percent){
             if(!mrt_prewarmed){prewarm_pipelines(true);mrt_prewarmed=true;}}
         else fsr_failed=true; // fall back to bilinear for the rest of the session
     }else destroy_fsr_context();
+    lite_active=false;
+    if(percent<100&&upscaler_mode==2&&!lite_failed&&lite_supported){
+        lite_active=true;fsr_reset=true;lite_phase=0;lite_slow_frames=0;lite_frames_alive=0;lite_history_valid=false;lite_out=0;
+        if(!mrt_prewarmed){prewarm_pipelines(true);mrt_prewarmed=true;}
+    }
     if(percent<100)for(auto &f:frames){
-        const VkFormat world_format=fsr_active?FsrColorFormat:color_format;
+        const VkFormat world_format=(fsr_active||lite_active)?FsrColorFormat:color_format;
         f.world=make_image(world_width,world_height,1,world_format,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
         if(fsr_active){
             f.world_depth=make_image(world_width,world_height,1,FsrDepthFormat,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
@@ -390,11 +430,25 @@ bool recreate(int vsync,int percent){
             f.fsr_out=make_image(width,height,1,FsrColorFormat,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
             f.world_fb=framebuffer3(f.world.view,f.world_mv.view,f.world_depth.view,world_width,world_height,fsr_pass);
             f.world_set=descriptor(texture_layout);write_image_set(f.world_set,f.fsr_out.view,upscale_sampler);
+        }else if(lite_active){
+            // Depth never leaves tile memory: Lite does not read it.
+            f.world_depth=make_image(world_width,world_height,1,FsrDepthFormat,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
+            f.world_mv=make_image(world_width,world_height,1,FsrMotionFormat,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
+            f.world_fb=framebuffer3(f.world.view,f.world_mv.view,f.world_depth.view,world_width,world_height,lite_pass);
         }else{
             f.world_depth=make_image(world_width,world_height,1,depth_format,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
             f.world_fb=framebuffer(f.world.view,f.world_depth.view,world_width,world_height,world_pass);
             f.world_set=descriptor(texture_layout);write_image_set(f.world_set,f.world.view,upscale_sampler);
         }
+    }
+    if(lite_active){
+        for(int k=0;k<2;k++){
+            lite_hist[k]=make_image(width,height,1,FsrColorFormat,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
+            lite_fb[k]=framebuffer1(lite_hist[k].view,width,height,resolve_pass);
+            lite_ui_set[k]=descriptor(texture_layout);write_image_set(lite_ui_set[k],lite_hist[k].view,upscale_sampler);
+            lite_state[k]=0;
+        }
+        for(auto &f:frames)for(int k=0;k<2;k++){f.lite_set[k]=descriptor(lite_set_layout);write_lite_set(f.lite_set[k],f.world.view,f.world_mv.view,lite_hist[k^1].view);}
     }
     benchmark=requested_benchmark;
     if(benchmark)for(auto &f:frames){
@@ -491,6 +545,74 @@ VkPipeline pipeline(const Layout &layout,unsigned mode,const nzp_vk_raster &s,in
 }
 Layout interleaved(){Layout l{};for(int i=0;i<3;i++)l.stride[i]=sizeof(nzp_vk_vertex);
  l.format[0]=VK_FORMAT_R32G32B32_SFLOAT;l.format[1]=VK_FORMAT_R32G32_SFLOAT;l.format[2]=VK_FORMAT_R8G8B8A8_UNORM;l.stride[3]=l.stride[1];l.format[3]=l.format[1];return l;}
+float halton(int index,int base){float f=1.f,r=0.f;while(index>0){f/=base;r+=f*float(index%base);index/=base;}return r;}
+void write_lite_set(VkDescriptorSet set,VkImageView cur,VkImageView mv,VkImageView history){
+    VkDescriptorImageInfo info[3]={{upscale_sampler,cur,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},{nearest_sampler,mv,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {upscale_sampler,history,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+    VkWriteDescriptorSet w[3]{};
+    for(int k=0;k<3;k++){w[k]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w[k].dstSet=set;w[k].dstBinding=k;w[k].descriptorCount=1;
+        w[k].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;w[k].pImageInfo=&info[k];}
+    vkUpdateDescriptorSets(device,3,w,0,nullptr);
+}
+void create_lite_objects(){
+    VkDescriptorSetLayoutBinding bindings[3]{};
+    for(int k=0;k<3;k++){bindings[k].binding=k;bindings[k].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;bindings[k].descriptorCount=1;bindings[k].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;}
+    VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};dl.bindingCount=3;dl.pBindings=bindings;
+    VK_CHECK(vkCreateDescriptorSetLayout(device,&dl,nullptr,&lite_set_layout));
+    VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT,0,32};
+    VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};pl.setLayoutCount=1;pl.pSetLayouts=&lite_set_layout;pl.pushConstantRangeCount=1;pl.pPushConstantRanges=&push;
+    VK_CHECK(vkCreatePipelineLayout(device,&pl,nullptr,&lite_pipeline_layout));
+    VkShaderModuleCreateInfo sh{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    sh.codeSize=sizeof(nzp_vk_lite_vert);sh.pCode=nzp_vk_lite_vert;VK_CHECK(vkCreateShaderModule(device,&sh,nullptr,&lite_vert));
+    sh.codeSize=sizeof(nzp_vk_lite_frag);sh.pCode=nzp_vk_lite_frag;VK_CHECK(vkCreateShaderModule(device,&sh,nullptr,&lite_frag));
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    for(int k=0;k<2;k++){stages[k]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};stages[k].stage=k?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;stages[k].module=k?lite_frag:lite_vert;stages[k].pName="main";}
+    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};ia.topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};vp.viewportCount=vp.scissorCount=1;
+    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};rs.polygonMode=VK_POLYGON_MODE_FILL;rs.cullMode=VK_CULL_MODE_NONE;rs.lineWidth=1.f;
+    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};ms.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState att{};att.colorWriteMask=15;
+    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};cb.attachmentCount=1;cb.pAttachments=&att;
+    VkDynamicState dyn[]={VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};ds.dynamicStateCount=2;ds.pDynamicStates=dyn;
+    VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};ci.stageCount=2;ci.pStages=stages;ci.pVertexInputState=&vi;ci.pInputAssemblyState=&ia;
+    ci.pViewportState=&vp;ci.pRasterizationState=&rs;ci.pMultisampleState=&ms;ci.pColorBlendState=&cb;ci.pDynamicState=&ds;ci.layout=lite_pipeline_layout;ci.renderPass=resolve_pass;
+    VK_CHECK(vkCreateGraphicsPipelines(device,pipeline_cache,1,&ci,nullptr,&lite_pipeline));
+    nearest_sampler=sampler_for(0x2600,0x2600,0x812f,0x812f,1);
+}
+// Runs the Lite upscaler between the world pass and the HUD pass; the HUD quad then samples
+// lite_hist[out]. Two history images alternate; every transition is explicit because they are
+// shared by consecutive frames in flight (write-after-read as well as read-after-write).
+void record_lite(){
+    auto &f=frame();auto cb=f.draw;
+    const int out=lite_out,previous=out^1;lite_out^=1;
+    const Uint64 now=SDL_GetPerformanceCounter();
+    float dt=last_frame_ticks?float(1000.0*(now-last_frame_ticks)/SDL_GetPerformanceFrequency()):16.6f;
+    last_frame_ticks=now;dt=std::min(std::max(dt,0.5f),100.f);
+    const bool have_history=!fsr_reset&&lite_history_valid;
+    barrier(cb,lite_hist[out].handle,lite_state[out]?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        0,VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    if(lite_state[previous]==0)barrier(cb,lite_hist[previous].handle,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        0,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    else barrier(cb,lite_hist[previous].handle,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    lite_state[previous]=1;
+    VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};bi.renderPass=resolve_pass;bi.framebuffer=lite_fb[out];
+    bi.renderArea.extent={(unsigned)width,(unsigned)height};vkCmdBeginRenderPass(cb,&bi,VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,lite_pipeline);
+    VkViewport viewport{0,0,float(width),float(height),0.f,1.f};VkRect2D scissor{{0,0},{(unsigned)width,(unsigned)height}};
+    vkCmdSetViewport(cb,0,1,&viewport);vkCmdSetScissor(cb,0,1,&scissor);
+    vkCmdBindDescriptorSets(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,lite_pipeline_layout,0,1,&f.lite_set[out],0,nullptr);
+    const float pc[8]={jitter_px[0],jitter_px[1],float(world_width),float(world_height),float(width),float(height),have_history?0.9f:0.f,lite_sharpness};
+    vkCmdPushConstants(cb,lite_pipeline_layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pc),pc);
+    vkCmdDraw(cb,3,1,0,0);vkCmdEndRenderPass(cb);
+    lite_state[out]=1;lite_history_valid=true;fsr_reset=false;lite_ui_current=lite_ui_set[out];
+    if(++lite_frames_alive>45){
+        if(dt>180.f)++lite_slow_frames;else if(lite_slow_frames>0)lite_slow_frames-=2;
+        if(lite_slow_frames>=20){SDL_Log("NZP_FSR Lite frames take %.0f ms; turning it off for this session",dt);lite_failed=true;resize_pending=true;}
+    }
+}
 // Creates the common pipeline set in parallel. mrt=true prepares the temporal-upscaler
 // variants (second colour target) the first time FSR is activated.
 void prewarm_pipelines(bool mrt){
@@ -556,11 +678,11 @@ void begin_pass(bool native){
     // explicitly invalidate here to also cover the offscreen-to-HUD pass.
     frame().draw_state=DrawState{};
     pass_has_draw=false;std::memcpy(pass_clear_color,clear_color,16);pass_clear_depth=clear_depth;
-    const bool motion_pass=!native&&fsr_active;
+    const bool motion_pass=!native&&(fsr_active||lite_active);
     VkClearValue values[3]{};std::memcpy(values[0].color.float32,clear_color,16);
     if(motion_pass)values[2].depthStencil.depth=clear_depth;else values[1].depthStencil.depth=clear_depth;
     VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-    bi.renderPass=motion_pass?fsr_pass:(native&&!benchmark)?native_pass:world_pass;
+    bi.renderPass=motion_pass?(fsr_active?fsr_pass:lite_pass):(native&&!benchmark)?native_pass:world_pass;
     bi.framebuffer=native?(benchmark?frame().benchmark_fb:images[image_index].fb):frame().world_fb;bi.renderArea.extent={(unsigned)(native?phys_w:world_width),(unsigned)(native?phys_h:world_height)};
     bi.clearValueCount=motion_pass?3:2;bi.pClearValues=values;vkCmdBeginRenderPass(frame().draw,&bi,VK_SUBPASS_CONTENTS_INLINE);in_pass=true;
     // Push constants: vertex-shader pre-rotation (only for passes that target the rotated
@@ -574,7 +696,7 @@ void begin_pass(bool native){
 void bind_draw(const Layout &layout,unsigned mode,const nzp_vk_uniform &uniform_in,const nzp_vk_raster &state,VkDescriptorSet texture,VkDescriptorSet lightmap=VK_NULL_HANDLE){
     pass_has_draw=true;
     auto &f=frame();auto &cached=f.draw_state;auto cb=f.draw;
-    const bool motion_draw=fsr_active&&!ui&&scale<100;
+    const bool motion_draw=(fsr_active||lite_active)&&!ui&&scale<100;
     // Callers that do not track history (tests, UI) leave prev_mvp zero: treat as "no motion".
     nzp_vk_uniform with_history;const nzp_vk_uniform *uniform_ptr=&uniform_in;
     if(motion_draw){static const float zero[16]{};
@@ -718,11 +840,14 @@ int NZP_VK_Init(SDL_Window *w,const char *directory,int enable_validation){
             has_subgroup_types|=!std::strcmp(e.extensionName,VK_KHR_SHADER_SUBGROUP_EXTENDED_TYPES_EXTENSION_NAME);}}
         const auto &f=features_supported.features;
         fsr_supported=f.independentBlend&&f.fragmentStoresAndAtomics&&f.shaderInt16&&has_float16&&float16_supported.shaderFloat16&&has_spirv14&&has_float_controls&&has_subgroup_types&&subgroup_supported.shaderSubgroupExtendedTypes;
+        // FSR Lite only needs a second colour target with its own write mask.
+        lite_supported=f.independentBlend;
         SDL_Log("NZP_VULKAN fsr_supported=%d independentBlend=%d fragmentStoresAndAtomics=%d int16=%d float16=%d/%d spirv1_4=%d float_controls=%d subgroup_ext_types=%d",
                 (int)fsr_supported,(int)f.independentBlend,(int)f.fragmentStoresAndAtomics,(int)f.shaderInt16,(int)has_float16,(int)float16_supported.shaderFloat16,(int)has_spirv14,(int)has_float_controls,(int)subgroup_supported.shaderSubgroupExtendedTypes);
         VkPhysicalDeviceShaderFloat16Int8Features float16_enabled{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
         VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures subgroup_enabled{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES};
         VkPhysicalDeviceFeatures2 features_enabled{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        if(lite_supported)features_enabled.features.independentBlend=VK_TRUE;
         if(fsr_supported){
             features_enabled.features.independentBlend=features_enabled.features.fragmentStoresAndAtomics=features_enabled.features.shaderInt16=VK_TRUE;
             float16_enabled.shaderFloat16=VK_TRUE;features_enabled.pNext=&float16_enabled;
@@ -746,7 +871,7 @@ int NZP_VK_Init(SDL_Window *w,const char *directory,int enable_validation){
         for(auto f:{VK_FORMAT_D16_UNORM,VK_FORMAT_D32_SFLOAT}){VkFormatProperties fp;vkGetPhysicalDeviceFormatProperties(physical,f,&fp);
             if(fp.optimalTilingFeatures&VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT){depth_format=f;break;}}
         if(!depth_format)throw std::runtime_error("No depth attachment format");
-        native_pass=make_pass(false);world_pass=make_pass(true);fsr_pass=make_fsr_pass();
+        native_pass=make_pass(false);world_pass=make_pass(true);fsr_pass=make_fsr_pass(true);lite_pass=make_fsr_pass(false);resolve_pass=make_resolve_pass();
         VkDescriptorSetLayoutBinding ub{0,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,1,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
         VkDescriptorSetLayoutCreateInfo lc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};lc.bindingCount=1;lc.pBindings=&ub;
         VK_CHECK(vkCreateDescriptorSetLayout(device,&lc,nullptr,&uniform_layout));
@@ -782,6 +907,7 @@ int NZP_VK_Init(SDL_Window *w,const char *directory,int enable_validation){
             if(qprops[family].timestampValidBits){VkQueryPoolCreateInfo qc{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};qc.queryType=VK_QUERY_TYPE_TIMESTAMP;qc.queryCount=2;VK_CHECK(vkCreateQueryPool(device,&qc,nullptr,&f.queries));}
         }
         upscale_sampler=sampler_for(0x2601,0x2601,0x812f,0x812f,1);
+        create_lite_objects();
         // Prewarm common interleaved states. Unseen vertex layouts are logged misses.
         nzp_vk_raster s{};s.blend_src=0x302;s.blend_dst=0x303;s.depth_func=0x203;s.depth_write=1;s.cull_face=0x404;
         prewarm_pipelines(false);
@@ -795,7 +921,12 @@ void NZP_VK_NotifySurfaceLost(){surface_lost=true;resize_pending=true;}
 void NZP_VK_SetPreRotation(int enabled){if(prerotate_wanted!=bool(enabled)){prerotate_wanted=enabled;resize_pending=true;}}
 void NZP_VK_SetTestRotation(int quarter_turns){if(test_rotation!=quarter_turns){test_rotation=quarter_turns;resize_pending=true;}}
 int NZP_VK_GetRotation(void){return rotation*90;}
-void NZP_VK_SetFSR(int enabled){if(fsr_wanted!=bool(enabled)){fsr_wanted=enabled;fsr_failed=false;resize_pending=true;}}
+// mode: 0 off, 1 Arm ASR (full FSR 2.2 class), 2 Lite (cheap single pass, any GPU with independent blend).
+void NZP_VK_SetUpscaler(int mode){
+    if(mode<0||mode>2)mode=0;
+    if(upscaler_mode!=mode){upscaler_mode=mode;fsr_wanted=mode==1;fsr_failed=false;lite_failed=false;resize_pending=true;}
+}
+void NZP_VK_SetFSR(int enabled){NZP_VK_SetUpscaler(enabled?1:0);}
 int NZP_VK_FSRActive(void){return fsr_active;}
 int NZP_VK_FSRContextsCreated(void){return fsr_contexts_created;}
 int NZP_VK_FSRSupported(void){return fsr_supported&&nzp_fsr::available();}
@@ -806,6 +937,16 @@ int NZP_VK_FSRState(void){
     if(fsr_failed)return 3;
     return fsr_active?1:4;
 }
+int NZP_VK_UpscalerSupported(int mode){return mode==1?(fsr_supported&&nzp_fsr::available()):mode==2?lite_supported:1;}
+// State of the selected mode: 0 off, 1 running, 2 unsupported, 3 turned itself off, 4 waiting for render scale < 100%.
+int NZP_VK_UpscalerState(void){
+    if(upscaler_mode==0)return 0;
+    if(upscaler_mode==1)return NZP_VK_FSRState();
+    if(!lite_supported)return 2;
+    if(lite_failed)return 3;
+    return lite_active?1:4;
+}
+void NZP_VK_SetLiteSharpness(float value){lite_sharpness=std::min(std::max(value,0.f),1.f);}
 void NZP_VK_SetCamera(float near_plane,float far_plane,float fov_y){cam_near=near_plane;cam_far=far_plane;cam_fov=fov_y;}
 void NZP_VK_ResetHistory(void){fsr_reset=true;}
 void NZP_VK_SetFSRSharpness(float value){fsr_sharpness=std::min(std::max(value,0.f),1.f);}
@@ -853,6 +994,7 @@ int NZP_VK_BeginFrame(int vsync,int percent){
     if(f.queries){vkCmdResetQueryPool(f.draw,f.queries,0,2);vkCmdWriteTimestamp(f.draw,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,f.queries,0);}
     ++frame_serial;
     if(fsr_active){nzp_fsr::jitter(fsr_phase%fsr_phase_count,fsr_phase_count,&jitter_px[0],&jitter_px[1]);++fsr_phase;}
+    else if(lite_active){const int phase=lite_phase++%16+1;jitter_px[0]=halton(phase,2)-0.5f;jitter_px[1]=halton(phase,3)-0.5f;}
     else jitter_px[0]=jitter_px[1]=0.f;
     recording=true;ui=false;begin_pass(scale==100);return 1;
 }
@@ -887,7 +1029,7 @@ void record_fsr(){
 }
 void NZP_VK_BeginUI(){
     if(!recording||ui)return;
-    if(scale<100){vkCmdEndRenderPass(frame().draw);in_pass=false;if(fsr_active)record_fsr();ui=true;begin_pass(true);
+    if(scale<100){vkCmdEndRenderPass(frame().draw);in_pass=false;if(fsr_active)record_fsr();else if(lite_active)record_lite();ui=true;begin_pass(true);
         nzp_vk_uniform u{};for(int i=0;i<4;i++)u.mvp[i*5]=u.mv[i*5]=u.tm[i*5]=1;
         u.params[0]=u.params[1]=1;u.params[2]=-1;
         nzp_vk_raster s{};s.blend_src=1;s.blend_dst=0;s.depth_func=0x203;s.depth_far=1;s.viewport[2]=width;s.viewport[3]=height;
@@ -899,7 +1041,7 @@ void NZP_VK_BeginUI(){
             {{-1,-1,0},{u0,v1},{255,255,255,255}},{{1,1,0},{u1,v0},{255,255,255,255}},{{-1,1,0},{u0,v0},{255,255,255,255}}};
         size_t offset=allocate(sizeof(quad),4);std::memcpy((char*)frame().arena.mapped+offset,quad,sizeof(quad));
         VkBuffer buffers[]={frame().arena.handle,frame().arena.handle,frame().arena.handle,frame().arena.handle};VkDeviceSize offsets[]={offset,offset+12,offset+20,offset+12};
-        bind_draw(interleaved(),4,u,s,frame().world_set);vkCmdBindVertexBuffers(frame().draw,0,4,buffers,offsets);vkCmdDraw(frame().draw,6,1,0,0);
+        bind_draw(interleaved(),4,u,s,lite_active?lite_ui_current:frame().world_set);vkCmdBindVertexBuffers(frame().draw,0,4,buffers,offsets);vkCmdDraw(frame().draw,6,1,0,0);
     }else ui=true;
 }
 void NZP_VK_EndFrame(){
@@ -1060,16 +1202,19 @@ void NZP_VK_Shutdown(){
         recent_pipeline=VK_NULL_HANDLE;recent_pipeline_key={};
         for(auto &f:frames){for(auto &b:f.staging)destroy(b);destroy(f.arena);if(f.queries)vkDestroyQueryPool(device,f.queries,nullptr);if(f.pool)vkDestroyCommandPool(device,f.pool,nullptr);
             if(f.fence)vkDestroyFence(device,f.fence,nullptr);if(f.acquired)vkDestroySemaphore(device,f.acquired,nullptr);f={};}
-        if(upscale_sampler)vkDestroySampler(device,upscale_sampler,nullptr);
+        if(upscale_sampler)vkDestroySampler(device,upscale_sampler,nullptr);if(nearest_sampler)vkDestroySampler(device,nearest_sampler,nullptr);
         if(vertex_shader)vkDestroyShaderModule(device,vertex_shader,nullptr);if(fragment_shader)vkDestroyShaderModule(device,fragment_shader,nullptr);if(fragment_shader_mrt)vkDestroyShaderModule(device,fragment_shader_mrt,nullptr);
+        if(lite_pipeline)vkDestroyPipeline(device,lite_pipeline,nullptr);if(lite_pipeline_layout)vkDestroyPipelineLayout(device,lite_pipeline_layout,nullptr);
+        if(lite_set_layout)vkDestroyDescriptorSetLayout(device,lite_set_layout,nullptr);
+        if(lite_vert)vkDestroyShaderModule(device,lite_vert,nullptr);if(lite_frag)vkDestroyShaderModule(device,lite_frag,nullptr);
         if(pipeline_cache)vkDestroyPipelineCache(device,pipeline_cache,nullptr);if(pipeline_layout)vkDestroyPipelineLayout(device,pipeline_layout,nullptr);
         if(descriptors)vkDestroyDescriptorPool(device,descriptors,nullptr);if(uniform_layout)vkDestroyDescriptorSetLayout(device,uniform_layout,nullptr);if(texture_layout)vkDestroyDescriptorSetLayout(device,texture_layout,nullptr);
-        if(native_pass)vkDestroyRenderPass(device,native_pass,nullptr);if(world_pass)vkDestroyRenderPass(device,world_pass,nullptr);if(fsr_pass)vkDestroyRenderPass(device,fsr_pass,nullptr);
+        if(native_pass)vkDestroyRenderPass(device,native_pass,nullptr);if(world_pass)vkDestroyRenderPass(device,world_pass,nullptr);if(fsr_pass)vkDestroyRenderPass(device,fsr_pass,nullptr);if(lite_pass)vkDestroyRenderPass(device,lite_pass,nullptr);if(resolve_pass)vkDestroyRenderPass(device,resolve_pass,nullptr);
         if(allocator)vmaDestroyAllocator(allocator);vkDestroyDevice(device,nullptr);}
     if(debug)vkDestroyDebugUtilsMessengerEXT(instance,debug,nullptr);if(surface)vkDestroySurfaceKHR(instance,surface,nullptr);
     if(instance)vkDestroyInstance(instance,nullptr);
     instance={};physical={};device={};surface={};allocator={};debug={};swapchain={};
-    descriptors={};uniform_layout={};texture_layout={};pipeline_layout={};pipeline_cache={};vertex_shader={};fragment_shader={};fragment_shader_mrt={};native_pass={};world_pass={};fsr_pass={};upscale_sampler={};fsr_active=fsr_failed=fsr_supported=mrt_prewarmed=false;fsr_reset=true;last_frame_ticks=0;
+    descriptors={};uniform_layout={};texture_layout={};pipeline_layout={};pipeline_cache={};vertex_shader={};fragment_shader={};fragment_shader_mrt={};native_pass={};world_pass={};fsr_pass={};lite_pass={};resolve_pass={};lite_vert={};lite_frag={};lite_set_layout={};lite_pipeline_layout={};lite_pipeline={};nearest_sampler={};lite_active=lite_failed=lite_supported=false;upscaler_mode=0;upscale_sampler={};fsr_active=fsr_failed=fsr_supported=mrt_prewarmed=false;fsr_reset=true;last_frame_ticks=0;
     last_command_stats={};last_frame_timings={};
     frame_index=0;recording=in_pass=ui=resize_pending=false;benchmark=requested_benchmark=surface_lost=false;completed_frames=0;current_vsync=-1;width=height=phys_w=phys_h=drawable_w=drawable_h=rotation=sc_rotation=0;gpu_ms=-1;color_format=depth_format=VK_FORMAT_UNDEFINED;
     SDL_Vulkan_UnloadLibrary();

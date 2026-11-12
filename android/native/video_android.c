@@ -14,8 +14,8 @@
 cvar_t vk_single_pass={"vk_single_pass","1",true};
 /* Present with the surface transform (no compositor rotation on Mali). 0 = legacy identity. */
 cvar_t vk_prerotate={"vk_prerotate","0",true};
-/* Temporal upscaling (Arm ASR, FSR 2.2 class) when the 3D render scale is below 100%. Needs fp16/SPIR-V 1.4
- * capable Vulkan; otherwise silently stays on the bilinear upscale. */
+/* Temporal upscaling when the 3D render scale is below 100%: 0 off, 2 FSR Lite (cheap single pass, old GPUs),
+ * 1 FSR full (Arm ASR, needs fp16/SPIR-V 1.4 capable Vulkan). */
 cvar_t vk_fsr={"vk_fsr","0",true};
 cvar_t vk_fsr_sharpness={"vk_fsr_sharpness","0.2",true};
 cvar_t vid_benchmark={"vid_benchmark","0",false};
@@ -140,7 +140,8 @@ static int render_percent(void) {
     if(percent>=68)return 75;
     return 60;
 }
-int VID_FSRState(void){return NZP_VK_Active()?NZP_VK_FSRState():2;}
+int VID_UpscalerState(void){return NZP_VK_Active()?NZP_VK_UpscalerState():2;}
+int VID_UpscalerSupported(int mode){return NZP_VK_Active()?NZP_VK_UpscalerSupported(mode):0;}
 void VID_SDLResize(void) {
     if(!sdl_window)return;
     int width=0,height=0;
@@ -225,7 +226,7 @@ void GL_BeginRendering(int *x,int *y,int *w,int *h){
     if(NZP_VK_Active())NZP_VK_SetBenchmark(vid_benchmark.value!=0);
     if(NZP_VK_Active()){
         NZP_VK_SetPreRotation(vk_prerotate.value!=0);
-        NZP_VK_SetFSR(vk_fsr.value!=0);NZP_VK_SetFSRSharpness(vk_fsr_sharpness.value);
+        NZP_VK_SetUpscaler((int)vk_fsr.value);NZP_VK_SetFSRSharpness(vk_fsr_sharpness.value);NZP_VK_SetLiteSharpness(vk_fsr_sharpness.value+0.1f);
         /* A new map must not blend with the previous map's history. */
         static void *last_world;if(cl.worldmodel!=last_world){last_world=cl.worldmodel;NZP_VK_ResetHistory();}
     }

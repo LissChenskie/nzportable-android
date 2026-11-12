@@ -60,6 +60,7 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/vulkan_shaders.h"
         --compiler "${GLSLC}" --out "${CMAKE_CURRENT_BINARY_DIR}/vulkan_shaders.h"
     DEPENDS "${ROOT}/scripts/compile_vulkan_shaders.py"
         native/vulkan/shaders/vril.vert native/vulkan/shaders/vril.frag
+        native/vulkan/shaders/lite.vert native/vulkan/shaders/lite.frag
     VERBATIM)
 target_sources(main PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_shaders.h")
 target_compile_definitions(main PRIVATE NZP_VULKAN VK_NO_PROTOTYPES)

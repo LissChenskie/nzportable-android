@@ -47,6 +47,12 @@ int NZP_VK_GetRotation(void);
 /* Temporal upscaling (FSR 2.2-class Arm ASR). Used only while the 3D render scale is
  * below 100%. Returns/keeps 0 when the library is not built in or cannot be created. */
 void NZP_VK_SetFSR(int enabled);
+/* Upscaler selection while the 3D render scale is below 100%: 0 off, 1 Arm ASR (FSR 2.2 class, needs a
+ * modern GPU), 2 "FSR Lite" (cheap single pass for old GPUs). */
+void NZP_VK_SetUpscaler(int mode);
+int NZP_VK_UpscalerSupported(int mode);
+int NZP_VK_UpscalerState(void); /* of the selected mode: 0 off, 1 running, 2 unsupported, 3 turned itself off, 4 needs scale < 100% */
+void NZP_VK_SetLiteSharpness(float value);
 int NZP_VK_FSRActive(void);
 int NZP_VK_FSRSupported(void);
 int NZP_VK_FSRContextsCreated(void); /* diagnostics/tests: creating one is expensive */

@@ -20,13 +20,14 @@ static void quad(const nzp_vk_uniform &u,const nzp_vk_raster &s){
     NZP_VK_Draw(v,6,4,&u,&s,1);
 }
 // mode: -1 percent 100 (truth), 0 bilinear at percent, 1 FSR. tx(t): pan position at frame t.
-static std::vector<unsigned char> run(int percent,bool fsr,int frames,float step,int history_sign){
-    NZP_VK_SetFSR(fsr);NZP_VK_ResetHistory();
+static std::vector<unsigned char> run(int percent,int mode,int frames,float step,int history_sign){
+    NZP_VK_SetUpscaler(mode);NZP_VK_ResetHistory();
     nzp_vk_raster s{};s.blend_src=1;s.blend_dst=0;s.depth_func=0x203;s.depth_far=1;s.depth_write=1;s.viewport[2]=W;s.viewport[3]=H;
     std::vector<unsigned char> px(size_t(W)*H*4);
     for(int t=0;t<frames;t++){
         assert(NZP_VK_BeginFrame(0,percent));
-        assert(NZP_VK_FSRActive()==(fsr&&percent<100));
+        if(mode==1)assert(NZP_VK_FSRActive()==(percent<100));
+        if(mode==2)assert(NZP_VK_UpscalerState()==(percent<100?1:4));
         NZP_VK_SetCamera(4,4096,1.2f);
         auto u=uniform(t*step);
         // prev_mvp: where the same geometry was last frame. history_sign=-1 inverts it on purpose.
@@ -90,8 +91,8 @@ int main(){
         for(int i=0;i<3;i++){NZP_VK_SetPreRotation(i&1);(void)run(50,true,2,0.f,1);assert(NZP_VK_FSRActive());}
         assert(NZP_VK_FSRContextsCreated()==before);
         assert(NZP_VK_FSRState()==1);
-        NZP_VK_SetFSR(0);assert(NZP_VK_BeginFrame(0,50));assert(NZP_VK_FSRState()==0&&!NZP_VK_FSRActive());NZP_VK_EndFrame();
-        NZP_VK_SetFSR(1);
+        NZP_VK_SetUpscaler(0);assert(NZP_VK_BeginFrame(0,50));assert(NZP_VK_UpscalerState()==0&&!NZP_VK_FSRActive());NZP_VK_EndFrame();
+        NZP_VK_SetUpscaler(1);
     }
     assert(e_fsr<e_bi*1.4); /* sanity: not broken (detail this thin is not recoverable by any 2x upscaler) */
     {   /* The outermost pixels must not be darker than their neighbours (kernel edge energy loss). */
@@ -108,6 +109,25 @@ int main(){
     assert(e_good<e_bad*0.9);   /* motion vector sign is right */
     assert(e_good<e_bi_pan*1.4);
     assert(NZP_VK_ValidationErrors()==0);
+    {   // FSR Lite: same scenes.
+        auto lite_static=run(50,2,24,0.f,1);dump("lite",lite_static);
+        const double e_lite=mae(lite_static,truth);
+        auto lite_good=run(50,2,frames,step,1),lite_bad=run(50,2,frames,step,-1);
+        const double l_good=mae(lite_good,truth_pan),l_bad=mae(lite_bad,truth_pan);
+        printf("lite: static MAE %.2f (bilinear %.2f); panning correct %.2f inverted %.2f (bilinear %.2f)\n",e_lite,e_bi,l_good,l_bad,e_bi_pan);
+        assert(e_lite<e_bi);         /* reconstructs more than bilinear on a static view */
+        assert(l_good<l_bad*0.9);    /* motion-vector and jitter conventions are right */
+        assert(l_good<e_bi_pan*1.1); /* and it does not lose to bilinear while panning */
+        {   double edge=0,inner=0;for(int x=0;x<W;x++)for(int c=0;c<3;c++){edge+=lite_static[size_t(x)*4+c];inner+=lite_static[(size_t(4)*W+x)*4+c];}
+            assert(edge/inner>0.9);  /* no dark border */
+        }
+        {   const int created=NZP_VK_FSRContextsCreated();
+            for(int i=0;i<3;i++){NZP_VK_SetPreRotation(i&1);(void)run(50,2,3,0.f,1);}
+            assert(NZP_VK_FSRContextsCreated()==created); /* Lite never creates an Arm ASR context */
+            NZP_VK_SetUpscaler(2);assert(NZP_VK_BeginFrame(0,100));assert(NZP_VK_UpscalerState()==4);NZP_VK_EndFrame(); /* at 100% nothing runs */
+        }
+        assert(NZP_VK_ValidationErrors()==0);
+    }
     NZP_VK_Shutdown();SDL_DestroyWindow(win);SDL_Quit();
     puts("Vulkan temporal upscaling (Arm ASR) jitter, motion vectors and reconstruction passed");
 }

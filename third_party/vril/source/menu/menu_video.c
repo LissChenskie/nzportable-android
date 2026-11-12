@@ -54,7 +54,8 @@ void Menu_Video_ApplyTextureFiltering(void);
 void Menu_Video_ApplyDithering(void);
 void Menu_Video_ApplyUltrawide(void);
 extern cvar_t vid_render_scale,vid_ui_scale,r_vsync,nzp_profile,vid_benchmark,vid_performance_mode,vk_fsr,vk_prerotate,net_lan_legacy;
-int VID_FSRState(void);
+int VID_UpscalerState(void);
+int VID_UpscalerSupported(int mode);
 void VID_SetGraphicsAPIChoice(void);
 char *VID_GraphicsAPIName(void);
 extern int Android_FrameRate(void);
@@ -96,9 +97,13 @@ static void Menu_Video_PerformanceMode(void){
 }
 int VID_StartRendererBenchmark(void);
 static void Menu_Video_Benchmark(void){if(VID_StartRendererBenchmark()){key_dest=key_game;m_state=m_none;}}
+/* vk_fsr: 0 off, 2 FSR Lite (cheap, any GPU), 1 FSR full (Arm ASR, modern GPUs). Cycle OFF -> LITE -> FULL. */
 static void Menu_Video_ToggleFSR(void) {
-    if(VID_FSRState()==2) {Con_Printf("FSR needs Vulkan with fp16/SPIR-V 1.4 support; not available on this device.\n");return;}
-    Cvar_SetValue("vk_fsr",vk_fsr.value?0:1);
+    int next=(int)vk_fsr.value==0?2:((int)vk_fsr.value==2?1:0);
+    if(next==2&&!VID_UpscalerSupported(2))next=1;
+    if(next==1&&!VID_UpscalerSupported(1))next=0;
+    if(next==0&&(int)vk_fsr.value==0)Con_Printf("Upscaling needs Vulkan; not available on this device.\n");
+    Cvar_SetValue("vk_fsr",next);
     Menu_Video_Save();
 }
 static void Menu_Video_TogglePreRotation(void) {
@@ -110,13 +115,16 @@ static void Menu_Video_ToggleLanLegacy(void) {
     Menu_Video_Save();
 }
 static const char *Menu_Video_FSRText(void) {
-    switch(VID_FSRState()) {
-    case 1: return "ON";
-    case 2: return "NOT SUPPORTED";
-    case 3: return "AUTO-OFF (TOO SLOW)";
-    case 4: return "ON, NEEDS RES < 100%";
-    default: return "OFF";
+    const char *name=(int)vk_fsr.value==2?"LITE":"FULL";
+    static char text[48];
+    if((int)vk_fsr.value==0)return "OFF";
+    switch(VID_UpscalerState()) {
+    case 1: snprintf(text,sizeof(text),"%s: ON",name);break;
+    case 2: snprintf(text,sizeof(text),"%s: NOT SUPPORTED",name);break;
+    case 3: snprintf(text,sizeof(text),"%s: AUTO-OFF (SLOW)",name);break;
+    default: snprintf(text,sizeof(text),"%s: NEEDS RES < 100%%",name);break;
     }
+    return text;
 }
 static void Menu_Video_ToggleProfiling(void) {
     Cvar_SetValue("nzp_profile",nzp_profile.value?0:1);
@@ -167,7 +175,7 @@ static void Menu_Video_DrawAndroid(void) {
             Menu_Video_SetRenderScale);
         Menu_DrawOptionButton(1,android_resolution_string);
         Menu_DrawButton(2,i++,"FSR UPSCALING",
-            "Sharper image when RESOLUTION is below 100%. Experimental; switches itself off if too slow.",
+            "OFF / LITE (cheap, for older phones) / FULL (FSR 2.2, newer GPUs). Needs RESOLUTION below 100%.",
             Menu_Video_ToggleFSR);
         Menu_DrawOptionButton(2,Menu_Video_FSRText());
         Menu_DrawButton(3,i++,"UI SCALE","Adjust HUD and menu size separately.",
