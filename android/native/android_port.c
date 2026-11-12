@@ -149,7 +149,14 @@ static touch_finger fingers[FINGERS];
 static int button_refs[BUTTONS], foreground=1, thermal, touch_visible=1;
 static float move_x,move_y,move_origin_x,move_origin_y,look_x,look_y;
 static jmethodID thermal_method, touch_method;
-static int external_touch, last_touch_mode=-1;
+static volatile int external_touch;static int last_touch_mode=-1,last_touch_policy=-1;
+/* 0 auto: Java overlay unless a controller is detected; 1 always the overlay; 2 never (engine draws the buttons). */
+cvar_t touch_overlay={"touch_overlay","0",true};
+JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchOverlayShown(JNIEnv *env,jclass unused,jboolean shown,jboolean controller,jint policy){
+    (void)env;(void)unused;external_touch=shown?1:0;
+    SDL_Log("NZP_TOUCH overlay_shown=%d controller_detected=%d policy=%d%s",(int)shown,(int)controller,(int)policy,
+            (!shown&&policy!=2&&controller)?" (a controller was detected, so the engine draws the buttons)":"");
+}
 static TouchSprintState touch_sprint;
 static float map_touch_start[FINGERS];
 static int touch_pressed[BUTTONS];
@@ -327,7 +334,7 @@ void Android_Init(void){
     nzp_thread_apply_role(NZP_ROLE_GAME); /* re-apply with the saved cvar value */
     Cvar_RegisterVariable(&touch_sensitivity);
     Cvar_RegisterVariable(&touch_auto_sprint);
-    Cvar_RegisterVariable(&nzp_profile);
+    Cvar_RegisterVariable(&nzp_profile);Cvar_RegisterVariable(&touch_overlay);
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS,"0");SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS,"0");
     SDL_Log("Android device profile: native drawable + user-selected 3D scale");
 }
@@ -511,12 +518,14 @@ void Android_Frame(void){
                     cls.signon==SIGNONS && !cl.paused && !LoadingScreen_IsActive();
         // Re-evaluate controllers on the Java side, without reallocating the overlay.
         if(!touch_method)touch_method=(*env)->GetMethodID(env,activity_class,
-            "setTouchControlsVisible","(Z)V");
-        if(touch_method && last_touch_mode!=playing) {
-            /* UI thread work only on a real menu/game transition.
-             * No periodic overlay redraws while the touch mode is unchanged. */
-            (*env)->CallVoidMethod(env,activity,touch_method,playing?JNI_TRUE:JNI_FALSE);
-            external_touch=1;last_touch_mode=playing;
+            "setTouchControlsVisible","(ZI)V");
+        if(touch_method && (last_touch_mode!=playing || last_touch_policy!=(int)touch_overlay.value)) {
+            /* UI thread work only on a real menu/game transition or a policy change.
+             * No periodic overlay redraws while the touch mode is unchanged. The Java side reports back
+             * (nativeTouchOverlayShown) whether the overlay is really visible. */
+            last_touch_policy=(int)touch_overlay.value;
+            (*env)->CallVoidMethod(env,activity,touch_method,playing?JNI_TRUE:JNI_FALSE,(jint)last_touch_policy);
+            last_touch_mode=playing;
         }
     }
     if((*env)->ExceptionCheck(env)){

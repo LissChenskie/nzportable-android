@@ -42,7 +42,7 @@ public final class GameActivity extends SDLActivity {
             p.layoutInDisplayCutoutMode=WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER;getWindow().setAttributes(p);}
         lanNetwork = new LanNetwork(this);
         touch = new RetroTouchBridge(this);
-        touch.setPlaying(false);
+        touch.setPlaying(false, 0);
         Log.i("NZPortable","Device="+Build.MODEL+" hardware="+Build.HARDWARE+" ABI="+android.os.Process.is64Bit());
         immersive();
     }
@@ -68,11 +68,17 @@ public final class GameActivity extends SDLActivity {
     }
 
     // Called from the SDL render thread on state changes, not on every frame.
-    public void setTouchControlsVisible(final boolean playing) {
+    public void setTouchControlsVisible(final boolean playing, final int policy) {
         runOnUiThread(new Runnable() {
-            @Override public void run() { if(touch!=null) touch.setPlaying(playing); }
+            @Override public void run() {
+                if (touch == null) return;
+                boolean shown = touch.setPlaying(playing, policy);
+                nativeTouchOverlayShown(shown, touch.controllerDetected, policy);
+            }
         });
     }
+    /** Tells the engine whether the Java overlay is visible; if not, the engine draws its own buttons. */
+    static native void nativeTouchOverlayShown(boolean shown, boolean controllerDetected, int policy);
     // Called by the SDL engine, dialogs run on Android's UI thread.
     public void openLanAddressDialog() {
         runOnUiThread(() -> {

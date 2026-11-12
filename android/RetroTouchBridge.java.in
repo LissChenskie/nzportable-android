@@ -63,14 +63,22 @@ final class RetroTouchBridge {
         content.addView(overlay, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
     }
-    void setPlaying(boolean playing) {
-        boolean show = playing && !RetroTouchControllers.isControllerConnected();
+    /** policy: 0 auto (hide when a controller is detected), 1 always show, 2 never show (engine draws buttons).
+     *  Returns whether the overlay is actually visible, so native code knows whether it must draw its own buttons.
+     *  Some phones (Xiaomi/Poco) report a virtual input device as a controller; the overlay was then hidden
+     *  while the engine assumed it was drawing the buttons, so nothing was visible. */
+    boolean setPlaying(boolean playing, int policy) {
+        controllerDetected = RetroTouchControllers.isControllerConnected();
+        boolean show = playing && policy != 2 && (policy == 1 || !controllerDetected);
         int mode = show ? 1 : 0;
-        if (mode == lastMode) return;
-        overlay.resetInputState();
-        overlay.setMode(show ? RetroTouchMode.GAMEPLAY : RetroTouchMode.OFF);
-        overlay.setVisibility(show ? View.VISIBLE : View.GONE);
-        lastMode = mode;
+        if (mode != lastMode) {
+            overlay.resetInputState();
+            overlay.setMode(show ? RetroTouchMode.GAMEPLAY : RetroTouchMode.OFF);
+            overlay.setVisibility(show ? View.VISIBLE : View.GONE);
+            lastMode = mode;
+        }
+        return show;
     }
+    boolean controllerDetected;
     void reset() { overlay.resetInputState(); }
 }

@@ -53,7 +53,7 @@ void Menu_Video_ApplyParticles(void);
 void Menu_Video_ApplyTextureFiltering(void);
 void Menu_Video_ApplyDithering(void);
 void Menu_Video_ApplyUltrawide(void);
-extern cvar_t vid_render_scale,vid_ui_scale,r_vsync,nzp_profile,vid_benchmark,vid_performance_mode,vk_fsr,vk_prerotate,net_lan_legacy;
+extern cvar_t vid_render_scale,vid_ui_scale,r_vsync,nzp_profile,vid_benchmark,vid_performance_mode,vk_fsr,vk_prerotate,net_lan_legacy,touch_overlay;
 int VID_UpscalerState(void);
 int VID_UpscalerSupported(int mode);
 void VID_SetGraphicsAPIChoice(void);
@@ -104,6 +104,10 @@ static void Menu_Video_ToggleFSR(void) {
     if(next==1&&!VID_UpscalerSupported(1))next=0;
     if(next==0&&(int)vk_fsr.value==0)Con_Printf("Upscaling needs Vulkan; not available on this device.\n");
     Cvar_SetValue("vk_fsr",next);
+    Menu_Video_Save();
+}
+static void Menu_Video_ToggleTouchOverlay(void) {
+    Cvar_SetValue("touch_overlay",(int)touch_overlay.value>=2?0:(int)touch_overlay.value+1);
     Menu_Video_Save();
 }
 static void Menu_Video_TogglePreRotation(void) {
@@ -227,6 +231,8 @@ static void Menu_Video_DrawAndroid(void) {
         Menu_DrawOptionButton(2,vk_prerotate.value?"ON":"OFF");
         Menu_DrawButton(3,i++,"LAN COMPATIBILITY","ON = original networking. Try it if joining a co-op game fails.",Menu_Video_ToggleLanLegacy);
         Menu_DrawOptionButton(3,net_lan_legacy.value?"ON (ORIGINAL)":"OFF (NEW)");
+        Menu_DrawButton(4,i++,"TOUCH BUTTONS","AUTO: standard overlay. OVERLAY: force it. ENGINE: use the game's own buttons (try if you see none).",Menu_Video_ToggleTouchOverlay);
+        Menu_DrawOptionButton(4,(int)touch_overlay.value==1?"OVERLAY":((int)touch_overlay.value==2?"ENGINE":"AUTO"));
     }
     Menu_DrawButton(-2,i++,"NEXT PAGE","More video options.",
         Menu_Video_NextPageAndroid);
