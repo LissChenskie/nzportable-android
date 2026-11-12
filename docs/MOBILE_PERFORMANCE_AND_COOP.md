@@ -94,12 +94,11 @@ co-op attempt, send the files of both phones.
 
 A driver that keeps returning `VK_SUBOPTIMAL_KHR` used to trigger a swapchain rebuild on every frame (and with FSR, a new upscaler context with dozens of pipelines each time, i.e. ~1 fps). The renderer now rebuilds only if the surface transform/extent really changed, and the FSR context survives swapchain rebuilds. Look for `NZP_VULKAN ignoring persistent VK_SUBOPTIMAL_KHR` in the log.
 
-## Touch buttons invisible although the controls work
+## Touch controls
 
-The on-screen buttons come from a Java overlay (RetroTouch). It hides itself when it believes a controller is
-connected, and some phones (seen on a Poco) report a virtual input device as one. Touches then reach the
-engine's own touch handling (so controls keep working), but the engine assumed the overlay was drawing the
-buttons and drew nothing. The overlay now reports whether it is really visible, and the engine draws its own
-buttons whenever it is not. Video options, page 5, "TOUCH BUTTONS": AUTO / OVERLAY (force the overlay even if a
-"controller" is detected) / ENGINE (always the engine's buttons). The run log shows the decision as
+The engine-drawn buttons/stick/look of the old touch scheme are removed (they flashed on screen when leaving a
+menu); gameplay input now comes only from the RetroTouch overlay. The engine still handles taps in menus and on
+the loading screen. Video options, page 5, "TOUCH BUTTONS": ALWAYS ON (default) / OFF / AUTO. AUTO hides the
+overlay while a controller is detected; some phones (seen on a Poco) report a virtual input device as a
+controller, which hid the overlay entirely, so the default is ALWAYS ON. The run log shows the state as
 `NZP_TOUCH overlay_shown=... controller_detected=... policy=...`.

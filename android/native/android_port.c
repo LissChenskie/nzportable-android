@@ -150,12 +150,11 @@ static int button_refs[BUTTONS], foreground=1, thermal, touch_visible=1;
 static float move_x,move_y,move_origin_x,move_origin_y,look_x,look_y;
 static jmethodID thermal_method, touch_method;
 static volatile int external_touch;static int last_touch_mode=-1,last_touch_policy=-1;
-/* 0 auto: Java overlay unless a controller is detected; 1 always the overlay; 2 never (engine draws the buttons). */
-cvar_t touch_overlay={"touch_overlay","0",true};
+/* 0 auto: overlay unless a controller is detected; 1 always on (default); 2 off. */
+cvar_t touch_overlay={"touch_overlay","1",true};
 JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchOverlayShown(JNIEnv *env,jclass unused,jboolean shown,jboolean controller,jint policy){
     (void)env;(void)unused;external_touch=shown?1:0;
-    SDL_Log("NZP_TOUCH overlay_shown=%d controller_detected=%d policy=%d%s",(int)shown,(int)controller,(int)policy,
-            (!shown&&policy!=2&&controller)?" (a controller was detected, so the engine draws the buttons)":"");
+    SDL_Log("NZP_TOUCH overlay_shown=%d controller_detected=%d policy=%d",(int)shown,(int)controller,(int)policy);
 }
 static TouchSprintState touch_sprint;
 static float map_touch_start[FINGERS];
@@ -397,11 +396,9 @@ static void touch(const SDL_TouchFingerEvent *event){
             f->role=-3;Menu_MouseMove(event->x*vid.width,event->y*vid.height);
             if(!Menu_MouseButton(event->x*vid.width,event->y*vid.height,true))Menu_ButtonPress();return;
         }
-        int button=hit_button(event->x,event->y);
-        if(button>=0){f->role=button;if(button_refs[button]++==0)Android_EmitTouchAction(buttons[button].key,true);}
-        else if(event->x<.45f&&!role_in_use(-1)){
-            f->role=-1;move_origin_x=event->x;move_origin_y=event->y;update_move(event->x,event->y);
-        }else if(event->x>=.45f&&!role_in_use(-2))f->role=-2;
+        /* Gameplay touch input belongs to the RetroTouch overlay. The old engine buttons/stick/look are gone;
+         * raw touches in game are ignored (the overlay consumes them while it is visible). */
+        f->active=0;
         return;
     }
     if(!f)return;
@@ -637,18 +634,5 @@ void Android_RecordFrame(double cpu_frame_ms) {
     last_report=now;
 }
 
-void Android_DrawTouch(void){
-    if(external_touch)return; // RetroTouch draws on a separate Android overlay view.
-    if(!touch_visible||!host_initialized||key_dest!=key_game||cls.state!=ca_connected||LoadingScreen_IsWaiting())return;
-    for(int i=0;i<BUTTONS;i++){
-        int r=buttons[i].r*vid.height,x=buttons[i].x*vid.width,y=buttons[i].y*vid.height;
-        Draw_FillByColor(x-r,y-r,r*2,r*2,button_refs[i]?180:32,button_refs[i]?110:40,50,button_refs[i]?170:95);
-        // Vril's text API takes byte-range colors, unlike the GL color API.
-        int scale=(r*2-8)/(8*(int)strlen(buttons[i].label));
-        if(scale<1)scale=1;if(scale>vid.scale)scale=vid.scale;
-        Draw_ColoredString(x-getTextWidth((char*)buttons[i].label,scale)/2,y-4*scale,(char*)buttons[i].label,255,255,255,210,scale);
-    }
-    int size=vid.height*.06f,x=role_in_use(-1)?move_origin_x*vid.width:vid.width*.16f,y=role_in_use(-1)?move_origin_y*vid.height:vid.height*.76f;
-    Draw_FillByColor(x-size,y-size,size*2,size*2,48,58,68,90);
-    Draw_FillByColor(x+move_x*size-size/3,y-move_y*size-size/3,size*2/3,size*2/3,210,220,230,130);
-}
+/* The old engine-drawn touch controls were removed; the RetroTouch overlay is the only gameplay control. */
+void Android_DrawTouch(void){}

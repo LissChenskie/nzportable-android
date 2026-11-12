@@ -107,7 +107,7 @@ static void Menu_Video_ToggleFSR(void) {
     Menu_Video_Save();
 }
 static void Menu_Video_ToggleTouchOverlay(void) {
-    Cvar_SetValue("touch_overlay",(int)touch_overlay.value>=2?0:(int)touch_overlay.value+1);
+    Cvar_SetValue("touch_overlay",(int)touch_overlay.value==1?2:((int)touch_overlay.value==2?0:1)); /* ALWAYS ON -> OFF -> AUTO */
     Menu_Video_Save();
 }
 static void Menu_Video_TogglePreRotation(void) {
@@ -118,7 +118,7 @@ static void Menu_Video_ToggleLanLegacy(void) {
     Cvar_SetValue("net_lan_legacy",net_lan_legacy.value?0:1);
     Menu_Video_Save();
 }
-static const char *Menu_Video_FSRText(void) {
+static char *Menu_Video_FSRText(void) {
     const char *name=(int)vk_fsr.value==2?"LITE":"FULL";
     static char text[48];
     if((int)vk_fsr.value==0)return "OFF";
@@ -231,8 +231,8 @@ static void Menu_Video_DrawAndroid(void) {
         Menu_DrawOptionButton(2,vk_prerotate.value?"ON":"OFF");
         Menu_DrawButton(3,i++,"LAN COMPATIBILITY","ON = original networking. Try it if joining a co-op game fails.",Menu_Video_ToggleLanLegacy);
         Menu_DrawOptionButton(3,net_lan_legacy.value?"ON (ORIGINAL)":"OFF (NEW)");
-        Menu_DrawButton(4,i++,"TOUCH BUTTONS","AUTO: standard overlay. OVERLAY: force it. ENGINE: use the game's own buttons (try if you see none).",Menu_Video_ToggleTouchOverlay);
-        Menu_DrawOptionButton(4,(int)touch_overlay.value==1?"OVERLAY":((int)touch_overlay.value==2?"ENGINE":"AUTO"));
+        Menu_DrawButton(4,i++,"TOUCH BUTTONS","ALWAYS ON: always show the touch overlay. AUTO: hide it while a controller is detected. OFF: no on-screen controls.",Menu_Video_ToggleTouchOverlay);
+        Menu_DrawOptionButton(4,(int)touch_overlay.value==0?"AUTO":((int)touch_overlay.value==2?"OFF":"ALWAYS ON"));
     }
     Menu_DrawButton(-2,i++,"NEXT PAGE","More video options.",
         Menu_Video_NextPageAndroid);
