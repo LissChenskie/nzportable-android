@@ -15,7 +15,7 @@
 #include <sys/resource.h>
 #include <stdio.h>
 #include <signal.h>
-#include <execinfo.h>
+#include <unwind.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
@@ -56,6 +56,19 @@ static void nzp_android_log_output(void *userdata, int category,
     pthread_mutex_unlock(&nzp_log_mutex);
 }
 
+typedef struct { int fd; int count; } nzp_unwind_state;
+static _Unwind_Reason_Code nzp_unwind_frame(struct _Unwind_Context *ctx, void *opaque)
+{
+    nzp_unwind_state *state = (nzp_unwind_state *)opaque;
+    uintptr_t pc = (uintptr_t)_Unwind_GetIP(ctx);
+    char line[64];
+    int n = snprintf(line, sizeof(line), "  pc=%p\n", (void *)pc);
+    if (n > 0) (void)write(state->fd, line,
+        (size_t)n < sizeof(line) ? (size_t)n : sizeof(line));
+    if (++state->count >= 32) return _URC_END_OF_STACK;
+    return _URC_NO_REASON;
+}
+
 static void nzp_android_crash_signal(int sig, siginfo_t *info, void *context)
 {
     (void)context;
@@ -66,9 +79,8 @@ static void nzp_android_crash_signal(int sig, siginfo_t *info, void *context)
             sig, info ? info->si_addr : NULL);
         if (n > 0) (void)write(nzp_log_fd, line,
             (size_t)n < sizeof(line) ? (size_t)n : sizeof(line));
-        void *frames[32];
-        int count = backtrace(frames, 32);
-        if (count > 0) backtrace_symbols_fd(frames, count, nzp_log_fd);
+        nzp_unwind_state state = { nzp_log_fd, 0 };
+        (void)_Unwind_Backtrace(nzp_unwind_frame, &state);
         (void)write(nzp_log_fd, "\n", 1);
         (void)fsync(nzp_log_fd);
     }
