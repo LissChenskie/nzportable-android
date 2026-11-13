@@ -1,4 +1,4 @@
-name: DeckCraft 0.18.1 Russian Windows build
+name: DeckCraft 0.18.1 Russian Windows x64 (retry)
 
 on:
   push:
