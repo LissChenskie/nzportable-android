@@ -110,3 +110,18 @@ the loading screen. Video options, page 5, "TOUCH BUTTONS": ALWAYS ON (default) 
 overlay while a controller is detected; some phones (seen on a Poco) report a virtual input device as a
 controller, which hid the overlay entirely, so the default is ALWAYS ON. The run log shows the state as
 `NZP_TOUCH overlay_shown=... controller_detected=... policy=...`.
+
+## Motion blur ("jelly") in FSR Lite, and the flamethrower
+
+* **Jelly fix.** The first fast Lite blended history into the picture with a fixed weight even while the camera
+  moved, and every reprojected history fetch is a bilinear resample, a blur that compounds frame after frame.
+  History is now faded out by how far the reprojection lands from a texel centre (full trust below ~0.1 display
+  px, none above ~0.6 px), so during motion the output equals the plain upscale and at rest it still accumulates.
+  Tests now measure sharpness while panning (Lite must not be softer than bilinear) in addition to the error.
+* **Flamethrower.** Two likely causes on a weak tile-based GPU, both now capped (not profiled on a device):
+  1. Overdraw: dozens of large translucent quads in front of the camera, each shaded in full.
+     `r_particle_overdraw` (default 3) is a budget in "screens" of summed billboard area; above it the quads are
+     shrunk, not dropped. 0 disables.
+  2. Dynamic lights: every lit surface rebuilds its lightmap on the CPU and re-uploads it each frame.
+     `r_dlight_max` (default 6) keeps only the nearest lights for world lighting. 0 = unlimited.
+  If it is still slow, run with `nzp_profile 1` while burning things and send `nzp-last-run.log`.

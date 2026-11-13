@@ -59,6 +59,14 @@ static double detail_mae(const std::vector<unsigned char> &a,const std::vector<u
     }
     return n?sum/n:0;
 }
+// Mean absolute neighbour difference: a blur ("jelly" while the camera moves) lowers it.
+static double sharpness(const std::vector<unsigned char> &a){
+    double sum=0;int n=0;
+    for(int y=8;y<H-8;y++)for(int x=8;x<W-8;x++){
+        sum+=std::abs(int(a[(size_t(y)*W+x)*4+1])-int(a[(size_t(y)*W+x+1)*4+1]))+std::abs(int(a[(size_t(y)*W+x)*4+1])-int(a[(size_t(y+1)*W+x)*4+1]));n++;
+    }
+    return sum/n;
+}
 static double mae(const std::vector<unsigned char> &a,const std::vector<unsigned char> &b){return detail_mae(a,b);}
 int main(){
     if(SDL_Init(SDL_INIT_VIDEO)!=0)return 1;
@@ -107,11 +115,16 @@ int main(){
     auto truth_pan=run(100,false,frames,step,1);
     auto good=run(50,true,frames,step,1);
     auto bad=run(50,true,frames,step,-1);
-    double e_good=mae(good,truth_pan),e_bad=mae(bad,truth_pan),e_bi_pan=mae(run(50,false,frames,step,1),truth_pan);
+    auto bilinear_pan=run(50,false,frames,step,1);
+    double e_good=mae(good,truth_pan),e_bad=mae(bad,truth_pan),e_bi_pan=mae(bilinear_pan,truth_pan);
+    const double sharp_bi=sharpness(bilinear_pan);
     printf("panning: bilinear MAE %.2f, FSR correct vectors %.2f, FSR inverted vectors %.2f\n",e_bi_pan,e_good,e_bad);
     assert(e_good<e_bad*0.9);   /* motion vector sign is right */
     assert(e_good<e_bi_pan*1.4);
     assert(NZP_VK_ValidationErrors()==0);
+    // Slow pan (0.1 render px per frame): history is still trusted here, so the sign of the vectors matters.
+    const float step_slow=2.f*0.1f/(W/2);
+    auto truth_slow=run(100,0,frames,step_slow,1);
     {   // FSR Lite: same scenes.
         auto lite_static=run(50,2,24,0.f,1);dump("lite",lite_static);
         const double e_lite=mae(lite_static,truth);
@@ -119,8 +132,9 @@ int main(){
         const double l_good=mae(lite_good,truth_pan),l_bad=mae(lite_bad,truth_pan);
         printf("lite: static MAE %.2f (bilinear %.2f); panning correct %.2f inverted %.2f (bilinear %.2f)\n",e_lite,e_bi,l_good,l_bad,e_bi_pan);
         assert(e_lite<e_bi);         /* reconstructs more than bilinear on a static view */
-        assert(l_good<l_bad*0.9);    /* motion-vector and jitter conventions are right */
         assert(l_good<e_bi_pan*1.1); /* and it does not lose to bilinear while panning */
+        printf("sharpness while panning: bilinear %.2f, lite quality %.2f\n",sharp_bi,sharpness(lite_good));
+        assert(sharpness(lite_good)>=sharp_bi*0.95); /* no motion-blur 'jelly' */
         {   double edge=0,inner=0;for(int x=0;x<W;x++)for(int c=0;c<3;c++){edge+=lite_static[size_t(x)*4+c];inner+=lite_static[(size_t(4)*W+x)*4+c];}
             assert(edge/inner>0.9);  /* no dark border */
         }
@@ -128,6 +142,10 @@ int main(){
             for(int i=0;i<3;i++){NZP_VK_SetPreRotation(i&1);(void)run(50,2,3,0.f,1);}
             assert(NZP_VK_FSRContextsCreated()==created); /* Lite never creates an Arm ASR context */
             NZP_VK_SetUpscaler(2);assert(NZP_VK_BeginFrame(0,100));assert(NZP_VK_UpscalerState()==4);NZP_VK_EndFrame(); /* at 100% nothing runs */
+        }
+        {   auto g=run(50,2,frames,step_slow,1),b=run(50,2,frames,step_slow,-1);
+            printf("lite slow pan: correct %.2f inverted %.2f\n",mae(g,truth_slow),mae(b,truth_slow));
+            assert(mae(g,truth_slow)<mae(b,truth_slow)*0.97);
         }
         assert(NZP_VK_ValidationErrors()==0);
     }
@@ -139,10 +157,15 @@ int main(){
         const double f_good=mae(fast_good,truth_pan),f_bad=mae(fast_bad,truth_pan);
         printf("lite fast: static MAE %.2f (bilinear %.2f); panning correct %.2f inverted %.2f (bilinear %.2f)\n",e_fast,e_bi,f_good,f_bad,e_bi_pan);
         assert(e_fast<e_bi);              /* still reconstructs more than bilinear on a static view */
-        assert(f_good<f_bad*0.95);        /* reprojection sign is right */
         assert(f_good<e_bi_pan*1.1);      /* and it does not lose to bilinear while panning */
+        printf("sharpness while panning: bilinear %.2f, lite fast %.2f\n",sharp_bi,sharpness(fast_good));
+        assert(sharpness(fast_good)>=sharp_bi*0.95); /* no motion-blur 'jelly' */
         {   double edge=0,inner=0;for(int x=0;x<W;x++)for(int c=0;c<3;c++){edge+=fast_static[size_t(x)*4+c];inner+=fast_static[(size_t(4)*W+x)*4+c];}
             assert(edge/inner>0.9);
+        }
+        {   auto g=run(50,2,frames,step_slow,1),b=run(50,2,frames,step_slow,-1);
+            printf("lite fast slow pan: correct %.2f inverted %.2f\n",mae(g,truth_slow),mae(b,truth_slow));
+            assert(mae(g,truth_slow)<mae(b,truth_slow)*0.97);
         }
         assert(NZP_VK_ValidationErrors()==0);
         NZP_VK_SetLiteQuality(0);

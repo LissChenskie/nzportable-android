@@ -237,6 +237,12 @@ OnChange_gl_particle_count(cvar_t * var, char * string)
 
 extern cvar_t cl_gun_offset;
 cvar_t r_particle_count   = { "r_particle_count", "1024", true };
+/* Fill-rate budget for blended billboards, in screens of overdraw (sum of the on-screen areas). Dense effects such
+ * as the flamethrower put dozens of large translucent quads in front of the camera; on a tile-based mobile GPU
+ * every layer is shaded in full, so cost grows with covered area. Above the budget the quads are shrunk (not
+ * dropped). 0 = off. */
+cvar_t r_particle_overdraw = { "r_particle_overdraw", "3", true };
+static float particle_size_mul = 1.0f;
 cvar_t r_bounceparticles  = { "r_bounceparticles", "1", true };
 cvar_t r_decal_blood      = { "r_decal_blood", "1", true };
 cvar_t r_decal_bullets    = { "r_decal_bullets", "1", true };
@@ -463,6 +469,7 @@ R_InitParticles(void)
     Cvar_RegisterVariable(&r_decal_sparks);
     Cvar_RegisterVariable(&r_decal_explosions);
     Cvar_RegisterVariable(&r_particle_count);
+    Cvar_RegisterVariable(&r_particle_overdraw);
     Cvar_RegisterVariable(&r_runqmbparticles);
 
     loading_num_step = loading_num_step + 24;
@@ -1478,7 +1485,7 @@ static void
 DRAW_PARTICLE_BILLBOARD(particle_texture_t * ptex, particle_t * p, vec3_t * coord)
 {
     hyena_colored_vertex_t * vertices;
-    float scale = p->size * 0.75f;
+    float scale = p->size * 0.75f * particle_size_mul;
     int i;
 
     vec3_t rotated[4];
@@ -1493,6 +1500,46 @@ DRAW_PARTICLE_BILLBOARD(particle_texture_t * ptex, particle_t * p, vec3_t * coor
         vertices[i].uv[1] = ptex->coords[p->texindex][i == 0 || i == 3 ? 3 : 1];
         VectorMA(p->org, scale, coord[i], vertices[i].xyz);
     }
+}
+
+/* Sum of the screen areas (in screens) the billboards would cover this frame, and the size multiplier that
+ * brings it down to the r_particle_overdraw budget. Offscreen quads are counted too, so it errs on the safe side. */
+static float
+R_ParticleOverdrawScale(void)
+{
+    float budget = r_particle_overdraw.value, total = 0.0f, half_tan, aspect;
+    int i;
+    particle_type_t * pt;
+    particle_t * p;
+    vec3_t d;
+
+    if (budget <= 0.0f || r_refdef.vrect.height <= 0)
+        return 1.0f;
+    half_tan = tanf(r_refdef.fov_y * (float) M_PI / 360.0f);
+    aspect = (float) r_refdef.vrect.width / (float) r_refdef.vrect.height;
+    if (half_tan < 0.01f)
+        return 1.0f;
+    for (i = 0; i < num_particletypes; i++) {
+        pt = &particle_types[i];
+        if (!pt->start || (pt->drawtype != pd_billboard && pt->drawtype != pd_billboard_vel))
+            continue;
+        for (p = pt->start; p; p = p->next) {
+            float depth, height;
+            if (particle_time < p->start || particle_time >= p->die)
+                continue;
+            VectorSubtract(p->org, r_refdef.vieworg, d);
+            depth = DotProduct(d, vpn);
+            if (depth < 8.0f)
+                depth = 8.0f; /* a quad at the camera covers the screen no matter how close */
+            height = (p->size * 0.75f * 1.4142f) / (depth * half_tan) * 0.5f; /* fraction of the screen height */
+            total += height * height / aspect * 4.0f;
+        }
+        if (total > 4.0f * budget)
+            break; /* far over already; no need to count further */
+    }
+    if (total <= budget)
+        return 1.0f;
+    return sqrtf(budget / total);
 }
 
 void
@@ -1513,6 +1560,8 @@ R_DrawParticles(void)
 
     if (!cl.paused)
         QMB_UpdateParticles();
+
+    particle_size_mul = R_ParticleOverdrawScale();
 
     VectorAdd(vup, vright, billboard[2]);
     VectorSubtract(vright, vup, billboard[3]);

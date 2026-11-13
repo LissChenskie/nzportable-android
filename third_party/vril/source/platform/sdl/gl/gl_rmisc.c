@@ -188,6 +188,7 @@ void R_Init (void)
 	Cvar_RegisterVariable (&r_mirroralpha);
 	Cvar_RegisterVariable (&r_wateralpha);
 	Cvar_RegisterVariable (&r_dynamic);
+	{ extern cvar_t r_dlight_max; Cvar_RegisterVariable (&r_dlight_max); }
 	Cvar_RegisterVariable (&r_novis);
 	Cvar_RegisterVariable (&r_speeds);
 

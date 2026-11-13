@@ -40,6 +40,21 @@ static inline void nzp_reprojection_matrix(float *m,const float *proj_cur,const 
     /* y flip on both ends: F * H * F with F = diag(1,-1,1) */
     for (int r=0;r<3;r++) for (int c=0;c<3;c++) m[r*3+c]=h[r*3+c]*((r==1)!=(c==1)?-1.f:1.f);
 }
+/* Dynamic-light budget: given squared distances (negative = inactive light), returns the threshold so that
+ * lights with dist <= limit are the max_lights nearest (ties are broken by index, so exactly max_lights).
+ * max_lights <= 0 or fewer active lights than that: no limit. */
+static inline float nzp_nearest_limit(const float *dist, int count, int max_lights) {
+    int active=0,i,j;float limit=3.4e38f;
+    for (i=0;i<count;i++) if (dist[i]>=0.f) active++;
+    if (max_lights<=0||active<=max_lights) return limit;
+    for (i=0;i<count;i++) {
+        int rank=0;
+        if (dist[i]<0.f) continue;
+        for (j=0;j<count;j++) if (dist[j]>=0.f&&(dist[j]<dist[i]||(dist[j]==dist[i]&&j<i))) rank++;
+        if (rank==max_lights-1) limit=dist[i];
+    }
+    return limit;
+}
 // Bound BOTH dimensions while preserving the real landscape aspect ratio.
 static inline void nzp_render_size(int w, int h, int max_w, int max_h, int *rw, int *rh) {
     if (w<1) w=1;

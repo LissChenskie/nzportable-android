@@ -38,7 +38,8 @@ void main() {
         // A little slack so thin detail survives the clamp; fast motion trusts history less.
         mediump vec3 slack=(hi-lo)*0.25+vec3(1.0/255.0);
         h=clamp(h,lo-slack,hi+slack);
-        history*=clamp(1.0-length(mv)*0.12,0.35,1.0);
+        // Resampling history is a blur that compounds while things move: fade it out above ~0.1 display px.
+        history*=1.0-smoothstep(0.1,0.6,length((huv-uv)*pc.b.xy));
         out_color=vec4(mix(sharp,h,history),1.0);
     }else{
         out_color=vec4(sharp,1.0);

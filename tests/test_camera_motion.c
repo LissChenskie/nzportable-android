@@ -55,6 +55,14 @@ int main(void){
         assert(fabsf(hm[0]-hm[4])<1e-4f&&fabsf(hm[0]-hm[8])<1e-4f&&fabsf(hm[1])<1e-4f&&fabsf(hm[3])<1e-4f&&fabsf(hm[2])<1e-4f&&fabsf(hm[5])<1e-4f);
         (void)pv;
     }
+    {   /* dlight budget */
+        float d[8]={50,-1,10,30,-1,20,40,10};   /* 6 active; two lights tie at 10 */
+        assert(nzp_nearest_limit(d,8,0)>1e30f&&nzp_nearest_limit(d,8,6)>1e30f&&nzp_nearest_limit(d,8,9)>1e30f);
+        assert(nzp_nearest_limit(d,8,1)==10.f);   /* nearest only (tie resolved by index) */
+        assert(nzp_nearest_limit(d,8,3)==20.f);   /* 10, 10, 20 */
+        assert(nzp_nearest_limit(d,8,5)==40.f);
+        float one[1]={-1};assert(nzp_nearest_limit(one,1,2)>1e30f);
+    }
     puts("camera motion history maths tests passed");
     return 0;
 }

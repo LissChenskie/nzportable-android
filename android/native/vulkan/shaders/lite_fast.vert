@@ -10,10 +10,12 @@ layout(push_constant) uniform Push {
 } pc;
 layout(location=0) out vec2 v_cuv; // where the current frame holds this pixel's content
 layout(location=1) out vec3 v_q;   // homogeneous previous position; divided per pixel
+layout(location=2) out vec2 v_uv;  // this pixel's own position (0..1)
 void main() {
     vec2 p=vec2(float((gl_VertexIndex<<1)&2),float(gl_VertexIndex&2)); // (0,0) (2,0) (0,2)
     vec2 n=p*2.0-1.0;
     gl_Position=vec4(n,0.0,1.0);
+    v_uv=p;
     v_cuv=p+pc.a.xy/pc.a.zw; // linear in the vertex => exact after interpolation
     v_q=mat3(pc.h0.xyz,pc.h1.xyz,pc.h2.xyz)*vec3(n,1.0);
 }

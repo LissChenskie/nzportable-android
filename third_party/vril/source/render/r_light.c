@@ -22,8 +22,11 @@
 // r_light.c -- Light updating and sampling
 
 #include "../nzportable_def.h"
+#include "render_math.h" /* nzp_nearest_limit (android/native) */
 
 int r_dlightframecount;
+/* Maximum number of dynamic lights that light the world (nearest first); 0 = unlimited. */
+cvar_t r_dlight_max = { "r_dlight_max", "6", true };
 
 // MARK: Dynamic Lights
 
@@ -134,10 +137,25 @@ R_PushDlights(void)
                                            //  advanced yet for this frame
     l = cl_dlights;
 
-    for (i = 0 ; i < MAX_DLIGHTS ; i++, l++) {
-        if (l->die < (float) cl.time || !l->radius)
-            continue;
-        R_MarkLights(l, 1 << i, cl.worldmodel->nodes);
+    /* Every lit surface rebuilds its lightmap on the CPU and re-uploads it each frame, so many simultaneous
+     * lights (flamethrower, explosions) are expensive. Keep only the r_dlight_max nearest ones. */
+    {
+        float dist[MAX_DLIGHTS], limit;
+
+        for (i = 0 ; i < MAX_DLIGHTS ; i++) {
+            vec3_t d;
+            dist[i] = -1.0f;
+            if (l[i].die < (float) cl.time || !l[i].radius)
+                continue;
+            VectorSubtract(l[i].origin, r_refdef.vieworg, d);
+            dist[i] = DotProduct(d, d);
+        }
+        limit = nzp_nearest_limit(dist, MAX_DLIGHTS, (int) r_dlight_max.value);
+        for (i = 0 ; i < MAX_DLIGHTS ; i++) {
+            if (dist[i] < 0.0f || dist[i] > limit)
+                continue;
+            R_MarkLights(&l[i], 1 << i, cl.worldmodel->nodes);
+        }
     }
 }
 
