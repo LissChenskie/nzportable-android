@@ -160,15 +160,6 @@ jobs:
           cargo fmt --all -- --check
           if ($LASTEXITCODE -ne 0) { throw "cargo fmt check failed." }
 
-      - name: Test localized UI crate
-        working-directory: deckcraft
-        shell: pwsh
-        env:
-          RUST_BACKTRACE: "1"
-        run: |
-          cargo test --locked -p deckcraft-ui-egui
-          if ($LASTEXITCODE -ne 0) { throw "deckcraft-ui-egui tests failed." }
-
       - name: Build DeckCraft for Windows x64
         working-directory: deckcraft
         shell: pwsh
@@ -189,7 +180,7 @@ jobs:
             "DeckCraft version: 0.18.1"
             "Integrated source commit: $env:DECKCRAFT_SOURCE_SHA"
             "Build platform: Windows x86_64"
-            "Tests: cargo test --locked -p deckcraft-ui-egui (passed)"
+            "Formatting: cargo fmt --all -- --check (passed)"
             "SHA256: $hash"
           ) | Set-Content output/BUILD-INFO.txt -Encoding utf8
           Get-Item output/deckcraft.exe | Format-List Name,Length
@@ -202,3 +193,12 @@ jobs:
           path: output/*
           if-no-files-found: error
           retention-days: 14
+
+      - name: Test localized UI crate
+        working-directory: deckcraft
+        shell: pwsh
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          cargo test --locked -p deckcraft-ui-egui
+          if ($LASTEXITCODE -ne 0) { throw "deckcraft-ui-egui tests failed." }
