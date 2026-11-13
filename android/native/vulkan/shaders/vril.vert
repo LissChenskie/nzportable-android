@@ -4,6 +4,8 @@ layout(constant_id=0) const bool LIGHTMAPPED=false;
 // constant_id 1 is ALPHA_TEST (fragment only). MOTION adds jitter and previous-frame
 // positions for the temporal upscaler; it is compiled out of every other pipeline.
 layout(constant_id=2) const bool MOTION=false;
+// constant_id 3: jitter only (FSR Lite fast: no motion vectors, no previous positions).
+layout(constant_id=3) const bool JITTER=false;
 layout(location=0) in vec3 position;
 layout(location=1) in vec2 uv;
 layout(location=2) in vec4 color;
@@ -33,6 +35,7 @@ void main() {
         n+=pc.jitter_size.xy*p.w;
     }else{
         v_cur=vec4(0,0,0,1);v_prev=vec4(0,0,0,1);
+        if(JITTER)n+=pc.jitter_size.xy*p.w;
     }
     gl_Position=vec4(pc.rot.x*n.x+pc.rot.y*n.y,pc.rot.z*n.x+pc.rot.w*n.y,(p.z+p.w)*0.5,p.w);
     gl_PointSize=1;

@@ -53,6 +53,10 @@ void NZP_VK_SetUpscaler(int mode);
 int NZP_VK_UpscalerSupported(int mode);
 int NZP_VK_UpscalerState(void); /* of the selected mode: 0 off, 1 running, 2 unsupported, 3 turned itself off, 4 needs scale < 100% */
 void NZP_VK_SetLiteSharpness(float value);
+/* Lite variant: 0 auto (fast on ARM Mali), 1 fast (2 texture fetches/pixel), 2 quality (7 fetches + motion vectors). */
+void NZP_VK_SetLiteQuality(int quality);
+/* Row-major 3x3: this frame's Vulkan NDC (x,y,1) -> previous frame's homogeneous NDC (rotation-only). Once per frame. */
+void NZP_VK_SetReprojection(const float *m9);
 int NZP_VK_FSRActive(void);
 int NZP_VK_FSRSupported(void);
 int NZP_VK_FSRContextsCreated(void); /* diagnostics/tests: creating one is expensive */

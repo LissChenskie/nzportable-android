@@ -174,6 +174,11 @@ void NZP_GLES_SetCamera(float znear,float zfar,float fov_y_degrees) {
     else if(!cam_cur.valid)cam_prev=next; /* no history yet */
     /* Later calls in the same frame (mirrors, second pass) keep the same history. */
     cam_cur=next;
+    {   /* FSR Lite (fast): rotation-only reprojection from last frame's camera. */
+        float h[9];
+        nzp_reprojection_matrix(h,cam_cur.proj,cam_cur.view,cam_prev.proj,cam_prev.view);
+        NZP_VK_SetReprojection(h);
+    }
     NZP_VK_SetCamera(znear,zfar,fov_y_degrees*3.14159265f/180.f);
 }
 static void vk_motion(nzp_vk_uniform *u) {

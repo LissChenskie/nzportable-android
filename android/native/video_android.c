@@ -18,6 +18,8 @@ cvar_t vk_prerotate={"vk_prerotate","0",true};
  * 1 FSR full (Arm ASR, needs fp16/SPIR-V 1.4 capable Vulkan). */
 cvar_t vk_fsr={"vk_fsr","0",true};
 cvar_t vk_fsr_sharpness={"vk_fsr_sharpness","0.2",true};
+/* FSR Lite variant: 0 auto (fast on ARM Mali), 1 fast, 2 quality. */
+cvar_t vk_lite_quality={"vk_lite_quality","0",true};
 cvar_t vid_benchmark={"vid_benchmark","0",false};
 cvar_t vid_performance_mode={"vid_performance_mode","0",true};
 cvar_t vid_graphics_api={"vid_graphics_api","0",true};
@@ -226,7 +228,7 @@ void GL_BeginRendering(int *x,int *y,int *w,int *h){
     if(NZP_VK_Active())NZP_VK_SetBenchmark(vid_benchmark.value!=0);
     if(NZP_VK_Active()){
         NZP_VK_SetPreRotation(vk_prerotate.value!=0);
-        NZP_VK_SetUpscaler((int)vk_fsr.value);NZP_VK_SetFSRSharpness(vk_fsr_sharpness.value);NZP_VK_SetLiteSharpness(vk_fsr_sharpness.value+0.1f);
+        NZP_VK_SetUpscaler((int)vk_fsr.value);NZP_VK_SetFSRSharpness(vk_fsr_sharpness.value);NZP_VK_SetLiteSharpness(vk_fsr_sharpness.value+0.1f);NZP_VK_SetLiteQuality((int)vk_lite_quality.value);
         /* A new map must not blend with the previous map's history. */
         static void *last_world;if(cl.worldmodel!=last_world){last_world=cl.worldmodel;NZP_VK_ResetHistory();}
     }
@@ -332,7 +334,7 @@ void VID_Init(unsigned char *palette){
     if(pref){if(fscanf(pref,"%d",&preference)!=1)preference=0;fclose(pref);}
     if(preference<0||preference>2)preference=0;
     SDL_Log("NZP_GRAPHICS preference=%d path=%s",preference,api_path);
-    Cvar_RegisterVariable(&vk_single_pass);Cvar_RegisterVariable(&vk_prerotate);Cvar_RegisterVariable(&vk_fsr);Cvar_RegisterVariable(&vk_fsr_sharpness);Cvar_RegisterVariable(&vid_benchmark);Cvar_RegisterVariable(&vid_performance_mode);
+    Cvar_RegisterVariable(&vk_single_pass);Cvar_RegisterVariable(&vk_prerotate);Cvar_RegisterVariable(&vk_fsr);Cvar_RegisterVariable(&vk_fsr_sharpness);Cvar_RegisterVariable(&vk_lite_quality);Cvar_RegisterVariable(&vid_benchmark);Cvar_RegisterVariable(&vid_performance_mode);
     Cvar_RegisterVariable(&vid_graphics_api);Cvar_SetValue("vid_graphics_api",preference);
     Cvar_RegisterVariable(&vid_width);Cvar_RegisterVariable(&vid_height);
     Cvar_RegisterVariable(&vid_render_scale);Cvar_RegisterVariable(&vid_ui_scale);

@@ -32,6 +32,29 @@ int main(void){
     /* model * origin == point, so prev_mvp * origin must equal P_prev*V_prev*point. */
     float origin[4]={0,0,0,1};for(int r=0;r<4;r++){got[r]=0;for(int c=0;c<4;c++)got[r]+=prev[c*4+r]*origin[c];}
     for(int r=0;r<4;r++)assert(fabsf(want[r]-got[r])<1e-2f);
+    /* Rotation-only reprojection: a view ray seen by the current camera must land at the same place the
+     * previous camera saw it, using the full 4x4 projection of a direction (w = 0). */
+    {
+        float pv[16],vc[16],vp[16],hm[9];
+        view(vc,0.55f,10.f,20.f,30.f);view(vp,0.50f,-40.f,5.f,12.f); /* translation must be ignored */
+        nzp_reprojection_matrix(hm,proj,vc,proj,vp);
+        for(int i=0;i<=6;i++)for(int j=0;j<=6;j++){
+            float nx=-1+2*i/6.f,ny_vk=-1+2*j/6.f;                       /* current Vulkan NDC, y down */
+            float dir[4]={nx/proj[0],(-ny_vk)/proj[5],-1.f,0.f};         /* camera-space ray (GL y up) */
+            float world[4]={0,0,0,0},prev_cam[4]={0,0,0,0},clip[4]={0,0,0,0};
+            for(int r=0;r<3;r++)for(int c=0;c<3;c++)world[r]+=vc[r*4+c]*dir[c];         /* R_cur^T * dir (column-major: R^T[r][c]=V[r*4+c]) */
+            for(int r=0;r<3;r++)for(int c=0;c<3;c++)prev_cam[r]+=vp[c*4+r]*world[c];    /* R_prev * world */
+            prev_cam[3]=0;
+            for(int r=0;r<4;r++)for(int c=0;c<4;c++)clip[r]+=proj[c*4+r]*prev_cam[c];
+            float want_x=clip[0]/clip[3],want_y=-clip[1]/clip[3];       /* back to Vulkan y down */
+            float qx=hm[0]*nx+hm[1]*ny_vk+hm[2],qy=hm[3]*nx+hm[4]*ny_vk+hm[5],qz=hm[6]*nx+hm[7]*ny_vk+hm[8];
+            assert(fabsf(qx/qz-want_x)<1e-3f&&fabsf(qy/qz-want_y)<1e-3f);
+        }
+        /* No camera motion: identity (up to scale). */
+        nzp_reprojection_matrix(hm,proj,vc,proj,vc);
+        assert(fabsf(hm[0]-hm[4])<1e-4f&&fabsf(hm[0]-hm[8])<1e-4f&&fabsf(hm[1])<1e-4f&&fabsf(hm[3])<1e-4f&&fabsf(hm[2])<1e-4f&&fabsf(hm[5])<1e-4f);
+        (void)pv;
+    }
     puts("camera motion history maths tests passed");
     return 0;
 }

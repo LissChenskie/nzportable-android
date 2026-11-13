@@ -55,11 +55,19 @@ Video options, page 1, "FSR UPSCALING" cycles **OFF -> LITE -> FULL** (cvar `vk_
 default off). Both only work while `vid_render_scale` is below 100%, and both turn themselves off for the
 session if frames stay very slow (the menu then shows AUTO-OFF).
 
-* **LITE** (any Vulkan GPU with independent blend): my own cheap single-pass temporal upscaler, *not* AMD or
-  Arm code. The world renders jittered and writes camera motion vectors; one full-screen pass reads 7
-  textures per display pixel (5 current-frame taps for a range-limited unsharp mask and a clamp box, the
-  motion vector, the history), blends the clamped history in and writes the next history image. Depth never
-  leaves tile memory (not stored). No compute, no extra passes. `vk_fsr_sharpness` sets the sharpening.
+* **LITE** (any Vulkan GPU with independent blend): my own cheap temporal upscaler, *not* AMD or Arm code. The
+  world renders with a sub-pixel jitter and one full-screen pass blends the reprojected history into the
+  current frame. Two variants (`vk_lite_quality`: 0 auto, 1 fast, 2 quality; auto = fast on ARM Mali):
+  * *fast* (Mali-G72 oriented): **2 texture fetches per display pixel** (current frame, history). No motion
+    vector target and no depth in memory: history is reprojected by one 3x3 matrix from the camera rotation
+    (translation is ignored), and history that differs from the current sample is rejected by colour distance.
+    Texture coordinates come straight from vertex-shader varyings so Bifrost can prefetch.
+  * *quality*: 7 fetches (5 current-frame taps for a range-limited unsharp mask and clamp box, motion vector,
+    history), camera motion vectors from an extra render target.
+  Why fast exists: a G72 does about one bilinear texel per clock per core, roughly 2.5 Gtexel/s on an MP3, so
+  7 fetches at 2400x1080 is ~7 ms per frame while 2 fetches is ~2 ms (an estimate from the hardware numbers, not a
+  measurement). The remaining cost is memory traffic: read current+history, write the new history, then the
+  present quad reads it again. Expect it to pay off only when the world pass is the bottleneck.
 * **FULL**: Arm Accuracy Super Resolution (MIT), the Mali-oriented derivative of AMD FidelityFX Super
   Resolution **2.2**, the temporal upscaler FSR 3 builds on. Fetched by `scripts/bootstrap.py`. It stores depth
   and is several full-resolution passes, which is what made it 12 fps on a Mali-G72 and 30 fps on an Adreno 642L

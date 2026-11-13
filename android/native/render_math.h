@@ -22,6 +22,24 @@ static inline void nzp_rigid_inverse(float *out, const float *m) {
     result[15]=1.f;
     memcpy(out,result,sizeof(result));
 }
+/* Rotation-only reprojection for FSR Lite (fast). Row-major 3x3 m maps the current frame's Vulkan NDC (x,y,1)
+ * (y down) to the previous frame's homogeneous Vulkan NDC, assuming the content is infinitely far: the
+ * camera translation is ignored. proj/view are the engine's column-major GL matrices. */
+static inline void nzp_reprojection_matrix(float *m,const float *proj_cur,const float *view_cur,const float *proj_prev,const float *view_prev) {
+    float dcur[9]={1.f/proj_cur[0],0,0, 0,1.f/proj_cur[5],0, 0,0,-1.f};          /* (x,y,1) -> camera-space direction */
+    float rot[9],tmp[9],a_prev[9]={proj_prev[0],0,proj_prev[8], 0,proj_prev[5],proj_prev[9], 0,0,-1.f}; /* direction -> clip x,y,w */
+    float rc[9],rp[9],h[9];
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) { rc[r*3+c]=view_cur[c*4+r]; rp[r*3+c]=view_prev[c*4+r]; }
+    /* world->camera is R, so camera->world is R^T */
+    float rct[9];for (int r=0;r<3;r++) for (int c=0;c<3;c++) rct[r*3+c]=rc[c*3+r];
+    #define NZP_MM3(o,a,b) for(int i_=0;i_<3;i_++)for(int j_=0;j_<3;j_++){float v_=0;for(int k_=0;k_<3;k_++)v_+=(a)[i_*3+k_]*(b)[k_*3+j_];(o)[i_*3+j_]=v_;}
+    NZP_MM3(tmp,rct,dcur)        /* R_cur^T * D_cur */
+    NZP_MM3(rot,rp,tmp)          /* R_prev * ... */
+    NZP_MM3(h,a_prev,rot)        /* A_prev * ... : GL (y up) */
+    #undef NZP_MM3
+    /* y flip on both ends: F * H * F with F = diag(1,-1,1) */
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) m[r*3+c]=h[r*3+c]*((r==1)!=(c==1)?-1.f:1.f);
+}
 // Bound BOTH dimensions while preserving the real landscape aspect ratio.
 static inline void nzp_render_size(int w, int h, int max_w, int max_h, int *rw, int *rh) {
     if (w<1) w=1;

@@ -32,6 +32,9 @@ static std::vector<unsigned char> run(int percent,int mode,int frames,float step
         auto u=uniform(t*step);
         // prev_mvp: where the same geometry was last frame. history_sign=-1 inverts it on purpose.
         auto prev=uniform(t*step-history_sign*step);for(int i=0;i<16;i++)u.prev_mvp[i]=prev.mvp[i];
+        {   /* Lite fast: previous position of the same content (NDC x moved by step each frame). */
+            const float h[9]={1,0,-history_sign*step,0,1,0,0,0,1};NZP_VK_SetReprojection(h);
+        }
         quad(u,s);
         if(t==frames-1)NZP_VK_RequestCapture(nullptr);
         NZP_VK_EndFrame();
@@ -127,6 +130,22 @@ int main(){
             NZP_VK_SetUpscaler(2);assert(NZP_VK_BeginFrame(0,100));assert(NZP_VK_UpscalerState()==4);NZP_VK_EndFrame(); /* at 100% nothing runs */
         }
         assert(NZP_VK_ValidationErrors()==0);
+    }
+    {   // FSR Lite fast variant (what ARM Mali devices use by default): 2 fetches, rotation-only reprojection.
+        NZP_VK_SetLiteQuality(1);
+        auto fast_static=run(50,2,24,0.f,1);dump("litefast",fast_static);
+        const double e_fast=mae(fast_static,truth);
+        auto fast_good=run(50,2,frames,step,1),fast_bad=run(50,2,frames,step,-1);
+        const double f_good=mae(fast_good,truth_pan),f_bad=mae(fast_bad,truth_pan);
+        printf("lite fast: static MAE %.2f (bilinear %.2f); panning correct %.2f inverted %.2f (bilinear %.2f)\n",e_fast,e_bi,f_good,f_bad,e_bi_pan);
+        assert(e_fast<e_bi);              /* still reconstructs more than bilinear on a static view */
+        assert(f_good<f_bad*0.95);        /* reprojection sign is right */
+        assert(f_good<e_bi_pan*1.1);      /* and it does not lose to bilinear while panning */
+        {   double edge=0,inner=0;for(int x=0;x<W;x++)for(int c=0;c<3;c++){edge+=fast_static[size_t(x)*4+c];inner+=fast_static[(size_t(4)*W+x)*4+c];}
+            assert(edge/inner>0.9);
+        }
+        assert(NZP_VK_ValidationErrors()==0);
+        NZP_VK_SetLiteQuality(0);
     }
     NZP_VK_Shutdown();SDL_DestroyWindow(win);SDL_Quit();
     puts("Vulkan temporal upscaling (Arm ASR) jitter, motion vectors and reconstruction passed");
