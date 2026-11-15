@@ -23,18 +23,18 @@ cvar_t vk_lite_quality={"vk_lite_quality","0",true};
 cvar_t vid_benchmark={"vid_benchmark","0",false};
 cvar_t vid_performance_mode={"vid_performance_mode","0",true};
 cvar_t vid_graphics_api={"vid_graphics_api","0",true};
-static char api_path[MAX_OSPATH*2],guard_path[MAX_OSPATH*2],failed_path[MAX_OSPATH*2];
+static char api_path[MAX_OSPATH*2];
 
+/* Vulkan (1) is the default; the game never switches to GLES2 by itself. The only way to GLES2 is this
+ * explicit choice (or editing graphics-api.txt to contain 2, for a device where Vulkan cannot start at all). */
 void VID_SetGraphicsAPIChoice(void) {
-    int choice=((int)vid_graphics_api.value+1)%3;
+    int choice=(int)vid_graphics_api.value==2?1:2;
     Cvar_SetValue("vid_graphics_api",choice);
     FILE *f=fopen(api_path,"wb");if(f){fprintf(f,"%d\n",choice);fclose(f);}
-    remove(guard_path);remove(failed_path);
 }
 char *VID_GraphicsAPIName(void) {
     static char text[64];int c=(int)vid_graphics_api.value;
-    snprintf(text,sizeof(text),"%s / ACTIVE %s",c==1?"VULKAN":c==2?"GLES2":"AUTO",
-             NZP_VK_Active()?"VULKAN":"GLES2");return text;
+    (void)c;snprintf(text,sizeof(text),"%s",NZP_VK_Active()?"VULKAN":"GLES2");return text;
 }
 SDL_Window *sdl_window;
 SDL_GLContext sdl_gl_context;
@@ -328,11 +328,10 @@ void VID_SetPalette(unsigned char *p){for(int i=0;i<256;i++)d_8to24table[i]=0xff
 void VID_ShiftPalette(unsigned char *p){(void)p;}
 void VID_Init(unsigned char *palette){
     snprintf(api_path,sizeof(api_path),"%s/graphics-api.txt",com_gamedir);
-    snprintf(guard_path,sizeof(guard_path),"%s/vulkan-starting",com_gamedir);
-    snprintf(failed_path,sizeof(failed_path),"%s/vulkan-failed",com_gamedir);
     int preference=0;FILE *pref=fopen(api_path,"rb");
     if(pref){if(fscanf(pref,"%d",&preference)!=1)preference=0;fclose(pref);}
     if(preference<0||preference>2)preference=0;
+    if(preference==0)preference=1; /* old AUTO meant GLES2; it is Vulkan now */
     SDL_Log("NZP_GRAPHICS preference=%d path=%s",preference,api_path);
     Cvar_RegisterVariable(&vk_single_pass);Cvar_RegisterVariable(&vk_prerotate);Cvar_RegisterVariable(&vk_fsr);Cvar_RegisterVariable(&vk_fsr_sharpness);Cvar_RegisterVariable(&vk_lite_quality);Cvar_RegisterVariable(&vid_benchmark);Cvar_RegisterVariable(&vid_performance_mode);
     Cvar_RegisterVariable(&vid_graphics_api);Cvar_SetValue("vid_graphics_api",preference);
@@ -349,22 +348,16 @@ void VID_Init(unsigned char *palette){
     if(SDL_GetCurrentDisplayMode(0,&mode)==0 && mode.w>0 && mode.h>0) {
         initial_width=mode.w; initial_height=mode.h;
     }
-    if(access(guard_path,F_OK)==0){
-        FILE *f=fopen(failed_path,"wb");if(f)fclose(f);remove(guard_path);
-        SDL_LogWarn(SDL_LOG_CATEGORY_VIDEO,"Previous Vulkan startup did not complete; using GLES2 until API is reselected");
-    }
-    /* Auto remains on the validated GLES2 baseline until this driver has been
-     * qualified on actual hardware. Explicit Vulkan opts into the new backend. */
-    if(preference==1 && access(failed_path,F_OK)!=0) {
-        FILE *f=fopen(guard_path,"wb");if(f)fclose(f);
+    if(preference==1) {
         sdl_window=SDL_CreateWindow("NZPortable Vulkan",SDL_WINDOWPOS_CENTERED,
             SDL_WINDOWPOS_CENTERED,initial_width,initial_height,
             SDL_WINDOW_VULKAN|SDL_WINDOW_FULLSCREEN|SDL_WINDOW_ALLOW_HIGHDPI);
         if(sdl_window && NZP_VK_Init(sdl_window,com_gamedir,COM_CheckParm("-vkvalidation")!=0)) {
             max_texture_size=NZP_VK_MaxTextureSize();
         } else {
-            FILE *failed=fopen(failed_path,"wb");if(failed)fclose(failed);remove(guard_path);
-            if(sdl_window)SDL_DestroyWindow(sdl_window);sdl_window=NULL;
+            /* No silent fallback to OpenGL: say what happened and how to choose GLES2 on purpose. */
+            Sys_Error("Vulkan could not start on this device (%s). To use OpenGL ES instead, put the number 2 in %s and restart.",
+                      sdl_window?"renderer initialization failed":SDL_GetError(),api_path);
         }
     }
     if(!NZP_VK_Active()) {
@@ -387,7 +380,7 @@ void VID_Init(unsigned char *palette){
 }
 void VID_Shutdown(void){
     SDL_Log("NZP_GRAPHICS clean shutdown backend=%s",NZP_VK_Active()?"Vulkan":"GLES2");
-    if(NZP_VK_Active()){NZP_GLES_Shutdown();NZP_VK_Shutdown();remove(guard_path);}
+    if(NZP_VK_Active()){NZP_GLES_Shutdown();NZP_VK_Shutdown();}
     if(sdl_gl_context){delete_target();NZP_GLES_Shutdown();SDL_GL_DeleteContext(sdl_gl_context);}
     if(sdl_window)SDL_DestroyWindow(sdl_window);sdl_gl_context=NULL;sdl_window=NULL;
 }

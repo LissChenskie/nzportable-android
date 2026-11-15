@@ -218,7 +218,7 @@ static void Menu_Video_DrawAndroid(void) {
         Menu_DrawOptionButton(4,nzp_profile.value?"ENABLED":"DISABLED");
     }
     if(android_video_page==3){
-        Menu_DrawButton(1,i++,"GRAPHICS API","Auto / Vulkan / GLES2. Restart the app to apply.",VID_SetGraphicsAPIChoice);
+        Menu_DrawButton(1,i++,"GRAPHICS API","Vulkan (default) or GLES2. The game never switches by itself. Restart the app to apply.",VID_SetGraphicsAPIChoice);
         Menu_DrawOptionButton(1,VID_GraphicsAPIName());
         Menu_DrawButton(2,i++,"PERFORMANCE MODE","Balanced 60 / Maximum 120 / Battery 30. No quality changes.",Menu_Video_PerformanceMode);
         Menu_DrawOptionButton(2,(int)vid_performance_mode.value==1?"MAXIMUM":(int)vid_performance_mode.value==2?"BATTERY SAVER":"BALANCED");

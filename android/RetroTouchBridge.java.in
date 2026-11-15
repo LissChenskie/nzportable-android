@@ -44,6 +44,8 @@ final class RetroTouchBridge {
         controls.add(RetroTouchControl.button("menu_button", "menu", "MENU", .93f, .10f, .13f));
         overlay.setGameplayLayout(new RetroTouchLayout("nzportable_android_v2_large", controls));
         overlay.setLookWhileHoldingAction("fire", true);
+        // Dragging the finger that holds AIM turns the camera too (AIM sits inside the look zone).
+        overlay.setLookWhileHoldingAction("aim", true);
         overlay.setListener(new RetroTouchAdapter() {
             @Override public void onAction(String id, boolean down) {
                 GameActivity.nativeTouchAction(id, down);
