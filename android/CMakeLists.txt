@@ -33,7 +33,7 @@ file(GLOB PLATFORM CONFIGURE_DEPENDS "${ENGINE}/platform/sdl/*.c" "${ENGINE}/pla
 list(FILTER PLATFORM EXCLUDE REGEX "/gl_vidsdl\\.c$")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/_build_info.h"
     "#define GIT_HASH \"7a31c3d-android\"\n#define GIT_BRANCH \"android\"\n#define BUILD_DATE \"2026-10-29\"\n")
-add_library(main SHARED ${CORE} ${PLATFORM} native/gles_compat.c native/video_android.c native/android_port.c native/lan_endpoint.c native/lan_network.c native/cpu_topology.c native/thread_roles.c native/jobs.c native/vulkan/renderer.cpp native/vulkan/fsr.cpp native/vulkan/vendor/volk.c)
+add_library(main SHARED ${CORE} ${PLATFORM} native/gles_compat.c native/video_android.c native/android_port.c native/lan_endpoint.c native/lan_network.c native/cpu_topology.c native/thread_roles.c native/jobs.c native/vulkan/renderer.cpp native/vulkan/fsr.cpp native/vulkan/fsr1.cpp native/vulkan/vendor/volk.c)
 target_include_directories(main PRIVATE "${ENGINE}" native "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_definitions(main PRIVATE GLQUAKE PLATFORM_SDL PLATFORM_ANDROID PLATFORM_CONFIRM_IS_ENTER
     PLATFORM_DIRECTORY=sdl PLATFORM_RENDERER=gl MAX_AI_COUNT=24 PLATFORM_USES_GENERIC_GLYPHS
@@ -62,10 +62,13 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/vulkan_shaders.h"
         native/vulkan/shaders/vril.vert native/vulkan/shaders/vril.frag
         native/vulkan/shaders/lite.vert native/vulkan/shaders/lite.frag
         native/vulkan/shaders/lite_fast.vert native/vulkan/shaders/lite_fast.frag
+        native/vulkan/shaders/fsr1_easu.frag native/vulkan/shaders/fsr1_rcas.frag
+        native/vulkan/vendor/fsr1/ffx_a.h native/vulkan/vendor/fsr1/ffx_fsr1.h
     VERBATIM)
 target_sources(main PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_shaders.h")
 target_compile_definitions(main PRIVATE NZP_VULKAN VK_NO_PROTOTYPES)
 set_source_files_properties(native/vulkan/renderer.cpp PROPERTIES COMPILE_OPTIONS "-std=c++17;-Wno-missing-field-initializers;-Wno-unused-parameter")
+set_source_files_properties(native/vulkan/fsr1.cpp PROPERTIES COMPILE_OPTIONS "-std=c++17;-w")
 target_link_libraries(main PRIVATE dl)
 
 # Temporal upscaling: Arm Accuracy Super Resolution (MIT, derived from AMD FSR 2.2) with its prebuilt

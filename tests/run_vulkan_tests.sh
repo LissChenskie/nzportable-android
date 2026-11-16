@@ -33,7 +33,8 @@ if [ -f $asr/src/components/fsr2/ffxm_fsr2.cpp ]; then
     fsr_flags="-DNZP_FSR -DFFXM_VKLOADER_VOLK=1 $asr_inc"
 fi
 c++ -std=c++20 -w $cflags $fsr_flags -c android/native/vulkan/fsr.cpp -o build/host-tests/fsr.o
-threads="$threads build/host-tests/fsr.o $fsr_objs"
+c++ -std=c++17 -w -c android/native/vulkan/fsr1.cpp -o build/host-tests/fsr1.o
+threads="$threads build/host-tests/fsr.o build/host-tests/fsr1.o $fsr_objs"
 cc -std=gnu99 $cflags -c tests/vulkan_frontend_test.c -o build/host-tests/frontend_test.o
 c++ -std=c++17 $cflags tests/vulkan_test.cpp build/host-tests/renderer.o build/host-tests/volk.o $threads -o build/host-tests/vulkan_test $(pkg-config --libs sdl2) -ldl
 c++ -std=c++17 $cflags tests/vulkan_rotation_test.cpp build/host-tests/renderer.o build/host-tests/volk.o $threads -o build/host-tests/vulkan_rotation_test $(pkg-config --libs sdl2) -ldl

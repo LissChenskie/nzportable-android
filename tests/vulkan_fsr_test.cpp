@@ -26,8 +26,8 @@ static std::vector<unsigned char> run(int percent,int mode,int frames,float step
     std::vector<unsigned char> px(size_t(W)*H*4);
     for(int t=0;t<frames;t++){
         assert(NZP_VK_BeginFrame(0,percent));
-        if(mode==1)assert(NZP_VK_FSRActive()==(percent<100));
-        if(mode==2)assert(NZP_VK_UpscalerState()==(percent<100?1:4));
+        if(mode==1)assert(NZP_VK_FSRActive()); /* also at 100%: anti-aliasing */
+        if(mode==2)assert(NZP_VK_UpscalerState()==1);
         NZP_VK_SetCamera(4,4096,1.2f);
         auto u=uniform(t*step);
         // prev_mvp: where the same geometry was last frame. history_sign=-1 inverts it on purpose.
@@ -141,7 +141,7 @@ int main(){
         {   const int created=NZP_VK_FSRContextsCreated();
             for(int i=0;i<3;i++){NZP_VK_SetPreRotation(i&1);(void)run(50,2,3,0.f,1);}
             assert(NZP_VK_FSRContextsCreated()==created); /* Lite never creates an Arm ASR context */
-            NZP_VK_SetUpscaler(2);assert(NZP_VK_BeginFrame(0,100));assert(NZP_VK_UpscalerState()==4);NZP_VK_EndFrame(); /* at 100% nothing runs */
+            NZP_VK_SetUpscaler(2);assert(NZP_VK_BeginFrame(0,100));assert(NZP_VK_UpscalerState()==1);NZP_VK_EndFrame(); /* at 100% it runs as anti-aliasing */
         }
         {   auto g=run(50,2,frames,step_slow,1),b=run(50,2,frames,step_slow,-1);
             printf("lite slow pan: correct %.2f inverted %.2f\n",mae(g,truth_slow),mae(b,truth_slow));
@@ -169,6 +169,33 @@ int main(){
         }
         assert(NZP_VK_ValidationErrors()==0);
         NZP_VK_SetLiteQuality(0);
+    }
+    {   // AMD FSR 1.0 (EASU + RCAS), spatial.
+        NZP_VK_SetFSRSharpness(0.2f);
+        auto f1=run(50,3,3,0.f,1);dump("fsr1",f1);
+        const double e_f1=mae(f1,truth);
+        auto f1_pan=run(50,3,frames,step,1);
+        printf("fsr1: static MAE %.2f (bilinear %.2f); sharpness %.2f (bilinear %.2f)\n",e_f1,e_bi,sharpness(f1),sharpness(bilinear_pan));
+        assert(NZP_VK_UpscalerState()==1);
+        assert(e_f1<e_bi);                       /* edge-adaptive upsampling beats bilinear */
+        assert(sharpness(f1_pan)>=sharp_bi*0.95);
+        NZP_VK_SetFSRSharpness(0.f);auto f1_nosharp=run(50,3,2,0.f,1);   /* EASU only */
+        assert(mae(f1_nosharp,truth)<e_bi*1.05&&NZP_VK_UpscalerState()==1);
+        NZP_VK_SetFSRSharpness(0.2f);
+        (void)run(100,3,2,0.f,1);assert(NZP_VK_UpscalerState()==4); /* spatial upscaling needs render scale below 100% */
+        assert(NZP_VK_ValidationErrors()==0);
+    }
+    {   // Upscalers as anti-aliasing: the same scene at 100% render scale.
+        for(int mode:{1,2}){
+            if(mode==1&&!NZP_VK_UpscalerSupported(1))continue;
+            NZP_VK_SetLiteQuality(mode==2?1:0);
+            auto aa=run(100,mode,24,0.f,1);
+            printf("anti-aliasing at 100%% (mode %d): MAE vs plain native %.2f\n",mode,mae(aa,truth));
+            assert(NZP_VK_UpscalerState()==1);
+            assert(NZP_VK_ValidationErrors()==0);
+        }
+        NZP_VK_SetLiteQuality(0);
+        auto aa_q=run(100,2,24,0.f,1);assert(NZP_VK_UpscalerState()==1); /* quality Lite on non-Mali */
     }
     NZP_VK_Shutdown();SDL_DestroyWindow(win);SDL_Quit();
     puts("Vulkan temporal upscaling (Arm ASR) jitter, motion vectors and reconstruction passed");

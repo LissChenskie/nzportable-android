@@ -98,10 +98,16 @@ static void Menu_Video_PerformanceMode(void){
 int VID_StartRendererBenchmark(void);
 static void Menu_Video_Benchmark(void){if(VID_StartRendererBenchmark()){key_dest=key_game;m_state=m_none;}}
 /* vk_fsr: 0 off, 2 FSR Lite (cheap, any GPU), 1 FSR full (Arm ASR, modern GPUs). Cycle OFF -> LITE -> FULL. */
+/* vk_fsr: 0 off, 3 AMD FSR 1.0 (spatial), 2 FSR Lite, 1 FSR full (Arm ASR). Cycle OFF -> FSR 1.0 -> LITE -> FULL.
+ * LITE and FULL (temporal) also work as anti-aliasing when RESOLUTION is 100%. */
 static void Menu_Video_ToggleFSR(void) {
-    int next=(int)vk_fsr.value==0?2:((int)vk_fsr.value==2?1:0);
-    if(next==2&&!VID_UpscalerSupported(2))next=1;
-    if(next==1&&!VID_UpscalerSupported(1))next=0;
+    static const int order[4]={0,3,2,1};
+    int index=0,next=0;
+    for(int k=0;k<4;k++)if(order[k]==(int)vk_fsr.value)index=k;
+    for(int tries=1;tries<=4;tries++){ /* skip modes this device cannot run */
+        next=order[(index+tries)%4];
+        if(next==0||VID_UpscalerSupported(next))break;
+    }
     if(next==0&&(int)vk_fsr.value==0)Con_Printf("Upscaling needs Vulkan; not available on this device.\n");
     Cvar_SetValue("vk_fsr",next);
     Menu_Video_Save();
@@ -119,7 +125,7 @@ static void Menu_Video_ToggleLanLegacy(void) {
     Menu_Video_Save();
 }
 static char *Menu_Video_FSRText(void) {
-    const char *name=(int)vk_fsr.value==2?"LITE":"FULL";
+    const char *name=(int)vk_fsr.value==2?"LITE":((int)vk_fsr.value==3?"FSR 1.0":"FULL");
     static char text[48];
     if((int)vk_fsr.value==0)return "OFF";
     switch(VID_UpscalerState()) {
@@ -179,7 +185,7 @@ static void Menu_Video_DrawAndroid(void) {
             Menu_Video_SetRenderScale);
         Menu_DrawOptionButton(1,android_resolution_string);
         Menu_DrawButton(2,i++,"FSR UPSCALING",
-            "OFF / LITE (cheap, for older phones) / FULL (FSR 2.2, newer GPUs). Needs RESOLUTION below 100%.",
+            "OFF / FSR 1.0 (spatial) / LITE (cheap temporal) / FULL (FSR 2.2, new GPUs). LITE and FULL also smooth edges at RESOLUTION 100%.",
             Menu_Video_ToggleFSR);
         Menu_DrawOptionButton(2,Menu_Video_FSRText());
         Menu_DrawButton(3,i++,"UI SCALE","Adjust HUD and menu size separately.",

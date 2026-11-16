@@ -125,3 +125,18 @@ controller, which hid the overlay entirely, so the default is ALWAYS ON. The run
   2. Dynamic lights: every lit surface rebuilds its lightmap on the CPU and re-uploads it each frame.
      `r_dlight_max` (default 6) keeps only the nearest lights for world lighting. 0 = unlimited.
   If it is still slow, run with `nzp_profile 1` while burning things and send `nzp-last-run.log`.
+
+## FSR 1.0, upscalers as anti-aliasing, API
+
+* **FSR 1.0** (AMD FidelityFX, MIT; `android/native/vulkan/vendor/fsr1/`, licence included): EASU edge-adaptive
+  upscale followed by RCAS sharpening (skipped when `vk_fsr_sharpness` is 0), fp32 shaders, any GPU, purely
+  spatial: no jitter, no history, no motion vectors, so no ghosting. Needs RESOLUTION below 100%.
+  Menu: Video options, page 1, "FSR UPSCALING" now cycles OFF -> FSR 1.0 -> LITE -> FULL.
+* **Anti-aliasing.** LITE and FULL are temporal, so at RESOLUTION 100% they run as anti-aliasing (the world is
+  rendered with a sub-pixel jitter at native size and accumulated). FSR 1.0 is spatial and does nothing at 100%.
+  On the synthetic test card FULL at native size changes the picture a lot (it is a reconstruction filter, not a
+  pure AA); LITE stays close to the native image. Judge on real content.
+* **Graphics API.** Vulkan is the default and the game never falls back to OpenGL ES by itself: the old "Auto"
+  (GLES2), the `vulkan-starting` guard and the silent fallback are gone. If Vulkan cannot start the game reports
+  an error. GLES2 only by explicit choice (launcher spinner, menu, or `graphics-api.txt` containing 2).
+* **AIM + camera.** The finger holding AIM can also turn the camera (RetroTouch `setLookWhileHoldingAction("aim")`).
