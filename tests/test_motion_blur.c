@@ -21,12 +21,20 @@ int main(void){
         last_intensity=p.intensity;last_samples=p.samples;
     }
     CHECK(p.scale==100&&p.quality==1);
+    /* LOW and MEDIUM take the rotation-only path (movement 0); HIGH and ULTRA add walking blur. */
+    nzp_mblur_resolve(&p,1,0,0,0,0,0,100);CHECK(p.movement==0.f);nzp_mblur_resolve(&p,2,0,0,0,0,0,100);CHECK(p.movement==0.f);
+    nzp_mblur_resolve(&p,3,0,0,0,0,0,100);CHECK(p.movement>0.f);nzp_mblur_resolve(&p,4,0,0,0,0,0,100);CHECK(p.movement>0.f);
     nzp_mblur_resolve(&p,1,0,0,0,0,0,100);CHECK(p.scale==50&&p.quality==0);
     /* CUSTOM uses the cvars and limits them. */
     nzp_mblur_resolve(&p,NZP_MBLUR_CUSTOM,0.6f,0.5f,0.25f,10,1,75);
     CHECK(p.enabled&&near(p.intensity,0.6f)&&near(p.camera,0.5f)&&near(p.movement,0.25f)&&p.samples==10&&p.quality==1&&p.scale==75);
     nzp_mblur_resolve(&p,NZP_MBLUR_CUSTOM,9.f,-1.f,3.f,99,7,13);
-    CHECK(p.intensity==1.f&&p.camera==0.f&&p.movement==1.f&&p.samples==NZP_MBLUR_MAX_SAMPLES&&p.quality==1&&p.scale==50);
+    CHECK(p.intensity==NZP_MBLUR_MAX_INTENSITY&&p.camera==0.f&&p.movement==1.f&&p.samples==NZP_MBLUR_MAX_SAMPLES&&p.quality==1&&p.scale==50);
+    /* Intensity goes up to 120%. */
+    nzp_mblur_resolve(&p,NZP_MBLUR_CUSTOM,1.2f,1.f,0.f,8,1,100);CHECK(near(p.intensity,1.2f));
+    nzp_mblur_resolve(&p,NZP_MBLUR_CUSTOM,1.21f,1.f,0.f,8,1,100);CHECK(near(p.intensity,1.2f));
+    CHECK(nzp_mblur_max_length_px(1.2f,2400)>nzp_mblur_max_length_px(1.f,2400));
+    CHECK(nzp_mblur_max_length_px(5.f,2400)==nzp_mblur_max_length_px(1.2f,2400));
     nzp_mblur_resolve(&p,NZP_MBLUR_CUSTOM,0.5f,1.f,1.f,-5,0,100);CHECK(p.samples==NZP_MBLUR_MIN_SAMPLES);
     /* Nothing to draw = off, instead of a pass that does nothing. */
     nzp_mblur_resolve(&p,NZP_MBLUR_CUSTOM,0.f,1.f,1.f,8,1,100);CHECK(!p.enabled);

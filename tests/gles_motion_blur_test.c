@@ -68,6 +68,9 @@ int main(void){
     nzp_mblur_params weak=ultra;weak.intensity=0.4f;frame(tex,0.3f,16.6f,&weak,&drew,pan_b);frame(tex,0.3f,16.6f,&ultra,&drew,pan_a);
     printf("intensity 0.4 -> sharpness %.1f, 1.0 -> %.1f (off %.1f)\n",sharp(pan_b,1),sharp(pan_a,1),h0);
     CHECK(sharp(pan_b,1)>sharp(pan_a,1)&&sharp(pan_b,1)<h0,"intensity scales the blur");
+    {nzp_mblur_params c;nzp_mblur_resolve(&c,NZP_MBLUR_CUSTOM,1.0f,1.f,0.f,12,1,100);nzp_mblur_params d2;nzp_mblur_resolve(&d2,NZP_MBLUR_CUSTOM,1.2f,1.f,0.f,12,1,100);
+     frame(tex,0.3f,16.6f,&c,&drew,pan_a);frame(tex,0.3f,16.6f,&d2,&drew,pan_b);
+     printf("intensity 100%% -> sharpness %.1f, 120%% -> %.1f\n",sharp(pan_a,1),sharp(pan_b,1));CHECK(sharp(pan_b,1)<sharp(pan_a,1),"120%% blurs more");}
     nzp_mblur_params few=ultra;few.samples=4;nzp_mblur_params many=ultra;many.samples=16;
     frame(tex,0.5f,16.6f,&few,&drew,pan_a);frame(tex,0.5f,16.6f,&many,&drew,pan_b);printf("samples 4 vs 16: mean difference %.2f\n",mad(pan_a,pan_b));CHECK(mad(pan_a,pan_b)>0.2,"samples change the result");
 

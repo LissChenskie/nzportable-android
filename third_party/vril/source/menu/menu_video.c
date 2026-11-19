@@ -167,14 +167,14 @@ static void Menu_Video_MBStep(cvar_t *cv,const float *choices,int count){
     Cvar_SetValue(cv->name,choices[next]);
     Menu_Video_Save();
 }
-static const float mb_intensity_choices[]={0.1f,0.2f,0.3f,0.4f,0.5f,0.6f,0.7f,0.8f,0.9f,1.0f};
+static const float mb_intensity_choices[]={0.1f,0.2f,0.3f,0.4f,0.5f,0.6f,0.7f,0.8f,0.9f,1.0f,1.1f,1.2f}; /* up to 120% */
 static const float mb_gain_choices[]={0.f,0.25f,0.5f,0.75f,1.f};
 static const float mb_samples_choices[]={4,6,8,10,12,14,16};
 static const float mb_quality_choices[]={0,1};
 static const float mb_scale_choices[]={50,75,100};
 static float mb_cur_intensity,mb_cur_camera,mb_cur_movement;static int mb_cur_samples,mb_cur_quality,mb_cur_scale;
 extern cvar_t mblur_intensity,mblur_camera,mblur_movement,mblur_samples,mblur_quality,mblur_scale;
-static void Menu_Video_MBIntensity(void){Menu_Video_MBStep(&mblur_intensity,mb_intensity_choices,10);}
+static void Menu_Video_MBIntensity(void){Menu_Video_MBStep(&mblur_intensity,mb_intensity_choices,12);}
 static void Menu_Video_MBCamera(void){Menu_Video_MBStep(&mblur_camera,mb_gain_choices,5);}
 static void Menu_Video_MBMovement(void){if(VID_MotionBlurMovementSupported())Menu_Video_MBStep(&mblur_movement,mb_gain_choices,5);}
 static void Menu_Video_MBSamples(void){Menu_Video_MBStep(&mblur_samples,mb_samples_choices,7);}
@@ -198,11 +198,11 @@ static void Menu_Video_MBPages(int page,int *i){
         else snprintf(android_mb_text[3],sizeof(android_mb_text[3]),off?"-":"%d%%",(int)(mb_cur_movement*100.f+0.5f));
         Menu_DrawButton(1,(*i)++,"MOTION BLUR","OFF / LOW / MEDIUM / HIGH / ULTRA / CUSTOM. Blurs the 3D view while the camera moves; the HUD stays sharp. Off costs nothing.",Menu_Video_MBMode);
         Menu_DrawOptionButton(1,Menu_Video_MBModeText());
-        Menu_DrawButton(2,(*i)++,"BLUR INTENSITY","How long the streaks are. Independent of the frame rate. Changing it switches a preset to CUSTOM.",Menu_Video_MBIntensity);
+        Menu_DrawButton(2,(*i)++,"BLUR INTENSITY","How long the streaks are, up to 120%. Independent of the frame rate. Changing it switches a preset to CUSTOM.",Menu_Video_MBIntensity);
         Menu_DrawOptionButton(2,android_mb_text[1]);
         Menu_DrawButton(3,(*i)++,"CAMERA BLUR","Blur when you turn the camera. 0 removes it.",Menu_Video_MBCamera);
         Menu_DrawOptionButton(3,android_mb_text[2]);
-        Menu_DrawButton(4,(*i)++,"MOVEMENT BLUR","Blur from walking and strafing (near things streak more). Vulkan only.",Menu_Video_MBMovement);
+        Menu_DrawButton(4,(*i)++,"MOVEMENT BLUR","Blur from walking and strafing (near things streak more). Vulkan only. Any value above 0% costs extra GPU time; 0% uses the faster rotation-only path.",Menu_Video_MBMovement);
         Menu_DrawOptionButton(4,android_mb_text[3]);
     } else {
         snprintf(android_mb_text[1],sizeof(android_mb_text[1]),off?"-":"UP TO %d",mb_cur_samples);

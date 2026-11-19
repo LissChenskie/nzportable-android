@@ -22,7 +22,7 @@ cvar_t vk_fsr_sharpness={"vk_fsr_sharpness","0.2",true};
  * only used by mode 5 (the menu copies the preset in when CUSTOM is chosen). Off by default: nothing changes for
  * existing installs. All are archived (config.cfg). */
 cvar_t mblur_mode={"mblur_mode","0",true},mblur_intensity={"mblur_intensity","0.5",true},mblur_camera={"mblur_camera","1",true},
-       mblur_movement={"mblur_movement","0.7",true},mblur_samples={"mblur_samples","8",true},mblur_quality={"mblur_quality","1",true},
+       mblur_movement={"mblur_movement","0",true},mblur_samples={"mblur_samples","8",true},mblur_quality={"mblur_quality","1",true},
        mblur_scale={"mblur_scale","75",true};
 /* FSR Lite variant: 0 auto (fast on ARM Mali), 1 fast, 2 quality. */
 cvar_t vk_lite_quality={"vk_lite_quality","0",true};
