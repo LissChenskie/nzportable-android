@@ -89,6 +89,11 @@ struct Layout {
     uint32_t stride[4]{};VkFormat format[4]{};
     bool operator<(const Layout &b)const{return std::memcmp(this,&b,sizeof(*this))<0;}
 };
+// A draw recorded for later: camera-locked draws are replayed over the blurred picture (see mb_fast).
+struct DeferredDraw {
+    Layout layout;VkBuffer buffers[4]{};VkDeviceSize offsets[4]{};unsigned mode{};nzp_vk_uniform uniform{};nzp_vk_raster raster{};
+    VkDescriptorSet texture{},lightmap{};VkBuffer index{};VkDeviceSize index_offset{};int count{};
+};
 struct PipelineKey {
     Layout layout;unsigned mode{},blend_src{},blend_dst{},depth_func{},cull_face{};
     int blend{},depth{},depth_write{},cull{},offset{},lightmapped{},alpha_test{},mrt{},jitter{};
@@ -109,10 +114,14 @@ std::map<unsigned,Texture> textures;std::map<unsigned,Mesh> meshes;
 Image lite_hist[2];
 // Motion blur (blur.vert/blur.frag): mb_want is what the app asked for, mb_active that the world pass now
 // also writes motion vectors and the final composite runs the blur. Needs independentBlend (second target mask).
-nzp_mblur_params mb_want{};bool mb_active=false,mb_supported=false,mb_low=false,mb_suppress=false;
+// Two ways to run it. mb_mv: the world pass also writes motion vectors (movement blur, or the vectors already exist because
+// Lite quality / Arm ASR need them). mb_fast: rotation only, NO vector target; camera-locked (weapon) draws are deferred and
+// replayed after the blur (mb_deferred), so the gather never sees them.
+nzp_mblur_params mb_want{};bool mb_active=false,mb_mv=false,mb_fast=false,mb_supported=false,mb_low=false,mb_suppress=false;
 int mb_low_w=0,mb_low_h=0;size_t mb_bytes=0;float mb_dt_ms=16.6f,mb_test_dt_ms=0.f;Uint64 mb_last_ticks=0;
 VkRenderPass mb_pass{};VkDescriptorSetLayout mb_set_layout{};VkPipelineLayout mb_pipeline_layout{};
-VkShaderModule mb_vert{},mb_frag{},mb_comp_frag{};VkPipeline mb_full_pipeline{},mb_low_pipeline{},mb_comp_pipeline{};
+std::vector<DeferredDraw> mb_deferred;
+VkShaderModule mb_vert{},mb_frag{},mb_comp_frag{};VkPipeline mb_full_pipeline[2]{},mb_low_pipeline[2]{},mb_comp_pipeline{}; // [0] rotation only, [1] with vectors
 std::array<Frame,Frames> frames;
 std::vector<SwapImage> images;
 SDL_Window *window{};std::string cache_path;
@@ -302,7 +311,7 @@ void destroy_targets(){
     for(int k=0;k<2;k++){if(lite_fb[k])vkDestroyFramebuffer(device,lite_fb[k],nullptr);lite_fb[k]={};
         if(lite_ui_set[k])vkFreeDescriptorSets(device,descriptors,1,&lite_ui_set[k]);lite_ui_set[k]={};destroy(lite_hist[k]);lite_state[k]=0;}
     if(fsr1_rcas_set)vkFreeDescriptorSets(device,descriptors,1,&fsr1_rcas_set);fsr1_rcas_set={};
-    lite_active=false;fsr1_active=false;lite_history_valid=false;mb_active=false;mb_low=false;mb_bytes=0;
+    lite_active=false;fsr1_active=false;lite_history_valid=false;mb_active=mb_mv=mb_fast=false;mb_low=false;mb_bytes=0;
     fsr_active=false; // the FSR context itself survives swapchain rebuilds (it is expensive to create)
     for(auto &i:images){if(i.fb)vkDestroyFramebuffer(device,i.fb,nullptr);destroy(i.depth);
         if(i.view)vkDestroyImageView(device,i.view,nullptr);if(i.complete)vkDestroySemaphore(device,i.complete,nullptr);}
@@ -447,10 +456,13 @@ bool recreate(int vsync,int percent){
     fsr1_active=percent<100&&upscaler_mode==3;
     // Motion blur needs the world pass to write motion vectors (also in the offscreen benchmark, so it can be measured).
     mb_active=mb_want.enabled&&mb_supported;
-    if(mb_active&&!mrt_prewarmed){prewarm_pipelines(true,false);mrt_prewarmed=true;}
+    const bool vectors_exist=fsr_active||(lite_active&&!lite_fast); // the upscaler already pays for them
+    mb_fast=mb_active&&mb_want.movement<=0.001f&&!vectors_exist;
+    mb_mv=mb_active&&!mb_fast;
+    if(mb_mv&&!mrt_prewarmed){prewarm_pipelines(true,false);mrt_prewarmed=true;}
     offscreen=percent<100||fsr_active||lite_active||fsr1_active||mb_active;
     if(offscreen)for(auto &f:frames){
-        const VkFormat world_format=(fsr_active||(lite_active&&!lite_fast)||mb_active)?FsrColorFormat:color_format;
+        const VkFormat world_format=(fsr_active||(lite_active&&!lite_fast)||mb_mv)?FsrColorFormat:color_format;
         f.world=make_image(world_width,world_height,1,world_format,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
         if(fsr_active){
             f.world_depth=make_image(world_width,world_height,1,FsrDepthFormat,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
@@ -458,7 +470,7 @@ bool recreate(int vsync,int percent){
             f.fsr_out=make_image(width,height,1,FsrColorFormat,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
             f.world_fb=framebuffer3(f.world.view,f.world_mv.view,f.world_depth.view,world_width,world_height,fsr_pass);
             f.world_set=descriptor(texture_layout);write_image_set(f.world_set,f.fsr_out.view,upscale_sampler);
-        }else if((lite_active&&!lite_fast)||mb_active){
+        }else if((lite_active&&!lite_fast)||mb_mv){
             // Colour + motion vectors; depth never leaves tile memory (neither Lite nor the blur reads it).
             f.world_depth=make_image(world_width,world_height,1,FsrDepthFormat,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
             f.world_mv=make_image(world_width,world_height,1,FsrMotionFormat,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
@@ -485,7 +497,7 @@ bool recreate(int vsync,int percent){
     mb_bytes=0;
     if(mb_active){
         mb_low=mb_want.scale<100;mb_low_w=std::max(1,width*mb_want.scale/100);mb_low_h=std::max(1,height*mb_want.scale/100);
-        const bool own_mv=!fsr_active&&!(lite_active&&!lite_fast); // otherwise the upscaler already needed the vectors
+        const bool own_mv=mb_mv&&!fsr_active&&!(lite_active&&!lite_fast); // otherwise the upscaler already needed the vectors
         for(auto &f:frames){
             f.mb_gather_set=descriptor(mb_set_layout);
             if(own_mv)mb_bytes+=size_t(world_width)*world_height*4;
@@ -497,7 +509,7 @@ bool recreate(int vsync,int percent){
             }
         }
         mb_suppress=true;mb_last_ticks=0; // first frame after a rebuild has no valid history
-        SDL_Log("NZP_VULKAN motion_blur on scale=%d%% samples<=%d quality=%d extra_targets=%.1f MiB",mb_want.scale,mb_want.samples,mb_want.quality,mb_bytes/1048576.0);
+        SDL_Log("NZP_VULKAN motion_blur on path=%s scale=%d%% samples<=%d quality=%d extra_targets=%.1f MiB",mb_fast?"rotation-only":"vectors",mb_want.scale,mb_want.samples,mb_want.quality,mb_bytes/1048576.0);
     }
     benchmark=requested_benchmark;
     if(benchmark)for(auto &f:frames){
@@ -684,18 +696,22 @@ void create_mb_objects(){
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};cb.attachmentCount=1;cb.pAttachments=&att;
     VkDynamicState dyn[]={VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dy{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};dy.dynamicStateCount=2;dy.pDynamicStates=dyn;
-    VkBool32 lowres=VK_FALSE;VkSpecializationMapEntry entry{0,0,sizeof(VkBool32)};VkSpecializationInfo spec{1,&entry,sizeof(lowres),&lowres};
+    VkBool32 spec_data[2]={VK_FALSE,VK_TRUE}; // LOWRES, USE_MV
+    VkSpecializationMapEntry entries[2]={{0,0,sizeof(VkBool32)},{1,sizeof(VkBool32),sizeof(VkBool32)}};VkSpecializationInfo spec{2,entries,sizeof(spec_data),spec_data};
     VkPipelineShaderStageCreateInfo stages[2]{};
     for(int k=0;k<2;k++){stages[k]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};stages[k].stage=k?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;stages[k].pName="main";}
     stages[0].module=mb_vert;
     VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};ci.stageCount=2;ci.pStages=stages;ci.pVertexInputState=&vi;ci.pInputAssemblyState=&ia;
     ci.pViewportState=&vp;ci.pRasterizationState=&rs;ci.pMultisampleState=&ms;ci.pColorBlendState=&cb;ci.pDynamicState=&dy;ci.layout=mb_pipeline_layout;
     // 1) blur folded into the final composite (scale 100): swapchain pass, no extra render pass at all
+    // Each of 1) and 2) exists twice: [0] rotation only (no vector fetches at all), [1] with vectors.
     stages[1].module=mb_frag;stages[1].pSpecializationInfo=&spec;ci.pDepthStencilState=&ds;ci.renderPass=native_pass;
-    VK_CHECK(vkCreateGraphicsPipelines(device,pipeline_cache,1,&ci,nullptr,&mb_full_pipeline));
+    for(int v=0;v<2;v++){spec_data[0]=VK_FALSE;spec_data[1]=v?VK_TRUE:VK_FALSE;
+        VK_CHECK(vkCreateGraphicsPipelines(device,pipeline_cache,1,&ci,nullptr,&mb_full_pipeline[v]));}
     // 2) reduced-resolution gather into mb_image (blur in rgb, its weight in alpha)
-    lowres=VK_TRUE;ci.pDepthStencilState=nullptr;ci.renderPass=mb_pass;
-    VK_CHECK(vkCreateGraphicsPipelines(device,pipeline_cache,1,&ci,nullptr,&mb_low_pipeline));
+    ci.pDepthStencilState=nullptr;ci.renderPass=mb_pass;
+    for(int v=0;v<2;v++){spec_data[0]=VK_TRUE;spec_data[1]=v?VK_TRUE:VK_FALSE;
+        VK_CHECK(vkCreateGraphicsPipelines(device,pipeline_cache,1,&ci,nullptr,&mb_low_pipeline[v]));}
     // 3) composite of the sharp image and the reduced-resolution blur
     stages[1].module=mb_comp_frag;stages[1].pSpecializationInfo=nullptr;ci.pDepthStencilState=&ds;ci.renderPass=native_pass;
     VK_CHECK(vkCreateGraphicsPipelines(device,pipeline_cache,1,&ci,nullptr,&mb_comp_pipeline));
@@ -730,10 +746,10 @@ void mb_set_viewport(VkCommandBuffer cb,int w,int h){
 // scale < 100: gather at reduced resolution into mb_image, between the world/upscaler pass and the swapchain pass.
 void mb_record_low(){
     auto &f=frame();auto cb=f.draw;
-    write_mb_set(f.mb_gather_set,mb_source_view(),f.world_mv.view);
+    const VkImageView source=mb_source_view();write_mb_set(f.mb_gather_set,source,mb_mv?f.world_mv.view:source); // rotation only: second binding unused
     VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};bi.renderPass=mb_pass;bi.framebuffer=f.mb_fb;
     bi.renderArea.extent={(unsigned)mb_low_w,(unsigned)mb_low_h};vkCmdBeginRenderPass(cb,&bi,VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,mb_low_pipeline);
+    vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,mb_low_pipeline[mb_mv?1:0]);
     mb_set_viewport(cb,mb_low_w,mb_low_h);
     vkCmdBindDescriptorSets(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,mb_pipeline_layout,0,1,&f.mb_gather_set,0,nullptr);
     float pc[32];mb_constants(pc,false);
@@ -746,8 +762,8 @@ void mb_draw_composite(){
     const VkImageView source=mb_source_view();
     VkDescriptorSet set;
     if(mb_low){write_mb_set(f.mb_comp_set,source,f.mb_image.view);set=f.mb_comp_set;}
-    else{write_mb_set(f.mb_gather_set,source,f.world_mv.view);set=f.mb_gather_set;}
-    vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,mb_low?mb_comp_pipeline:mb_full_pipeline);
+    else{write_mb_set(f.mb_gather_set,source,mb_mv?f.world_mv.view:source);set=f.mb_gather_set;}
+    vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,mb_low?mb_comp_pipeline:mb_full_pipeline[mb_mv?1:0]);
     mb_set_viewport(cb,phys_w,phys_h); // the vertex shader applies the pre-rotation, so the viewport is the whole surface
     vkCmdBindDescriptorSets(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,mb_pipeline_layout,0,1,&set,0,nullptr);
     float pc[32];mb_constants(pc,true);
@@ -757,6 +773,38 @@ void mb_draw_composite(){
     f.draw_state=DrawState{};
     struct {float rot[4];float jitter_size[4];} hud{};nzp_rot_matrix(rotation,hud.rot);
     vkCmdPushConstants(cb,pipeline_layout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(hud),&hud);
+}
+
+// Rotation-only path: is every pixel's streak below the 0.75 px threshold of the shader? Then the blur is skipped for the frame
+// (still picture, no pass, no fetches; only the offscreen copy remains). The same formula as blur.vert/blur.frag at the
+// corners and edge midpoints, where a rotation moves the picture the most.
+bool mb_fast_idle(){
+    if(mb_suppress||reprojection_serial!=frame_serial)return true; // no history, or no camera reported: nothing to blur
+    const float scale=nzp_mblur_shutter_scale(mb_want.intensity,mb_dt_ms)*mb_want.camera;
+    const float *r=reprojection;float worst=0.f;
+    for(int k=0;k<8;k++){
+        const float nx=k==0||k==3||k==4?-1.f:k==1||k==2||k==5?1.f:0.f,ny=k==0||k==1||k==6?-1.f:k==2||k==3||k==7?1.f:0.f;
+        const float qx=r[0]*nx+r[1]*ny+r[2],qy=r[3]*nx+r[4]*ny+r[5],qz=r[6]*nx+r[7]*ny+r[8];
+        if(qz<=1e-4f)continue;
+        const float dx=0.5f*(qx/qz-nx)*scale*width,dy=0.5f*(qy/qz-ny)*scale*height;
+        worst=std::max(worst,std::sqrt(dx*dx+dy*dy));
+    }
+    return worst<0.75f;
+}
+void bind_draw(const Layout &layout,unsigned mode,const nzp_vk_uniform &uniform_in,const nzp_vk_raster &state,VkDescriptorSet texture,VkDescriptorSet lightmap); // defined below (the default of the last argument is given there)
+void emit_draw(const DeferredDraw &d){
+    auto &f=frame();
+    bind_draw(d.layout,d.mode,d.uniform,d.raster,d.texture,d.lightmap);
+    vkCmdBindVertexBuffers(f.draw,0,4,d.buffers,d.offsets);
+    if(d.index){vkCmdBindIndexBuffer(f.draw,d.index,d.index_offset,VK_INDEX_TYPE_UINT16);vkCmdDrawIndexed(f.draw,d.count,1,0,0,0);}
+    else vkCmdDraw(f.draw,d.count,1,0,0);
+}
+// Camera-locked draws (the weapon) skip the world image in the rotation-only path and are drawn here, in the swapchain pass
+// right after the blur, at display resolution: they are never blurred and never leak into the blur.
+bool mb_defer(const nzp_vk_uniform &u){return mb_fast&&!ui&&offscreen&&u.motion[0]>0.5f;}
+void mb_replay_deferred(){
+    for(auto &d:mb_deferred)emit_draw(d);
+    mb_deferred.clear();
 }
 // AMD FSR 1.0 (spatial): EASU renders the world to display resolution, RCAS (if sharpening is on) sharpens it.
 // Both write the shared history images, which only ping-pong here as intermediate targets.
@@ -891,7 +939,7 @@ void begin_pass(bool native){
     // explicitly invalidate here to also cover the offscreen-to-HUD pass.
     frame().draw_state=DrawState{};
     pass_has_draw=false;std::memcpy(pass_clear_color,clear_color,16);pass_clear_depth=clear_depth;
-    const bool motion_pass=!native&&(fsr_active||(lite_active&&!lite_fast)||mb_active);
+    const bool motion_pass=!native&&(fsr_active||(lite_active&&!lite_fast)||mb_mv);
     VkClearValue values[3]{};std::memcpy(values[0].color.float32,clear_color,16);
     if(motion_pass)values[2].depthStencil.depth=clear_depth;else values[1].depthStencil.depth=clear_depth;
     VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -909,8 +957,8 @@ void begin_pass(bool native){
 void bind_draw(const Layout &layout,unsigned mode,const nzp_vk_uniform &uniform_in,const nzp_vk_raster &state,VkDescriptorSet texture,VkDescriptorSet lightmap=VK_NULL_HANDLE){
     pass_has_draw=true;
     auto &f=frame();auto &cached=f.draw_state;auto cb=f.draw;
-    const bool motion_draw=(fsr_active||(lite_active&&!lite_fast)||mb_active)&&!ui&&offscreen;
-    const bool jitter_draw=lite_active&&lite_fast&&!mb_active&&!ui&&offscreen; // motion draws already carry the jitter
+    const bool motion_draw=(fsr_active||(lite_active&&!lite_fast)||mb_mv)&&!ui&&offscreen;
+    const bool jitter_draw=lite_active&&lite_fast&&!mb_mv&&!ui&&offscreen; // motion draws already carry the jitter
     // Callers that do not track history (tests, UI) leave prev_mvp zero: treat as "no motion".
     nzp_vk_uniform with_history;const nzp_vk_uniform *uniform_ptr=&uniform_in;
     if(motion_draw){static const float zero[16]{};
@@ -1176,16 +1224,18 @@ unsigned long long NZP_VK_FrameSerial(void){return frame_serial;}
 void NZP_VK_SetMotionBlur(const nzp_mblur_params *p){
     nzp_mblur_params n{};
     if(p&&p->enabled){
-        n=*p;n.intensity=nzp_mblur_clampf(n.intensity,0.f,1.f);n.camera=nzp_mblur_clampf(n.camera,0.f,1.f);n.movement=nzp_mblur_clampf(n.movement,0.f,1.f);
+        n=*p;n.intensity=nzp_mblur_clampf(n.intensity,0.f,NZP_MBLUR_MAX_INTENSITY);n.camera=nzp_mblur_clampf(n.camera,0.f,1.f);n.movement=nzp_mblur_clampf(n.movement,0.f,1.f);
         n.samples=std::min(std::max(n.samples,NZP_MBLUR_MIN_SAMPLES),NZP_MBLUR_MAX_SAMPLES);n.quality=n.quality>0?1:0;n.scale=nzp_mblur_snap_scale(n.scale);
     }
     // Only turning it on/off or changing the pass resolution touches the targets; everything else applies on the next frame.
-    const bool structural=bool(n.enabled)!=bool(mb_want.enabled)||(n.enabled&&n.scale!=mb_want.scale);
+    // The path (rotation only / vectors) follows Movement Blur being 0 or not and needs different targets.
+    const bool structural=bool(n.enabled)!=bool(mb_want.enabled)||(n.enabled&&(n.scale!=mb_want.scale||(n.movement>0.001f)!=(mb_want.movement>0.001f)));
     mb_want=n;
     if(structural&&active)resize_pending=true;
 }
 int NZP_VK_MotionBlurState(void){return !mb_want.enabled?0:!mb_supported?2:mb_active?1:3;}
 size_t NZP_VK_MotionBlurBytes(void){return mb_bytes;}
+int NZP_VK_MotionBlurPath(void){return !mb_active?0:mb_fast?1:2;}
 void NZP_VK_SetMotionBlurTestFrameTime(float ms){mb_test_dt_ms=ms;}
 
 void NZP_VK_SetBenchmark(int enabled){if(requested_benchmark!=bool(enabled)){requested_benchmark=enabled;resize_pending=true;}}
@@ -1229,7 +1279,7 @@ int NZP_VK_BeginFrame(int vsync,int percent){
     VK_CHECK(vkResetCommandPool(device,f.pool,0));VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};bi.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(f.upload,&bi));VK_CHECK(vkBeginCommandBuffer(f.draw,&bi));
     if(f.queries){vkCmdResetQueryPool(f.draw,f.queries,0,2);vkCmdWriteTimestamp(f.draw,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,f.queries,0);}
-    ++frame_serial;
+    ++frame_serial;mb_deferred.clear();
     {const Uint64 now=SDL_GetPerformanceCounter();
      if(mb_last_ticks)mb_dt_ms=float(1000.0*double(now-mb_last_ticks)/double(SDL_GetPerformanceFrequency()));
      mb_last_ticks=now;if(mb_test_dt_ms>0.f)mb_dt_ms=mb_test_dt_ms;}
@@ -1270,9 +1320,10 @@ void record_fsr(){
 void NZP_VK_BeginUI(){
     if(!recording||ui)return;
     if(offscreen){vkCmdEndRenderPass(frame().draw);in_pass=false;if(fsr_active)record_fsr();else if(lite_active)record_lite();else if(fsr1_active)record_fsr1();
-        if(mb_active&&mb_low)mb_record_low();
+        const bool blur_now=mb_active&&!(mb_fast&&mb_fast_idle());
+        if(blur_now&&mb_low)mb_record_low();
         ui=true;begin_pass(true);
-        if(mb_active){mb_draw_composite();mb_suppress=false;}else{
+        if(blur_now)mb_draw_composite();else{
         nzp_vk_uniform u{};for(int i=0;i<4;i++)u.mvp[i*5]=u.mv[i*5]=u.tm[i*5]=1;
         u.params[0]=u.params[1]=1;u.params[2]=-1;
         nzp_vk_raster s{};s.blend_src=1;s.blend_dst=0;s.depth_func=0x203;s.depth_far=1;s.viewport[2]=width;s.viewport[3]=height;
@@ -1285,6 +1336,7 @@ void NZP_VK_BeginUI(){
         size_t offset=allocate(sizeof(quad),4);std::memcpy((char*)frame().arena.mapped+offset,quad,sizeof(quad));
         VkBuffer buffers[]={frame().arena.handle,frame().arena.handle,frame().arena.handle,frame().arena.handle};VkDeviceSize offsets[]={offset,offset+12,offset+20,offset+12};
         bind_draw(interleaved(),4,u,s,(lite_active||fsr1_active)?lite_ui_current:frame().world_set);vkCmdBindVertexBuffers(frame().draw,0,4,buffers,offsets);vkCmdDraw(frame().draw,6,1,0,0);}
+        mb_replay_deferred();mb_suppress=false;
     }else ui=true;
 }
 void NZP_VK_EndFrame(){
@@ -1321,9 +1373,10 @@ void NZP_VK_Draw(const nzp_vk_vertex *v,int count,unsigned mode,const nzp_vk_uni
     if(!recording||!count)return;auto gpu=material(tex);
     if(frame().textures.empty() || frame().textures.back()!=gpu)frame().textures.push_back(gpu);
     size_t offset=allocate(count*sizeof(*v),4);std::memcpy((char*)frame().arena.mapped+offset,v,count*sizeof(*v));
-    bind_draw(interleaved(),mode,*u,*s,gpu->descriptor);
-    VkBuffer buffers[]={frame().arena.handle,frame().arena.handle,frame().arena.handle,frame().arena.handle};VkDeviceSize offsets[]={offset,offset+12,offset+20,offset+12};
-    vkCmdBindVertexBuffers(frame().draw,0,4,buffers,offsets);vkCmdDraw(frame().draw,count,1,0,0);
+    DeferredDraw d{};d.layout=interleaved();d.mode=mode;d.uniform=*u;d.raster=*s;d.texture=gpu->descriptor;d.count=count;
+    for(int i=0;i<4;i++)d.buffers[i]=frame().arena.handle;
+    const VkDeviceSize offsets[4]={offset,offset+12,offset+20,offset+12};std::memcpy(d.offsets,offsets,sizeof(offsets));
+    if(mb_defer(*u))mb_deferred.push_back(d);else emit_draw(d);
 }
 static int draw_buffers(const nzp_vk_array *a,unsigned ib,size_t io,int count,unsigned mode,const nzp_vk_uniform *u,const nzp_vk_raster *s,unsigned tex,const float *uv,const unsigned char *color,const nzp_vk_array *lm,unsigned lmtex){
     if(!recording)return 1;Layout layout{};VkBuffer buffers[4];VkDeviceSize offsets[4];
@@ -1347,11 +1400,10 @@ static int draw_buffers(const nzp_vk_array *a,unsigned ib,size_t io,int count,un
         lightmap=material(lmtex);frame().textures.push_back(lightmap);
     }
     auto gpu=material(tex);if(frame().textures.empty() || frame().textures.back()!=gpu)frame().textures.push_back(gpu);nzp_vk_uniform uniforms=*u;uniforms.params[3]=lm?1.f:0.f;
-    bind_draw(layout,mode,uniforms,*s,gpu->descriptor,lightmap?lightmap->descriptor:VK_NULL_HANDLE);
-    vkCmdBindVertexBuffers(frame().draw,0,4,buffers,offsets);
-    if(ib){auto it=meshes.find(ib);if(it==meshes.end()||!it->second.gpu)return 0;frame().meshes.push_back(it->second.gpu);
-        vkCmdBindIndexBuffer(frame().draw,it->second.gpu->handle,io,VK_INDEX_TYPE_UINT16);vkCmdDrawIndexed(frame().draw,count,1,0,0,0);
-    }else vkCmdDraw(frame().draw,count,1,0,0);
+    DeferredDraw d{};d.layout=layout;d.mode=mode;d.uniform=uniforms;d.raster=*s;d.texture=gpu->descriptor;d.lightmap=lightmap?lightmap->descriptor:VK_NULL_HANDLE;d.count=count;
+    std::memcpy(d.buffers,buffers,sizeof(buffers));std::memcpy(d.offsets,offsets,sizeof(offsets));
+    if(ib){auto it=meshes.find(ib);if(it==meshes.end()||!it->second.gpu)return 0;frame().meshes.push_back(it->second.gpu);d.index=it->second.gpu->handle;d.index_offset=io;}
+    if(mb_defer(*u))mb_deferred.push_back(d);else emit_draw(d); // meshes/textures stay referenced by the frame until it is done
     return 1;
 }
 int NZP_VK_DrawBuffers(const nzp_vk_array *a,unsigned ib,size_t offset,int count,unsigned mode,const nzp_vk_uniform *u,const nzp_vk_raster *s,unsigned tex,const float *uv,const unsigned char *color){
@@ -1453,7 +1505,7 @@ void NZP_VK_Shutdown(){
         if(lite_fast_vert)vkDestroyShaderModule(device,lite_fast_vert,nullptr);if(lite_fast_frag)vkDestroyShaderModule(device,lite_fast_frag,nullptr);if(lite_pipeline_layout)vkDestroyPipelineLayout(device,lite_pipeline_layout,nullptr);
         if(lite_set_layout)vkDestroyDescriptorSetLayout(device,lite_set_layout,nullptr);
         if(lite_vert)vkDestroyShaderModule(device,lite_vert,nullptr);if(lite_frag)vkDestroyShaderModule(device,lite_frag,nullptr);
-        if(mb_full_pipeline)vkDestroyPipeline(device,mb_full_pipeline,nullptr);if(mb_low_pipeline)vkDestroyPipeline(device,mb_low_pipeline,nullptr);if(mb_comp_pipeline)vkDestroyPipeline(device,mb_comp_pipeline,nullptr);
+        for(int v=0;v<2;v++){if(mb_full_pipeline[v])vkDestroyPipeline(device,mb_full_pipeline[v],nullptr);if(mb_low_pipeline[v])vkDestroyPipeline(device,mb_low_pipeline[v],nullptr);}if(mb_comp_pipeline)vkDestroyPipeline(device,mb_comp_pipeline,nullptr);
         if(mb_vert)vkDestroyShaderModule(device,mb_vert,nullptr);if(mb_frag)vkDestroyShaderModule(device,mb_frag,nullptr);if(mb_comp_frag)vkDestroyShaderModule(device,mb_comp_frag,nullptr);
         if(mb_pipeline_layout)vkDestroyPipelineLayout(device,mb_pipeline_layout,nullptr);if(mb_set_layout)vkDestroyDescriptorSetLayout(device,mb_set_layout,nullptr);if(mb_pass)vkDestroyRenderPass(device,mb_pass,nullptr);
         if(pipeline_cache)vkDestroyPipelineCache(device,pipeline_cache,nullptr);if(pipeline_layout)vkDestroyPipelineLayout(device,pipeline_layout,nullptr);
@@ -1463,7 +1515,7 @@ void NZP_VK_Shutdown(){
     if(debug)vkDestroyDebugUtilsMessengerEXT(instance,debug,nullptr);if(surface)vkDestroySurfaceKHR(instance,surface,nullptr);
     if(instance)vkDestroyInstance(instance,nullptr);
     instance={};physical={};device={};surface={};allocator={};debug={};swapchain={};
-    descriptors={};uniform_layout={};texture_layout={};pipeline_layout={};pipeline_cache={};vertex_shader={};fragment_shader={};fragment_shader_mrt={};native_pass={};world_pass={};fsr_pass={};lite_pass={};resolve_pass={};lite_vert={};lite_frag={};lite_set_layout={};lite_pipeline_layout={};lite_pipeline={};lite_fast_pipeline={};easu_pipeline={};rcas_pipeline={};easu_frag={};rcas_frag={};offscreen=fsr1_active=false;lite_fast_vert={};lite_fast_frag={};nearest_sampler={};mb_pass={};mb_set_layout={};mb_pipeline_layout={};mb_vert=mb_frag=mb_comp_frag={};mb_full_pipeline=mb_low_pipeline=mb_comp_pipeline={};mb_active=mb_supported=mb_low=false;mb_suppress=false;mb_last_ticks=0;mb_bytes=0;lite_fast=is_mali=jitter_prewarmed=false;lite_active=lite_failed=lite_supported=false;upscaler_mode=0;upscale_sampler={};fsr_active=fsr_failed=fsr_supported=mrt_prewarmed=false;fsr_reset=true;last_frame_ticks=0;
+    descriptors={};uniform_layout={};texture_layout={};pipeline_layout={};pipeline_cache={};vertex_shader={};fragment_shader={};fragment_shader_mrt={};native_pass={};world_pass={};fsr_pass={};lite_pass={};resolve_pass={};lite_vert={};lite_frag={};lite_set_layout={};lite_pipeline_layout={};lite_pipeline={};lite_fast_pipeline={};easu_pipeline={};rcas_pipeline={};easu_frag={};rcas_frag={};offscreen=fsr1_active=false;lite_fast_vert={};lite_fast_frag={};nearest_sampler={};mb_pass={};mb_set_layout={};mb_pipeline_layout={};mb_vert=mb_frag=mb_comp_frag={};mb_full_pipeline[0]=mb_full_pipeline[1]=mb_low_pipeline[0]=mb_low_pipeline[1]=mb_comp_pipeline={};mb_active=mb_mv=mb_fast=mb_supported=mb_low=false;mb_suppress=false;mb_last_ticks=0;mb_bytes=0;lite_fast=is_mali=jitter_prewarmed=false;lite_active=lite_failed=lite_supported=false;upscaler_mode=0;upscale_sampler={};fsr_active=fsr_failed=fsr_supported=mrt_prewarmed=false;fsr_reset=true;last_frame_ticks=0;
     last_command_stats={};last_frame_timings={};
     frame_index=0;recording=in_pass=ui=resize_pending=false;benchmark=requested_benchmark=surface_lost=false;completed_frames=0;current_vsync=-1;width=height=phys_w=phys_h=drawable_w=drawable_h=rotation=sc_rotation=0;gpu_ms=-1;color_format=depth_format=VK_FORMAT_UNDEFINED;
     SDL_Vulkan_UnloadLibrary();

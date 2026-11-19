@@ -21,15 +21,19 @@ int main(){
     NZP_VK_Texture(1,0,0,0,256,256,0x1908,0x1401,tex.data(),1,4);
     NZP_VK_TextureFilter(1,0x2801,0x2601);NZP_VK_TextureFilter(1,0x2800,0x2601);
     nzp_vk_raster s{};s.blend_src=1;s.blend_dst=0;s.depth_func=0x203;s.depth_far=1;s.depth_write=1;s.viewport[2]=W;s.viewport[3]=H;
-    const char *names[]={"OFF","LOW","MEDIUM","HIGH","ULTRA"};
-    printf("%-7s %9s %9s %12s %s\n","preset","wall ms","cpu ms","extra MiB","(960x540, software Vulkan, camera panning fast)\n");
-    for(int mode=0;mode<5;mode++){
-        nzp_mblur_params p;nzp_mblur_resolve(&p,mode,0,0,0,0,0,100);NZP_VK_SetMotionBlur(&p);NZP_VK_SetMotionBlurTestFrameTime(16.6f);NZP_VK_ResetHistory();
+    // The five presets, then the same LOW/MEDIUM settings WITH the vector path (what they were before the rotation-only path existed).
+    struct Row{const char *name;int mode;float i,c,m;int n,q,sc;float step;};
+    const Row rows[]={{"OFF",0,0,0,0,0,0,100,0.1f},{"LOW",1,0,0,0,0,0,100,0.1f},{"MEDIUM",2,0,0,0,0,0,100,0.1f},{"HIGH",3,0,0,0,0,0,100,0.1f},{"ULTRA",4,0,0,0,0,0,100,0.1f},
+        {"LOW +vec",5,0.30f,1.f,0.5f,6,0,50,0.1f},{"MEDIUM +vec",5,0.50f,1.f,0.7f,8,1,50,0.1f},
+        {"OFF still",0,0,0,0,0,0,100,0.f},{"MEDIUM still",2,0,0,0,0,0,100,0.f},{"MEDIUM+vec still",5,0.50f,1.f,0.7f,8,1,50,0.f}};
+    printf("%-17s %9s %9s %12s %s\n","setting","wall ms","cpu ms","extra MiB","path (960x540, software Vulkan, camera panning fast)");
+    for(const Row &row:rows){
+        nzp_mblur_params p;nzp_mblur_resolve(&p,row.mode,row.i,row.c,row.m,row.n,row.q,row.sc);NZP_VK_SetMotionBlur(&p);NZP_VK_SetMotionBlurTestFrameTime(16.6f);NZP_VK_ResetHistory();
         std::vector<double> wall,cpu;
         for(int t=0;t<46;t++){
             const double w0=wall_ms(),c0=cpu_ms();
             if(!NZP_VK_BeginFrame(0,100))return 1;NZP_VK_SetCamera(4,4096,1.2f);
-            const float step=0.1f;auto u=uniform(t*step);auto pu=uniform(t*step-step);std::copy(pu.mvp,pu.mvp+16,u.prev_mvp);
+            const float step=row.step;auto u=uniform(t*step);auto pu=uniform(t*step-step);std::copy(pu.mvp,pu.mvp+16,u.prev_mvp);
             const float h[9]={1,0,-step,0,1,0,0,0,1};NZP_VK_SetReprojection(h);
             const unsigned char w4[4]={255,255,255,255};const float a=-3.f,b=3.f;
             nzp_vk_vertex v[]={{{a,a,0},{0,0},{w4[0],w4[1],w4[2],w4[3]}},{{b,a,0},{1,0},{w4[0],w4[1],w4[2],w4[3]}},{{b,b,0},{1,1},{w4[0],w4[1],w4[2],w4[3]}},{{a,a,0},{0,0},{w4[0],w4[1],w4[2],w4[3]}},{{b,b,0},{1,1},{w4[0],w4[1],w4[2],w4[3]}},{{a,b,0},{0,1},{w4[0],w4[1],w4[2],w4[3]}}};
@@ -38,7 +42,7 @@ int main(){
             if(t>=6){wall.push_back(wall_ms()-w0);cpu.push_back(cpu_ms()-c0);}
         }
         std::sort(wall.begin(),wall.end());std::sort(cpu.begin(),cpu.end());
-        printf("%-7s %9.2f %9.2f %12.2f\n",names[mode],wall[wall.size()/2],cpu[cpu.size()/2],NZP_VK_MotionBlurBytes()/1048576.0);
+        printf("%-17s %9.2f %9.2f %12.2f   %s\n",row.name,wall[wall.size()/2],cpu[cpu.size()/2],NZP_VK_MotionBlurBytes()/1048576.0,NZP_VK_MotionBlurPath()==1?"rotation only":NZP_VK_MotionBlurPath()==2?"vectors":"-");
     }
     NZP_VK_Shutdown();SDL_DestroyWindow(win);SDL_Quit();return 0;
 }

@@ -75,6 +75,7 @@ void NZP_VK_SetFSRSharpness(float value);
 void NZP_VK_SetMotionBlur(const nzp_mblur_params *params);
 int NZP_VK_MotionBlurState(void);
 size_t NZP_VK_MotionBlurBytes(void); /* extra render-target memory the effect currently uses */
+int NZP_VK_MotionBlurPath(void);      /* 0 off, 1 rotation only (no vector target, faster), 2 with motion vectors */
 /* Test hook: use this frame interval (ms) instead of the measured one; 0 = measure. */
 void NZP_VK_SetMotionBlurTestFrameTime(float ms);
 unsigned long long NZP_VK_FrameSerial(void);

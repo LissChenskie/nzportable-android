@@ -11,12 +11,13 @@
 #define NZP_MBLUR_CUSTOM 5
 #define NZP_MBLUR_MIN_SAMPLES 4
 #define NZP_MBLUR_MAX_SAMPLES 16   /* the shader loops are bounded by this */
+#define NZP_MBLUR_MAX_INTENSITY 1.2f /* 120%: shutter open for 1/50 s */
 
 typedef struct {
     int enabled;       /* 0: no motion-vector target, no pass, no cost at all */
-    float intensity;   /* 0..1: shutter time as a fraction of 1/60 s */
+    float intensity;   /* 0..1.2: shutter time as a fraction of 1/60 s */
     float camera;      /* 0..1: gain of the rotation part of the camera motion */
-    float movement;    /* 0..1: gain of the translation (parallax) part */
+    float movement;    /* 0..1: gain of the translation (parallax) part. 0 = the faster rotation-only path */
     int samples;       /* upper bound of taps per pixel, 4..16 (fewer are used on slow pixels) */
     int quality;       /* 0 fast: velocity of the pixel only; 1 high: every tap is checked against it */
     int scale;         /* 100, 75 or 50: resolution of the blur pass relative to the display */
@@ -32,15 +33,15 @@ static inline void nzp_mblur_resolve(nzp_mblur_params *out,int mode,float intens
                                      int samples,int quality,int scale) {
     static const nzp_mblur_params presets[5]={
         {0,0.f,0.f,0.f,0,0,100},
-        {1,0.30f,1.0f,0.50f,6,0,50},   /* LOW:    half-resolution pass, cheap gather */
-        {1,0.50f,1.0f,0.70f,8,1,50},   /* MEDIUM: half-resolution pass, per-tap velocity check */
-        {1,0.75f,1.0f,0.85f,10,1,75},
+        {1,0.30f,1.0f,0.00f,6,0,50},   /* LOW:    rotation only (no vector target), half-resolution pass */
+        {1,0.50f,1.0f,0.00f,8,0,50},   /* MEDIUM: rotation only, half-resolution pass */
+        {1,0.75f,1.0f,0.60f,10,1,75},  /* HIGH:   adds walking/strafing blur: vector target, per-tap velocity check */
         {1,1.00f,1.0f,1.00f,12,1,100}, /* ULTRA:  full resolution, folded into the final composite */
     };
     if(mode<0||mode>NZP_MBLUR_CUSTOM)mode=NZP_MBLUR_OFF;
     if(mode<NZP_MBLUR_CUSTOM)*out=presets[mode];
     else{
-        out->enabled=1;out->intensity=nzp_mblur_clampf(intensity,0.f,1.f);
+        out->enabled=1;out->intensity=nzp_mblur_clampf(intensity,0.f,NZP_MBLUR_MAX_INTENSITY);
         out->camera=nzp_mblur_clampf(camera,0.f,1.f);out->movement=nzp_mblur_clampf(movement,0.f,1.f);
         out->samples=samples<NZP_MBLUR_MIN_SAMPLES?NZP_MBLUR_MIN_SAMPLES:samples>NZP_MBLUR_MAX_SAMPLES?NZP_MBLUR_MAX_SAMPLES:samples;
         out->quality=quality>0?1:0;out->scale=nzp_mblur_snap_scale(scale);
@@ -63,5 +64,5 @@ static inline float nzp_mblur_shutter_scale(float intensity,float dt_ms) {
 }
 /* Asymptotic cap of the streak length in display pixels (soft: see blur.frag). */
 static inline float nzp_mblur_max_length_px(float intensity,int display_height) {
-    return (0.02f+0.045f*nzp_mblur_clampf(intensity,0.f,1.f))*(float)display_height;
+    return (0.02f+0.045f*nzp_mblur_clampf(intensity,0.f,NZP_MBLUR_MAX_INTENSITY))*(float)display_height;
 }

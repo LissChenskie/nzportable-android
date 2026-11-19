@@ -29,6 +29,7 @@ struct Opt {
     float step=0.15f;    // camera pan per frame in NDC (19 px at this size)
     float rot_gain=1.f;  // 1: the reprojection matrix describes the pan (pure rotation); 0: it does not (all of it is "translation")
     bool weapon=false,hud=false,jump=false,vertical=false; // vertical: pan up/down instead of sideways
+    bool weapon_buffers=false; // draw the weapon with NZP_VK_DrawBuffers (static buffers) instead of NZP_VK_Draw
     float dt=16.6f;
 };
 static Image run(const Opt &o){
@@ -45,7 +46,10 @@ static Image run(const Opt &o){
         auto u=o.vertical?uniform(0.f,tx):uniform(tx);auto pu=o.vertical?uniform(0.f,prev):uniform(prev);std::copy(pu.mvp,pu.mvp+16,u.prev_mvp);
         const float g=o.step*o.rot_gain;const float h[9]={1,0,o.vertical?0.f:-g,0,1,o.vertical?g:0.f,0,0,1};NZP_VK_SetReprojection(h);
         quad(u,s,-3.f,-3.f,3.f,3.f,1);
-        if(o.weapon){auto w=uniform(0.f);w.motion[0]=1.f;quad(w,s,-0.9f,-0.9f,-0.3f,-0.3f,2);} // camera-locked, high contrast
+        if(o.weapon&&o.weapon_buffers){auto w=uniform(0.f);w.motion[0]=1.f;
+            nzp_vk_array arrays[3]={{100,0,3,0x1406,12},{101,0,2,0x1406,8},{0,0,0,0,0}};const unsigned char white[4]={255,255,255,255};
+            NZP_VK_DrawBuffers(arrays,0,0,6,4,&w,&s,2,nullptr,white);}
+        else if(o.weapon){auto w=uniform(0.f);w.motion[0]=1.f;quad(w,s,-0.9f,-0.9f,-0.3f,-0.3f,2);} // camera-locked, high contrast
         if(o.hud){NZP_VK_BeginUI();nzp_vk_raster hs=s;hs.depth=0;hs.depth_write=0;quad(uniform(0.f),hs,0.3f,-0.9f,0.9f,-0.3f,3);}
         if(last)NZP_VK_RequestCapture(nullptr);
         NZP_VK_EndFrame();
@@ -98,6 +102,9 @@ int main(){
     NZP_VK_Texture(1,0,0,0,W,H,0x1908,0x1401,tex.data(),1,4);
     NZP_VK_Texture(2,0,0,0,64,64,0x1908,0x1401,weapon.data(),1,4);
     NZP_VK_Texture(3,0,0,0,64,64,0x1908,0x1401,hud.data(),1,4);
+    {const float x0=-0.9f,y0=-0.9f,x1=-0.3f,y1=-0.3f; // the weapon quad as static buffers (positions, uv)
+     const float pos[18]={x0,y0,0,x1,y0,0,x1,y1,0,x0,y0,0,x1,y1,0,x0,y1,0},uv[12]={0,0,1,0,1,1,0,0,1,1,0,1};
+     NZP_VK_Buffer(100,sizeof(pos),pos,0);NZP_VK_Buffer(101,sizeof(uv),uv,0);}
     for(unsigned id=1;id<=3;id++){NZP_VK_TextureFilter(id,0x2801,0x2600);NZP_VK_TextureFilter(id,0x2800,0x2600);NZP_VK_TextureFilter(id,0x2802,0x812F);NZP_VK_TextureFilter(id,0x2803,0x812F);}
     if(NZP_VK_MotionBlurState()!=0||NZP_VK_MotionBlurBytes()!=0){puts("FAIL: not off at start");return 1;}
 
@@ -219,7 +226,72 @@ int main(){
     {Opt o=off;o.percent=75;Opt p=o;p.mb=preset(3);const double s0=sharp(run(o),BX0,BY0,BX1,BY1,true),s1=sharp(run(p),BX0,BY0,BX1,BY1,true);
      printf("render scale 75%%: sharpness %.2f -> with blur %.2f\n",s0,s1);CHECK(s1<0.9*s0,"blur at a lowered render scale");}
 
+
+    // 13. The rotation-only path (Movement Blur 0): no vector target, weapon drawn after the blur, a still camera costs nothing.
+    {
+        CHECK(NZP_VK_MotionBlurPath()==2||NZP_VK_MotionBlurPath()==0,"path query");
+        Opt fastU=off;fastU.mb=custom(1.f,1.f,0.f,12,1,100);run(fastU);
+        CHECK(NZP_VK_MotionBlurPath()==1,"movement 0 must take the rotation-only path");
+        printf("rotation-only path: extra memory at full resolution %zu bytes\n",NZP_VK_MotionBlurBytes());
+        CHECK(NZP_VK_MotionBlurBytes()==0,"the rotation-only path needs no vector target and no extra image");
+        Opt vecU=off;vecU.mb=custom(1.f,1.f,0.2f,12,1,100);run(vecU);
+        CHECK(NZP_VK_MotionBlurPath()==2,"movement > 0 must take the vector path");
+        nzp_mblur_params pr;
+        const int expect[5]={0,1,1,2,2};for(int m=0;m<5;m++){pr=preset(m);Opt o=off;o.frames=2;o.mb=pr;run(o);CHECK(NZP_VK_MotionBlurPath()==expect[m],"preset %d path",m);}
+
+        Opt fast_still=fastU;fast_still.step=0.f;Image fs=run(fast_still);
+        printf("rotation-only, still camera: max difference to blur off %.0f\n",max_diff(ref_still,fs));
+        CHECK(max_diff(ref_still,fs)<=1.0,"still camera: identical to blur off, weapon and HUD included");
+
+        Image fast_pan=run(fastU),vec_pan=run(ultra);dump("fast_pan",fast_pan);
+        const double eq=mad(fast_pan,vec_pan,BX0,BY0,BX1,BY1);
+        printf("rotation-only vs vector path, same rotation: mean difference %.2f\n",eq);
+        CHECK(eq<0.6,"both paths must give the same picture for a pure rotation");
+        CHECK(sharp(fast_pan,BX0,BY0,BX1,BY1,true)<0.6*sh_off,"rotation-only path must blur");
+        const double fw_off=sharp(pan_off,20,15,85,62,true),fw_on=sharp(fast_pan,20,15,85,62,true);
+        printf("rotation-only: weapon sharpness off %.2f on %.2f, HUD difference %.3f\n",fw_off,fw_on,mad(pan_off,fast_pan,170,15,240,62));
+        CHECK(fw_on>0.999*fw_off,"weapon must stay sharp");CHECK(mad(pan_off,fast_pan,170,15,240,62)<0.5,"HUD must stay sharp");
+        CHECK(mad(pan_off,fast_pan,15,12,88,66)<0.01,"weapon pixels must be exactly the unblurred ones");
+
+        // no halo, even in FAST quality, because the weapon is not in the image that is blurred
+        Opt fq0=fastU;fq0.mb=custom(1.f,1.f,0.f,12,0,100);Image f0=run(fq0);
+        const double halo_clean=red_minus_green(pan_off,90,11,93,66),halo_fast0=red_minus_green(f0,90,11,93,66);
+        printf("rotation-only FAST quality halo: clean %.1f, now %.1f (vector path FAST was %.1f)\n",halo_clean,halo_fast0,red_minus_green(im_q0,90,11,93,66));
+        CHECK(std::fabs(halo_fast0-halo_clean)<1.0,"no weapon halo on the rotation-only path");
+
+        // the weapon through DrawBuffers (static buffers) is deferred the same way
+        Opt fb=fastU;fb.weapon_buffers=true;Image fbi=run(fb);
+        CHECK(max_diff(fast_pan,fbi)<=1.0,"weapon via DrawBuffers must give the same image as via Draw");
+        Opt ob=off;ob.weapon_buffers=true;Image obi=run(ob);
+        CHECK(max_diff(pan_off,obi)<=1.0,"DrawBuffers weapon, blur off");
+
+        // memory: only the reduced-resolution image remains
+        Opt f50=fastU;f50.mb=custom(1.f,1.f,0.f,12,1,50);run(f50);
+        printf("rotation-only at half resolution: extra memory %zu bytes\n",NZP_VK_MotionBlurBytes());
+        CHECK(NZP_VK_MotionBlurBytes()==size_t(W/2)*(H/2)*4*2,"only the half-resolution image");
+
+        // with an upscaler and with a lowered render scale
+        for(int mode:{2,3}){
+            Opt u0=off;u0.percent=mode==2?100:75;u0.upscaler=mode;Opt u1=u0;u1.mb=custom(1.f,1.f,0.f,12,1,100);
+            Image a0=run(u0),a1=run(u1);
+            printf("rotation-only on top of upscaler %d: sharpness %.2f -> %.2f, HUD difference %.3f\n",mode,sharp(a0,BX0,BY0,BX1,BY1,true),sharp(a1,BX0,BY0,BX1,BY1,true),mad(a0,a1,170,15,240,62));
+            CHECK(sharp(a1,BX0,BY0,BX1,BY1,true)<0.9*sharp(a0,BX0,BY0,BX1,BY1,true),"blur on top of upscaler %d",mode);
+            CHECK(mad(a0,a1,170,15,240,62)<0.5,"HUD sharp with upscaler %d",mode);
+        }
+        {Opt o=off;o.percent=75;Opt q=o;q.mb=custom(1.f,1.f,0.f,12,1,100);Image r0=run(o),r1=run(q);
+         printf("rotation-only at render scale 75%%: sharpness %.2f -> %.2f\n",sharp(r0,BX0,BY0,BX1,BY1,true),sharp(r1,BX0,BY0,BX1,BY1,true));
+         CHECK(sharp(r1,BX0,BY0,BX1,BY1,true)<0.9*sharp(r0,BX0,BY0,BX1,BY1,true),"render scale 75");}
+        {Opt o=fastU;o.rotation=1;Image r1=run(o);o.rotation=-1;Image r0=run(o);printf("rotation-only, surface rotated 90: difference %.2f\n",mad(r0,r1));CHECK(mad(r0,r1)<1.0,"pre-rotation");}
+        {Opt o=fastU;o.jump=true;Opt oo=off;oo.jump=true;CHECK(max_diff(run(o),run(oo))<=1.0,"reset frame on the rotation-only path");}
+    }
+
+    // 14. Blur Intensity goes up to 120% and keeps getting stronger.
+    {Opt a=off;a.mb=custom(1.0f,1.f,0.f,12,1,100);Opt b=a;b.mb=custom(1.2f,1.f,0.f,12,1,100);Opt c=a;c.mb=custom(2.0f,1.f,0.f,12,1,100);
+     const double s10=sharp(run(a),BX0,BY0,BX1,BY1,true),s12=sharp(run(b),BX0,BY0,BX1,BY1,true),s20=sharp(run(c),BX0,BY0,BX1,BY1,true);
+     printf("intensity 100%% -> sharpness %.2f, 120%% -> %.2f, 200%% (clamped to 120%%) -> %.2f\n",s10,s12,s20);
+     CHECK(s12<s10,"120%% must blur more than 100%%");CHECK(std::fabs(s20-s12)<0.01,"values above 120%% are clamped");}
+
     CHECK(NZP_VK_ValidationErrors()==0,"validation errors at the end");
-    puts("Vulkan motion blur: still image, direction, weapon and HUD, camera/movement gains, frame rate, settings, memory, borders, reset, toggling, upscalers, rotation passed");
+    puts("Vulkan motion blur: still image, direction, weapon and HUD, camera/movement gains, frame rate, settings, memory, borders, reset, toggling, upscalers, rotation, rotation-only path, 120% intensity passed");
     NZP_VK_Shutdown();SDL_DestroyWindow(win);SDL_Quit();return 0;
 }
