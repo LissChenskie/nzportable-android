@@ -10,7 +10,6 @@
 #define H 192
 #define CHECK(c,...) do{if(!(c)){printf("FAIL line %d: %s  ",__LINE__,#c);printf(__VA_ARGS__);printf("\n");exit(1);}}while(0)
 typedef unsigned char px_t;
-static px_t shot[W*H*4];
 static void grab(px_t *out){glReadPixels(0,0,W,H,GL_RGBA,GL_UNSIGNED_BYTE,out);}
 static double sharp(const px_t *a,int horizontal){ /* RMS neighbour difference of green */
     double sum=0;int n=0;for(int y=4;y<H-5;y++)for(int x=4;x<W-5;x++){const double d=a[(y*W+x)*4+1]-a[((y+!horizontal)*W+x+horizontal)*4+1];sum+=d*d;n++;}
