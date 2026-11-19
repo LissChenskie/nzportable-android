@@ -151,6 +151,10 @@ static nzp_vk_raster vk_raster(void) {
     s.offset_factor=driver_state.polygon_factor;s.offset_units=driver_state.polygon_units;
     memcpy(s.viewport,driver_state.viewport,sizeof(s.viewport));return s;
 }
+/* GLES2 motion blur input. NZP_VK_FrameSerial() does not advance without the Vulkan backend, hence an own serial. */
+static unsigned long long gles_frame_serial;
+static float gles_reprojection[9]={1,0,0,0,1,0,0,0,1};static int gles_reprojection_fresh,gles_history_reset;
+void NZP_GLES_SetReprojection(const float *h){memcpy(gles_reprojection,h,sizeof(gles_reprojection));gles_reprojection_fresh=1;}
 #ifdef NZP_VULKAN
 /* Camera history for the temporal upscaler. The engine reports the 3D camera once per rendered
  * frame (NZP_GLES_SetCamera). A draw that uses the camera projection gets prev_mvp =
@@ -160,7 +164,7 @@ static nzp_vk_raster vk_raster(void) {
 typedef struct { float proj[16],view[16],inv_view[16],proj_view[16];unsigned long long serial;int valid; } camera_state;
 static camera_state cam_cur,cam_prev;
 void NZP_GLES_SetCamera(float znear,float zfar,float fov_y_degrees) {
-    camera_state next;const unsigned long long serial=NZP_VK_FrameSerial();
+    camera_state next;const unsigned long long serial=NZP_VK_Active()?NZP_VK_FrameSerial():gles_frame_serial;
     memcpy(next.proj,matrices[1][matrix_depth[1]],64);memcpy(next.view,matrices[0][matrix_depth[0]],64);
     nzp_rigid_inverse(next.inv_view,next.view);nzp_multiply(next.proj_view,next.proj,next.view);
     next.serial=serial;next.valid=1;
@@ -169,7 +173,7 @@ void NZP_GLES_SetCamera(float znear,float zfar,float fov_y_degrees) {
          * map change) must not be reprojected. */
         const float dx=next.inv_view[12]-cam_cur.inv_view[12],dy=next.inv_view[13]-cam_cur.inv_view[13],dz=next.inv_view[14]-cam_cur.inv_view[14];
         cam_prev=cam_cur;
-        if(dx*dx+dy*dy+dz*dz>256.f*256.f)NZP_VK_ResetHistory();
+        if(dx*dx+dy*dy+dz*dz>256.f*256.f){NZP_VK_ResetHistory();gles_history_reset=1;}
     }
     else if(!cam_cur.valid)cam_prev=next; /* no history yet */
     /* Later calls in the same frame (mirrors, second pass) keep the same history. */
@@ -177,7 +181,7 @@ void NZP_GLES_SetCamera(float znear,float zfar,float fov_y_degrees) {
     {   /* FSR Lite (fast): rotation-only reprojection from last frame's camera. */
         float h[9];
         nzp_reprojection_matrix(h,cam_cur.proj,cam_cur.view,cam_prev.proj,cam_prev.view);
-        NZP_VK_SetReprojection(h);
+        NZP_VK_SetReprojection(h);NZP_GLES_SetReprojection(h);
     }
     NZP_VK_SetCamera(znear,zfar,fov_y_degrees*3.14159265f/180.f);
 }
@@ -306,6 +310,7 @@ static void upload(const nzp_vertex *vertices,int count,GLenum mode) {
 }
 void NZP_GLES_BeginFrame(void){
     NZP_GLES_Flush();
+    ++gles_frame_serial;gles_reprojection_fresh=0;
     draw_calls_this_frame=0;
     memset(&render_stats,0,sizeof(render_stats));stream_index=(stream_index+1)%3;stream_offset=0;
     if(NZP_VK_Active())return;
@@ -638,6 +643,75 @@ int NZP_GLES_DrawGPU(GLenum mode,const nzp_gpu_array *a,GLuint index_buffer,size
     ++render_stats.draw_calls;
     glBindBuffer(GL_ARRAY_BUFFER,0);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);return 1;
 }
+
+/* ---- GLES2 camera motion blur -------------------------------------------------------------------
+ * ES2 has one colour attachment, so there is no per-pixel motion-vector target: only the ROTATION of the
+ * camera is blurred, analytically from the same 3x3 reprojection the Vulkan path uses (exact for a turning
+ * camera, independent of depth). Movement (parallax) blur is Vulkan only, and the camera-locked weapon cannot
+ * be told apart from the world here, so it is blurred with it. The effect is one full-screen pass that replaces
+ * the plain world-to-screen copy: no extra target, no extra pass. */
+static GLuint blur_program,blur_buffer;static GLint blur_u_h=-1,blur_u_tex=-1,blur_u_b=-1,blur_u_size=-1;static int blur_failed;
+/* The blur is optional: a driver that rejects its shader must lose the effect, not the game (shader() aborts). */
+static GLuint blur_shader(GLenum kind,const char *source) {
+    GLuint s=glCreateShader(kind);GLint ok=0;glShaderSource(s,1,&source,NULL);glCompileShader(s);glGetShaderiv(s,GL_COMPILE_STATUS,&ok);
+    if(!ok){char log[512];glGetShaderInfoLog(s,sizeof(log),NULL,log);fprintf(stderr,"GLES2 motion blur shader: %s\n",log);glDeleteShader(s);return 0;}
+    return s;
+}
+int NZP_GLES_MotionBlurFailed(void){return blur_failed;}
+static int blur_init(void) {
+    static const char *vs=
+        "attribute vec2 a_pos;uniform mat3 u_h;varying vec2 v_uv;varying vec2 v_n;varying vec3 v_q;"
+        "void main(){gl_Position=vec4(a_pos,0.0,1.0);v_uv=a_pos*0.5+0.5;v_n=vec2(a_pos.x,-a_pos.y);v_q=u_h*vec3(v_n,1.0);}";
+    static const char *fs=
+        "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"
+        "uniform sampler2D u_tex;uniform vec4 u_b;uniform vec2 u_size;" /* u_b: shutter*gain, max px, max taps, 0 */
+        "varying vec2 v_uv;varying vec2 v_n;varying vec3 v_q;"
+        "void main(){vec3 c=texture2D(u_tex,v_uv).rgb;"
+        "vec2 d=v_q.z>0.0001?0.5*(v_q.xy/v_q.z-v_n):vec2(0.0);vec2 v=vec2(d.x,-d.y)*u_b.x;" /* Vulkan NDC is y down, GL uv y up */
+        "float len=length(v*u_size);v*=1.0/(1.0+len/u_b.y);len*=1.0/(1.0+len/u_b.y);"
+        "float fade=smoothstep(0.75,3.0,len);if(fade<=0.0){gl_FragColor=vec4(c,1.0);return;}"
+        "float nf=clamp(ceil(len/2.0),2.0,u_b.z);"
+        "float j=0.5+0.75*(fract(52.9829189*fract(dot(floor(v_uv*u_size),vec2(0.06711056,0.00583715))))-0.5);"
+        "vec3 acc=c;float ws=1.0;"
+        "for(int i=0;i<16;i++){if(float(i)>=nf)break;vec2 uv=v_uv+v*((float(i)+j)/nf-0.5);"
+        "if(uv.x<0.0||uv.y<0.0||uv.x>1.0||uv.y>1.0)continue;acc+=texture2D(u_tex,uv).rgb;ws+=1.0;}"
+        "gl_FragColor=vec4(mix(c,acc/ws,fade),1.0);}";
+    GLuint v=blur_shader(GL_VERTEX_SHADER,vs),f=blur_shader(GL_FRAGMENT_SHADER,fs);GLint ok=0;
+    if(!v||!f){if(v)glDeleteShader(v);if(f)glDeleteShader(f);return 0;}
+    blur_program=glCreateProgram();glAttachShader(blur_program,v);glAttachShader(blur_program,f);
+    glBindAttribLocation(blur_program,0,"a_pos");glLinkProgram(blur_program);glGetProgramiv(blur_program,GL_LINK_STATUS,&ok);
+    glDeleteShader(v);glDeleteShader(f);
+    if(!ok){glDeleteProgram(blur_program);blur_program=0;return 0;}
+    blur_u_h=glGetUniformLocation(blur_program,"u_h");blur_u_tex=glGetUniformLocation(blur_program,"u_tex");
+    blur_u_b=glGetUniformLocation(blur_program,"u_b");blur_u_size=glGetUniformLocation(blur_program,"u_size");
+    static const float tri[6]={-1,-1,3,-1,-1,3}; /* one triangle covers the screen */
+    glGenBuffers(1,&blur_buffer);glBindBuffer(GL_ARRAY_BUFFER,blur_buffer);glBufferData(GL_ARRAY_BUFFER,sizeof(tri),tri,GL_STATIC_DRAW);
+    return 1;
+}
+/* Returns 1 when the blur was drawn; 0 means the caller must do the plain copy (disabled, no motion, not supported). */
+int NZP_GLES_PresentBlur(GLuint texture,int width,int height,const nzp_mblur_params *mb,float dt_ms) {
+    if(NZP_VK_Active()||!mb||!mb->enabled||mb->camera<=0.f||blur_failed)return 0;
+    if(!blur_program&&!blur_init()){blur_failed=1;return 0;}
+    const int suppressed=gles_history_reset||!gles_reprojection_fresh;gles_history_reset=0;
+    NZP_GLES_Flush();
+    GLboolean depth=raster_enabled[1],blend=raster_enabled[0],cull=raster_enabled[2],offset=raster_enabled[3];
+    glViewport(0,0,width,height);driver_state.valid&=~DS_VIEWPORT;
+    if(depth)glDisable(GL_DEPTH_TEST);if(blend)glDisable(GL_BLEND);if(cull)glDisable(GL_CULL_FACE);if(offset)glDisable(GL_POLYGON_OFFSET_FILL);
+    glUseProgram(blur_program);current_program=0; /* the engine program is re-selected by its next draw */
+    float t[9];for(int r=0;r<3;r++)for(int c=0;c<3;c++)t[c*3+r]=gles_reprojection[r*3+c]; /* ES2: no transpose flag */
+    glUniformMatrix3fv(blur_u_h,1,GL_FALSE,t);glUniform1i(blur_u_tex,0);
+    glUniform4f(blur_u_b,suppressed?0.f:nzp_mblur_shutter_scale(mb->intensity,dt_ms)*mb->camera,nzp_mblur_max_length_px(mb->intensity,height),(float)mb->samples,0.f);
+    glUniform2f(blur_u_size,(float)width,(float)height);
+    bind_tex0(texture);
+    glBindBuffer(GL_ARRAY_BUFFER,blur_buffer);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);
+    enable_vertex_attribute(0,1);enable_vertex_attribute(1,0);enable_vertex_attribute(2,0);
+    glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,(void*)0);
+    glDrawArrays(GL_TRIANGLES,0,3);++draw_calls_this_frame;++render_stats.draw_calls;
+    bind_tex0(bound_texture);
+    if(depth)glEnable(GL_DEPTH_TEST);if(blend)glEnable(GL_BLEND);if(cull)glEnable(GL_CULL_FACE);if(offset)glEnable(GL_POLYGON_OFFSET_FILL);
+    return 1;
+}
+void NZP_GLES_ResetMotionHistory(void){gles_history_reset=1;}
 
 void NZP_GLES_Present(GLuint texture,int width,int height){
     NZP_GLES_Flush();

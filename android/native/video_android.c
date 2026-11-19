@@ -18,6 +18,12 @@ cvar_t vk_prerotate={"vk_prerotate","0",true};
  * 1 FSR full (Arm ASR, needs fp16/SPIR-V 1.4 capable Vulkan). */
 cvar_t vk_fsr={"vk_fsr","0",true};
 cvar_t vk_fsr_sharpness={"vk_fsr_sharpness","0.2",true};
+/* Motion blur (see motion_blur.h). mblur_mode: 0 off, 1 low, 2 medium, 3 high, 4 ultra, 5 custom. The other cvars are
+ * only used by mode 5 (the menu copies the preset in when CUSTOM is chosen). Off by default: nothing changes for
+ * existing installs. All are archived (config.cfg). */
+cvar_t mblur_mode={"mblur_mode","0",true},mblur_intensity={"mblur_intensity","0.5",true},mblur_camera={"mblur_camera","1",true},
+       mblur_movement={"mblur_movement","0.7",true},mblur_samples={"mblur_samples","8",true},mblur_quality={"mblur_quality","1",true},
+       mblur_scale={"mblur_scale","75",true};
 /* FSR Lite variant: 0 auto (fast on ARM Mali), 1 fast, 2 quality. */
 cvar_t vk_lite_quality={"vk_lite_quality","0",true};
 cvar_t vid_benchmark={"vid_benchmark","0",false};
@@ -84,6 +90,51 @@ int VID_StartRendererBenchmark(void){
     return 1;
 }
 static int drawable_w,drawable_h,world_w,world_h;
+/* The blur settings the renderers actually use: presets, or the cvars in CUSTOM mode. */
+void VID_MotionBlurParams(nzp_mblur_params *p){
+    nzp_mblur_resolve(p,(int)(mblur_mode.value+0.5f),mblur_intensity.value,mblur_camera.value,mblur_movement.value,
+                      (int)(mblur_samples.value+0.5f),(int)(mblur_quality.value+0.5f),(int)(mblur_scale.value+0.5f));
+}
+/* 0 off, 1 running, 2 not supported by the active renderer/GPU. GLES2 runs the camera part only. */
+int VID_MotionBlurState(void){
+    nzp_mblur_params p;VID_MotionBlurParams(&p);
+    if(!p.enabled)return 0;
+    if(NZP_VK_Active()){const int st=NZP_VK_MotionBlurState();return st==2?2:1;}
+    return NZP_GLES_MotionBlurFailed()?2:1;
+}
+int VID_MotionBlurMovementSupported(void){return NZP_VK_Active();}
+/* Menu support: the values the renderers really use, and mode changes that keep the cvars in step with the preset. */
+void VID_MotionBlurEffective(float *intensity,float *camera,float *movement,int *samples,int *quality,int *scale){
+    nzp_mblur_params p;VID_MotionBlurParams(&p);
+    if(!p.enabled){ /* OFF: show what CUSTOM would start from */
+        *intensity=mblur_intensity.value;*camera=mblur_camera.value;*movement=mblur_movement.value;
+        *samples=(int)(mblur_samples.value+0.5f);*quality=(int)(mblur_quality.value+0.5f);*scale=(int)(mblur_scale.value+0.5f);return;
+    }
+    *intensity=p.intensity;*camera=p.camera;*movement=p.movement;*samples=p.samples;*quality=p.quality;*scale=p.scale;
+}
+void VID_MotionBlurSetMode(int mode){
+    if(mode<0||mode>NZP_MBLUR_CUSTOM)mode=0;
+    if(mode>=1&&mode<NZP_MBLUR_CUSTOM){ /* CUSTOM then starts from the preset the player just saw */
+        nzp_mblur_params p;nzp_mblur_resolve(&p,mode,0,0,0,0,0,100);
+        Cvar_SetValue("mblur_intensity",p.intensity);Cvar_SetValue("mblur_camera",p.camera);Cvar_SetValue("mblur_movement",p.movement);
+        Cvar_SetValue("mblur_samples",p.samples);Cvar_SetValue("mblur_quality",p.quality);Cvar_SetValue("mblur_scale",p.scale);
+    }
+    Cvar_SetValue("mblur_mode",mode);
+}
+/* A single setting can only be edited in CUSTOM. Editing while a preset is selected turns the preset into CUSTOM
+ * (its values are already in the cvars); while OFF there is nothing to edit. Returns 0 when OFF. */
+int VID_MotionBlurBeginEdit(void){
+    const int mode=(int)(mblur_mode.value+0.5f);
+    if(mode==0)return 0;
+    if(mode!=NZP_MBLUR_CUSTOM){
+        VID_MotionBlurSetMode(mode);                    /* copy the preset's values into the cvars (also if set from the console) */
+        Cvar_SetValue("mblur_mode",NZP_MBLUR_CUSTOM);
+    }
+    return 1;
+}
+static int gles_blur_wanted;   /* the GLES2 path needs the world in a texture, like a lowered render scale */
+static int active_gles_blur=-1;
+static struct timespec gles_blur_last;static float gles_blur_dt_ms=16.6f;
 static int active_percent=-1,swap_interval=-1,software_sync,has_world_target;
 static int hud_active;
 static unsigned render_rebuilds;
@@ -164,12 +215,12 @@ void VID_SDLResize(void) {
         vid.recalc_refdef=true;
     }
     if(active_percent>=0 && width==drawable_w && height==drawable_h &&
-       percent==active_percent && active_benchmark==(vid_benchmark.value!=0)) return;
+       percent==active_percent && active_benchmark==(vid_benchmark.value!=0) && active_gles_blur==gles_blur_wanted) return;
     if(!NZP_VK_Active())delete_target();
     drawable_w=width;drawable_h=height;
     world_w=target_w;world_h=target_h;
-    active_percent=percent;active_benchmark=vid_benchmark.value!=0;
-    if(!NZP_VK_Active() && percent!=100 && (max_texture_size<=0 ||
+    active_percent=percent;active_benchmark=vid_benchmark.value!=0;active_gles_blur=gles_blur_wanted;
+    if(!NZP_VK_Active() && (percent!=100||gles_blur_wanted) && (max_texture_size<=0 ||
                         (target_w<=max_texture_size&&target_h<=max_texture_size))) {
         if(create_target(target_w,target_h,
                          &world_framebuffer,&world_color,&world_depth,1)) {
@@ -178,7 +229,7 @@ void VID_SDLResize(void) {
             delete_target();
             world_w=width;world_h=height;
         }
-    } else if(!NZP_VK_Active() && percent!=100) {
+    } else if(!NZP_VK_Active() && (percent!=100||gles_blur_wanted)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_VIDEO,
             "Optional 3D %dx%d exceeds GLES texture max %d: keeping native quality",
             target_w,target_h,max_texture_size);
@@ -207,7 +258,9 @@ void VID_BeginNativeUI(void) {
     if(NZP_VK_Active()){NZP_VK_BeginUI();glViewport(0,0,drawable_w,drawable_h);return;}
     if(has_world_target) {
         glBindFramebuffer(GL_FRAMEBUFFER,active_benchmark?benchmark_framebuffer:0);
-        NZP_GLES_Present(world_color,drawable_w,drawable_h);
+        nzp_mblur_params mb;VID_MotionBlurParams(&mb);
+        if(!(gles_blur_wanted&&NZP_GLES_PresentBlur(world_color,drawable_w,drawable_h,&mb,gles_blur_dt_ms)))
+            NZP_GLES_Present(world_color,drawable_w,drawable_h);
     }
     glViewport(0,0,drawable_w,drawable_h);
 }
@@ -231,6 +284,14 @@ void GL_BeginRendering(int *x,int *y,int *w,int *h){
         NZP_VK_SetUpscaler((int)vk_fsr.value);NZP_VK_SetFSRSharpness(vk_fsr_sharpness.value);NZP_VK_SetLiteSharpness(vk_fsr_sharpness.value+0.1f);NZP_VK_SetLiteQuality((int)vk_lite_quality.value);
         /* A new map must not blend with the previous map's history. */
         static void *last_world;if(cl.worldmodel!=last_world){last_world=cl.worldmodel;NZP_VK_ResetHistory();}
+        {nzp_mblur_params mb;VID_MotionBlurParams(&mb);NZP_VK_SetMotionBlur(&mb);}
+    } else {
+        nzp_mblur_params mb;VID_MotionBlurParams(&mb);
+        gles_blur_wanted=mb.enabled&&mb.camera>0.f&&!NZP_GLES_MotionBlurFailed();
+        struct timespec now;clock_gettime(CLOCK_MONOTONIC,&now);
+        if(gles_blur_last.tv_sec||gles_blur_last.tv_nsec)gles_blur_dt_ms=(float)((now.tv_sec-gles_blur_last.tv_sec)*1000.0+(now.tv_nsec-gles_blur_last.tv_nsec)/1e6);
+        gles_blur_last=now;
+        static void *last_world_gles;if(cl.worldmodel!=last_world_gles){last_world_gles=cl.worldmodel;NZP_GLES_ResetMotionHistory();}
     }
     if(NZP_VK_Active())render_frame_available=NZP_VK_BeginFrame(r_vsync.value!=0,render_percent());
     VID_SDLResize();
@@ -333,7 +394,9 @@ void VID_Init(unsigned char *palette){
     if(preference<0||preference>2)preference=0;
     if(preference==0)preference=1; /* old AUTO meant GLES2; it is Vulkan now */
     SDL_Log("NZP_GRAPHICS preference=%d path=%s",preference,api_path);
-    Cvar_RegisterVariable(&vk_single_pass);Cvar_RegisterVariable(&vk_prerotate);Cvar_RegisterVariable(&vk_fsr);Cvar_RegisterVariable(&vk_fsr_sharpness);Cvar_RegisterVariable(&vk_lite_quality);Cvar_RegisterVariable(&vid_benchmark);Cvar_RegisterVariable(&vid_performance_mode);
+    Cvar_RegisterVariable(&vk_single_pass);Cvar_RegisterVariable(&vk_prerotate);Cvar_RegisterVariable(&vk_fsr);Cvar_RegisterVariable(&vk_fsr_sharpness);
+    Cvar_RegisterVariable(&mblur_mode);Cvar_RegisterVariable(&mblur_intensity);Cvar_RegisterVariable(&mblur_camera);Cvar_RegisterVariable(&mblur_movement);Cvar_RegisterVariable(&mblur_samples);Cvar_RegisterVariable(&mblur_quality);Cvar_RegisterVariable(&mblur_scale);
+    Cvar_RegisterVariable(&vk_lite_quality);Cvar_RegisterVariable(&vid_benchmark);Cvar_RegisterVariable(&vid_performance_mode);
     Cvar_RegisterVariable(&vid_graphics_api);Cvar_SetValue("vid_graphics_api",preference);
     Cvar_RegisterVariable(&vid_width);Cvar_RegisterVariable(&vid_height);
     Cvar_RegisterVariable(&vid_render_scale);Cvar_RegisterVariable(&vid_ui_scale);

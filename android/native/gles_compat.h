@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include "motion_blur.h"
 #include <stddef.h>
 #include <GLES2/gl2.h>
 typedef double GLdouble;
@@ -42,6 +43,13 @@ void NZP_GLES_SetCamera(float znear,float zfar,float fov_y_degrees);
 void NZP_GLES_Shutdown(void);
 void NZP_GLES_Flush(void);
 void NZP_GLES_Present(GLuint texture, int width, int height);
+/* GLES2 camera-rotation motion blur instead of the plain copy. Returns 0 when it did not draw (the caller then calls
+ * NZP_GLES_Present). Needs the world in a texture; ignores mb->movement (Vulkan only). */
+int NZP_GLES_PresentBlur(GLuint texture, int width, int height, const nzp_mblur_params *mb, float dt_ms);
+void NZP_GLES_ResetMotionHistory(void);
+/* Row-major 3x3, current Vulkan NDC (y down) -> previous homogeneous NDC (render_math.h). Set once per frame; the engine does it in NZP_GLES_SetCamera. */
+void NZP_GLES_SetReprojection(const float *h);
+int NZP_GLES_MotionBlurFailed(void); /* 1 once the GLES2 blur shader was rejected by the driver (effect stays off) */
 void NZP_GLES_SetWorldViewport(int world_width,int world_height,int surface_width,int surface_height);
 void NZP_GLES_SetNativeViewport(void);
 unsigned NZP_GLES_DrawCalls(void);
