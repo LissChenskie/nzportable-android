@@ -39,5 +39,6 @@ cc -std=gnu99 $cflags -c tests/vulkan_frontend_test.c -o build/host-tests/fronte
 c++ -std=c++17 $cflags tests/vulkan_test.cpp build/host-tests/renderer.o build/host-tests/volk.o $threads -o build/host-tests/vulkan_test $(pkg-config --libs sdl2) -ldl
 c++ -std=c++17 $cflags tests/vulkan_rotation_test.cpp build/host-tests/renderer.o build/host-tests/volk.o $threads -o build/host-tests/vulkan_rotation_test $(pkg-config --libs sdl2) -ldl
 c++ -std=c++17 $cflags tests/vulkan_fsr_test.cpp build/host-tests/renderer.o build/host-tests/volk.o $threads -o build/host-tests/vulkan_fsr_test $(pkg-config --libs sdl2) -ldl
+c++ -std=c++17 $cflags tests/vulkan_motion_blur_test.cpp build/host-tests/renderer.o build/host-tests/volk.o $threads -o build/host-tests/vulkan_motion_blur_test $(pkg-config --libs sdl2) -ldl
 c++ build/host-tests/frontend_test.o build/host-tests/frontend.o build/host-tests/renderer.o build/host-tests/volk.o $threads -o build/host-tests/vulkan_frontend_test $(pkg-config --libs sdl2) -lGLESv2 -ldl -lm
-xvfb-run -a env SDL_VIDEODRIVER=x11 NZP_JOBS_WORKERS=${NZP_JOBS_WORKERS:-4} sh -c 'build/host-tests/vulkan_test && build/host-tests/vulkan_rotation_test && build/host-tests/vulkan_fsr_test && build/host-tests/vulkan_frontend_test'
+xvfb-run -a env SDL_VIDEODRIVER=x11 NZP_JOBS_WORKERS=${NZP_JOBS_WORKERS:-4} sh -c 'build/host-tests/vulkan_test && build/host-tests/vulkan_rotation_test && build/host-tests/vulkan_fsr_test && build/host-tests/vulkan_motion_blur_test && build/host-tests/vulkan_frontend_test'

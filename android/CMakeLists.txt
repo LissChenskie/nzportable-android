@@ -63,6 +63,7 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/vulkan_shaders.h"
         native/vulkan/shaders/lite.vert native/vulkan/shaders/lite.frag
         native/vulkan/shaders/lite_fast.vert native/vulkan/shaders/lite_fast.frag
         native/vulkan/shaders/fsr1_easu.frag native/vulkan/shaders/fsr1_rcas.frag
+        native/vulkan/shaders/blur.vert native/vulkan/shaders/blur.frag native/vulkan/shaders/blur_composite.frag
         native/vulkan/vendor/fsr1/ffx_a.h native/vulkan/vendor/fsr1/ffx_fsr1.h
     VERBATIM)
 target_sources(main PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_shaders.h")

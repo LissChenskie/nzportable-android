@@ -2,6 +2,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#include "../motion_blur.h"
 struct SDL_Window;
 #ifdef __cplusplus
 extern "C" {
@@ -68,6 +69,14 @@ void NZP_VK_SetCamera(float near_plane,float far_plane,float fov_y_radians);
 void NZP_VK_ResetHistory(void);
 /* RCAS sharpening 0..1 (0 = off). */
 void NZP_VK_SetFSRSharpness(float value);
+/* Camera motion blur (see motion_blur.h for the settings). Safe to call every frame; turning it on/off or changing
+ * the pass resolution rebuilds the targets, everything else applies on the next frame. Disabled: no extra target,
+ * no motion-vector output, no pass. State: 0 off, 1 running, 2 unsupported (no independent blend), 3 waiting for rebuild. */
+void NZP_VK_SetMotionBlur(const nzp_mblur_params *params);
+int NZP_VK_MotionBlurState(void);
+size_t NZP_VK_MotionBlurBytes(void); /* extra render-target memory the effect currently uses */
+/* Test hook: use this frame interval (ms) instead of the measured one; 0 = measure. */
+void NZP_VK_SetMotionBlurTestFrameTime(float ms);
 unsigned long long NZP_VK_FrameSerial(void);
 void NZP_VK_Finish(void);
 unsigned long long NZP_VK_CompletedFrames(void);
