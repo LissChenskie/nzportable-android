@@ -12,7 +12,11 @@ import java.util.List;
 final class RetroTouchBridge {
     private final GameActivity game;
     private final RetroTouchView overlay;
+    private final DynamicStickView dynamicStick;
+    private RetroTouchLayout fixedLayout, dynamicLayout;
     private int lastMode = -1;
+    private boolean dynamic = true;   // floating left stick (default); false = the fixed RetroTouch stick
+    private boolean showing, editing;
     RetroTouchBridge(GameActivity activity) {
         game = activity;
         overlay = new RetroTouchView(activity);
@@ -26,12 +30,55 @@ final class RetroTouchBridge {
         overlay.registerAction("knife", "Knife");
         overlay.registerAction("nade", "Nade");
         overlay.registerAction("menu", "Menu");
-        List<RetroTouchControl> controls = new ArrayList<RetroTouchControl>();
         // Larger Android landscape controls; action buttons take precedence over the
         // camera zone. New saved-layout ID applies these defaults on upgrade.
         // Look remains usable while firing.
+        fixedLayout = buildLayout(false);
+        dynamicLayout = buildLayout(true);
+        overlay.setGameplayLayout(dynamicLayout);
+        overlay.setLookWhileHoldingAction("fire", true);
+        // Dragging the finger that holds AIM turns the camera too (AIM sits inside the look zone).
+        overlay.setLookWhileHoldingAction("aim", true);
+        overlay.setListener(new RetroTouchAdapter() {
+            @Override public void onAction(String id, boolean down) {
+                GameActivity.nativeTouchAction(id, down);
+            }
+            @Override public void onMove(float x, float y) {
+                // With the floating stick the overlay has no stick of its own; its only onMove is a neutral
+                // "all fingers released", which must not cancel a thumb that still holds the floating stick.
+                if (!dynamic) GameActivity.nativeTouchMove(x, y);
+            }
+            @Override public void onLook(float dx, float dy) {
+                GameActivity.nativeTouchLook(dx, dy);
+            }
+            @Override public void onEditorStateChanged(boolean isEditing) {
+                editing = isEditing;
+                if (isEditing) GameActivity.nativeTouchNeutral();
+                applyStickInput();
+            }
+        });
+        overlay.setMode(RetroTouchMode.OFF);
+        FrameLayout content = (FrameLayout) activity.findViewById(android.R.id.content);
+        content.addView(overlay, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        // The floating stick sits above the overlay and takes only the touches that start in its zone. Separate
+        // fingers must reach separate children (stick / buttons), so touch splitting is switched on explicitly.
+        content.setMotionEventSplittingEnabled(true);
+        dynamicStick = new DynamicStickView(activity);
+        dynamicStick.setListener(new DynamicStickView.Listener() {
+            @Override public void onStick(float x, float y) {
+                GameActivity.nativeTouchMove(x, y);
+            }
+        });
+        dynamicStick.setVisibility(View.GONE);
+        content.addView(dynamicStick, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+    }
+    /** The gameplay layout; the floating variant simply has no stick control and its own saved-layout ID. */
+    private RetroTouchLayout buildLayout(boolean floatingStick) {
+        List<RetroTouchControl> controls = new ArrayList<RetroTouchControl>();
         controls.add(RetroTouchControl.lookZone("look", .73f, .47f, .54f, .87f));
-        controls.add(RetroTouchControl.moveStick("move", .17f, .75f, .33f));
+        if (!floatingStick) controls.add(RetroTouchControl.moveStick("move", .17f, .75f, .33f));
         controls.add(RetroTouchControl.button("fire_button", "fire", "FIRE", .90f, .59f, .21f));
         controls.add(RetroTouchControl.button("aim_button", "aim", "AIM", .75f, .55f, .15f));
         controls.add(RetroTouchControl.button("jump_button", "jump", "JUMP", .91f, .85f, .16f));
@@ -42,28 +89,23 @@ final class RetroTouchBridge {
         controls.add(RetroTouchControl.button("knife_button", "knife", "KNIFE", .90f, .31f, .13f));
         controls.add(RetroTouchControl.button("nade_button", "nade", "NADE", .75f, .30f, .12f));
         controls.add(RetroTouchControl.button("menu_button", "menu", "MENU", .93f, .10f, .13f));
-        overlay.setGameplayLayout(new RetroTouchLayout("nzportable_android_v2_large", controls));
-        overlay.setLookWhileHoldingAction("fire", true);
-        // Dragging the finger that holds AIM turns the camera too (AIM sits inside the look zone).
-        overlay.setLookWhileHoldingAction("aim", true);
-        overlay.setListener(new RetroTouchAdapter() {
-            @Override public void onAction(String id, boolean down) {
-                GameActivity.nativeTouchAction(id, down);
-            }
-            @Override public void onMove(float x, float y) {
-                GameActivity.nativeTouchMove(x, y);
-            }
-            @Override public void onLook(float dx, float dy) {
-                GameActivity.nativeTouchLook(dx, dy);
-            }
-            @Override public void onEditorStateChanged(boolean editing) {
-                if (editing) GameActivity.nativeTouchNeutral();
-            }
-        });
-        overlay.setMode(RetroTouchMode.OFF);
-        FrameLayout content = (FrameLayout) activity.findViewById(android.R.id.content);
-        content.addView(overlay, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        // Each variant keeps its own saved layout (the editor remembers positions per ID).
+        return new RetroTouchLayout(floatingStick ? "nzportable_android_v3_dynamic" : "nzportable_android_v2_large", controls);
+    }
+    /** Floating (true) or fixed (false) left stick; applies at once, also while playing. */
+    void setDynamic(boolean on) {
+        if (on == dynamic) return;
+        dynamicStick.release();
+        overlay.resetInputState();
+        GameActivity.nativeTouchNeutral();
+        dynamic = on;
+        overlay.setGameplayLayout(on ? dynamicLayout : fixedLayout);
+        applyStickInput();
+    }
+    private void applyStickInput() {
+        final boolean useIt = showing && dynamic;
+        dynamicStick.setVisibility(useIt ? View.VISIBLE : View.GONE);
+        dynamicStick.setInputEnabled(useIt && !editing);
     }
     /** policy: 0 auto (hide when a controller is detected), 1 always show, 2 never show (engine draws buttons).
      *  Returns whether the overlay is actually visible, so native code knows whether it must draw its own buttons.
@@ -73,14 +115,17 @@ final class RetroTouchBridge {
         controllerDetected = RetroTouchControllers.isControllerConnected();
         boolean show = playing && policy != 2 && (policy == 1 || !controllerDetected);
         int mode = show ? 1 : 0;
+        showing = show;
         if (mode != lastMode) {
+            dynamicStick.release();
             overlay.resetInputState();
             overlay.setMode(show ? RetroTouchMode.GAMEPLAY : RetroTouchMode.OFF);
             overlay.setVisibility(show ? View.VISIBLE : View.GONE);
             lastMode = mode;
         }
+        applyStickInput();
         return show;
     }
     boolean controllerDetected;
-    void reset() { overlay.resetInputState(); }
+    void reset() { dynamicStick.release(); overlay.resetInputState(); }
 }

@@ -152,6 +152,8 @@ static jmethodID thermal_method, touch_method;
 static volatile int external_touch;static int last_touch_mode=-1,last_touch_policy=-1;
 /* 0 auto: overlay unless a controller is detected; 1 always on (default); 2 off. */
 cvar_t touch_overlay={"touch_overlay","1",true};
+/* 1: the left stick appears under the thumb (floating), 0: the fixed RetroTouch stick. Archived. */
+cvar_t touch_dynamic_stick={"touch_dynamic_stick","1",true};
 JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchOverlayShown(JNIEnv *env,jclass unused,jboolean shown,jboolean controller,jint policy){
     (void)env;(void)unused;external_touch=shown?1:0;
     SDL_Log("NZP_TOUCH overlay_shown=%d controller_detected=%d policy=%d",(int)shown,(int)controller,(int)policy);
@@ -333,7 +335,7 @@ void Android_Init(void){
     nzp_thread_apply_role(NZP_ROLE_GAME); /* re-apply with the saved cvar value */
     Cvar_RegisterVariable(&touch_sensitivity);
     Cvar_RegisterVariable(&touch_auto_sprint);
-    Cvar_RegisterVariable(&nzp_profile);Cvar_RegisterVariable(&touch_overlay);
+    Cvar_RegisterVariable(&nzp_profile);Cvar_RegisterVariable(&touch_overlay);Cvar_RegisterVariable(&touch_dynamic_stick);
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS,"0");SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS,"0");
     SDL_Log("Android device profile: native drawable + user-selected 3D scale");
 }
@@ -523,6 +525,13 @@ void Android_Frame(void){
             last_touch_policy=(int)touch_overlay.value;
             (*env)->CallVoidMethod(env,activity,touch_method,playing?JNI_TRUE:JNI_FALSE,(jint)last_touch_policy);
             last_touch_mode=playing;
+        }
+        /* Floating or fixed left stick: sent once at start and whenever the setting changes. */
+        static jmethodID dynamic_method;static int last_dynamic=-1;
+        if(!dynamic_method)dynamic_method=(*env)->GetMethodID(env,activity_class,"setDynamicStick","(Z)V");
+        if(dynamic_method && last_dynamic!=(touch_dynamic_stick.value!=0.f)) {
+            last_dynamic=touch_dynamic_stick.value!=0.f;
+            (*env)->CallVoidMethod(env,activity,dynamic_method,last_dynamic?JNI_TRUE:JNI_FALSE);
         }
     }
     if((*env)->ExceptionCheck(env)){

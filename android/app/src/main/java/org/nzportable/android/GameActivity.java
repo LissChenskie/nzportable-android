@@ -77,6 +77,14 @@ public final class GameActivity extends SDLActivity {
             }
         });
     }
+    // Called from the SDL thread when the touch_dynamic_stick setting changes (and once at start).
+    public void setDynamicStick(final boolean dynamic) {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                if (touch != null) touch.setDynamic(dynamic);
+            }
+        });
+    }
     /** Tells the engine whether the Java overlay is visible; if not, the engine draws its own buttons. */
     static native void nativeTouchOverlayShown(boolean shown, boolean controllerDetected, int policy);
     // Called by the SDL engine, dialogs run on Android's UI thread.

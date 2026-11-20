@@ -57,7 +57,7 @@ extern cvar_t vid_render_scale,vid_ui_scale,r_vsync,nzp_profile,vid_benchmark,vi
 int VID_UpscalerState(void);
 int VID_UpscalerSupported(int mode);
 /* Motion blur (android/native/video_android.c). */
-extern cvar_t mblur_mode;
+extern cvar_t mblur_mode,touch_dynamic_stick;
 int VID_MotionBlurState(void);
 int VID_MotionBlurMovementSupported(void);
 void VID_MotionBlurEffective(float *intensity,float *camera,float *movement,int *samples,int *quality,int *scale);
@@ -117,6 +117,10 @@ static void Menu_Video_ToggleFSR(void) {
     }
     if(next==0&&(int)vk_fsr.value==0)Con_Printf("Upscaling needs Vulkan; not available on this device.\n");
     Cvar_SetValue("vk_fsr",next);
+    Menu_Video_Save();
+}
+static void Menu_Video_ToggleDynamicStick(void) {
+    Cvar_SetValue("touch_dynamic_stick",touch_dynamic_stick.value!=0.f?0:1);
     Menu_Video_Save();
 }
 static void Menu_Video_ToggleTouchOverlay(void) {
@@ -217,7 +221,7 @@ static void Menu_Video_MBPages(int page,int *i){
     }
 }
 static void Menu_Video_NextPageAndroid(void) {
-    android_video_page=(android_video_page+1)%7;
+    android_video_page=(android_video_page+1)%8;
     Menu_ResetMenuButtons();
 }
 static void Menu_Video_BackAndroid(void) {
@@ -313,6 +317,10 @@ static void Menu_Video_DrawAndroid(void) {
         Menu_DrawOptionButton(4,(int)touch_overlay.value==0?"AUTO":((int)touch_overlay.value==2?"OFF":"ALWAYS ON"));
     }
     if(android_video_page==5||android_video_page==6)Menu_Video_MBPages(android_video_page,&i);
+    if(android_video_page==7){
+        Menu_DrawButton(1,i++,"LEFT STICK","DYNAMIC: the movement stick appears under your thumb anywhere in the left part of the screen. FIXED: the stick stays where it is drawn.",Menu_Video_ToggleDynamicStick);
+        Menu_DrawOptionButton(1,touch_dynamic_stick.value!=0.f?"DYNAMIC":"FIXED");
+    }
     Menu_DrawButton(-2,i++,"NEXT PAGE","More video options.",
         Menu_Video_NextPageAndroid);
     Menu_DrawButton(-1,i++,"BACK","Save video settings and return.",

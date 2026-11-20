@@ -28,3 +28,5 @@ cc -std=c99 -Wall -Wextra -Werror tests/test_native_resolution.c -lm -o build/ho
 build/host-tests/test_native_resolution
 javac -d build/host-tests android/app/src/main/java/org/nzportable/android/DataInstaller.java tests/DataInstallerTest.java
 java -cp build/host-tests DataInstallerTest "$@"
+javac -d build/host-tests android/app/src/main/java/org/nzportable/android/DynamicStick.java tests/DynamicStickTest.java
+java -cp build/host-tests org.nzportable.android.DynamicStickTest
