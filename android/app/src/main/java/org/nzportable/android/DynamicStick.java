@@ -29,6 +29,15 @@ final class DynamicStick {
         return width > 0f && height > 0f && x >= 0f && x <= ZONE_RIGHT * width && y >= ZONE_TOP * height && y <= height;
     }
 
+    /**
+     * The touch view covers exactly the zone (and nothing else). That matters: Android hands a further finger to a view that
+     * already receives touches whenever the finger lies inside its bounds, without asking the views below it. A full-screen
+     * stick view would therefore swallow the camera finger as soon as the stick is held.
+     */
+    static int zoneWidthPx(int screenWidth) { return Math.max(1, (int) Math.floor(ZONE_RIGHT * screenWidth)); }
+    static int zoneTopPx(int screenHeight) { return Math.min(screenHeight - 1, (int) Math.ceil(ZONE_TOP * screenHeight)); }
+    static int zoneHeightPx(int screenHeight) { return Math.max(1, screenHeight - zoneTopPx(screenHeight)); }
+
     static float radiusFor(float width, float height) {
         return Math.max(1f, Math.min(width, height) * RADIUS_OF_SHORT_SIDE);
     }

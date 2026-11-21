@@ -2,6 +2,7 @@
 // Compiled with pinned RetroTouch 1.0.0-beta.7 (MIT; see third_party/retrotouch-LICENSE.txt).
 package org.nzportable.android;
 
+import android.view.Gravity;
 import android.view.View;
 import android.widget.FrameLayout;
 import java.util.ArrayList;
@@ -12,7 +13,8 @@ import java.util.List;
 final class RetroTouchBridge {
     private final GameActivity game;
     private final RetroTouchView overlay;
-    private final DynamicStickView dynamicStick;
+    private final DynamicStickView dynamicStick;   // touch surface: only the stick zone
+    private final DynamicStickHud dynamicHud;       // drawing: whole screen, takes no touches
     private RetroTouchLayout fixedLayout, dynamicLayout;
     private int lastMode = -1;
     private boolean dynamic = true;   // floating left stick (default); false = the fixed RetroTouch stick
@@ -61,18 +63,28 @@ final class RetroTouchBridge {
         FrameLayout content = (FrameLayout) activity.findViewById(android.R.id.content);
         content.addView(overlay, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        // The floating stick sits above the overlay and takes only the touches that start in its zone. Separate
-        // fingers must reach separate children (stick / buttons), so touch splitting is switched on explicitly.
+        // The floating stick sits above the overlay. Separate fingers must reach separate children (stick / buttons), so
+        // touch splitting is switched on explicitly. The touch view is only as large as the stick zone: Android gives a
+        // further finger to a view that already holds a touch whenever it lies inside that view, without asking the views
+        // below, so a full-screen layer would swallow the camera finger while the stick is held.
         content.setMotionEventSplittingEnabled(true);
-        dynamicStick = new DynamicStickView(activity);
+        DynamicStick stick = new DynamicStick();
+        dynamicHud = new DynamicStickHud(activity, stick);
+        dynamicStick = new DynamicStickView(activity, stick, dynamicHud);
         dynamicStick.setListener(new DynamicStickView.Listener() {
             @Override public void onStick(float x, float y) {
                 GameActivity.nativeTouchMove(x, y);
             }
         });
+        dynamicHud.setVisibility(View.GONE);
         dynamicStick.setVisibility(View.GONE);
-        content.addView(dynamicStick, new FrameLayout.LayoutParams(
+        content.addView(dynamicHud, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        // MATCH_PARENT here; DynamicStickView.onMeasure shrinks it to the zone, and the gravity puts that at the bottom left.
+        FrameLayout.LayoutParams zone = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
+        zone.gravity = Gravity.BOTTOM | Gravity.LEFT;
+        content.addView(dynamicStick, zone);
     }
     /** The gameplay layout; the floating variant simply has no stick control and its own saved-layout ID. */
     private RetroTouchLayout buildLayout(boolean floatingStick) {
@@ -104,6 +116,7 @@ final class RetroTouchBridge {
     }
     private void applyStickInput() {
         final boolean useIt = showing && dynamic;
+        dynamicHud.setVisibility(useIt ? View.VISIBLE : View.GONE);
         dynamicStick.setVisibility(useIt ? View.VISIBLE : View.GONE);
         dynamicStick.setInputEnabled(useIt && !editing);
     }

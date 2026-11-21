@@ -2,17 +2,17 @@
 package org.nzportable.android;
 
 import android.content.Context;
-import android.graphics.Canvas;
-import android.graphics.Paint;
 import android.view.MotionEvent;
 import android.view.View;
 
 /**
- * Transparent layer above the RetroTouch overlay that runs the floating left stick (see DynamicStick).
+ * Touch surface of the floating left stick (see DynamicStick). It is only as large as the stick zone, placed at the
+ * bottom left of the content layout by RetroTouchBridge, and it draws nothing (DynamicStickHud does).
  *
- * It only accepts a touch that starts in the stick zone. Every other touch is refused, so it falls through to the
- * RetroTouch view below (the content layout splits touches between its children, see RetroTouchBridge) and buttons and
- * camera work exactly as before. The finger that started the stick stays with it until it is lifted.
+ * Why it must not cover the screen: when a view already receives a touch and another finger lands inside its bounds,
+ * Android gives that finger to the same view without asking the views below. A full-screen stick layer swallowed the
+ * camera finger as soon as the stick was held. With a zone-sized view a finger outside the zone can only reach the
+ * RetroTouch view below, whatever the other finger is doing.
  */
 final class DynamicStickView extends View {
     interface Listener {
@@ -20,17 +20,16 @@ final class DynamicStickView extends View {
         void onStick(float x, float y);
     }
 
-    private final DynamicStick stick = new DynamicStick();
-    private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final DynamicStick stick;
+    private final DynamicStickHud hud;
     private Listener listener;
     private boolean inputEnabled = true;
     private float sentX, sentY;
 
-    DynamicStickView(Context context) {
+    DynamicStickView(Context context, DynamicStick stick, DynamicStickHud hud) {
         super(context);
-        fill.setStyle(Paint.Style.FILL);
-        ring.setStyle(Paint.Style.STROKE);
+        this.stick = stick;
+        this.hud = hud;
     }
 
     void setListener(Listener value) { listener = value; }
@@ -39,7 +38,7 @@ final class DynamicStickView extends View {
     void setInputEnabled(boolean enabled) {
         if (!enabled) release();
         inputEnabled = enabled;
-        invalidate();
+        hud.setShown(enabled);
     }
 
     /** Lets go of the stick (pause, menu, mode change) and reports neutral once if it was held. */
@@ -47,8 +46,19 @@ final class DynamicStickView extends View {
         final boolean wasActive = stick.isActive();
         stick.cancel();
         if (wasActive) report();
-        invalidate();
+        hud.invalidate();
     }
+
+    @Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        // Only the zone: the left part of the screen, below the top strip.
+        setMeasuredDimension(
+                DynamicStick.zoneWidthPx(MeasureSpec.getSize(widthMeasureSpec)),
+                DynamicStick.zoneHeightPx(MeasureSpec.getSize(heightMeasureSpec)));
+    }
+
+    // The stick works in coordinates of the whole content layout (the hud's), not of this small view.
+    private float screenX(MotionEvent event, int index) { return event.getX(index) + getLeft(); }
+    private float screenY(MotionEvent event, int index) { return event.getY(index) + getTop(); }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
         if (!inputEnabled) return false;
@@ -56,26 +66,27 @@ final class DynamicStickView extends View {
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_POINTER_DOWN: {
                 final int index = event.getActionIndex();
-                if (!stick.begin(event.getPointerId(index), event.getX(index), event.getY(index), getWidth(), getHeight()))
+                if (!stick.begin(event.getPointerId(index), screenX(event, index), screenY(event, index),
+                        hud.getWidth(), hud.getHeight()))
                     return false;
                 report();
-                invalidate();
+                hud.invalidate();
                 return true;
             }
             case MotionEvent.ACTION_MOVE: {
                 if (!stick.isActive()) return false;
                 final int index = event.findPointerIndex(stick.pointerId());
                 if (index < 0) return false;
-                stick.move(stick.pointerId(), event.getX(index), event.getY(index));
+                stick.move(stick.pointerId(), screenX(event, index), screenY(event, index));
                 report();
-                invalidate();
+                hud.invalidate();
                 return true;
             }
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_POINTER_UP: {
                 if (!stick.end(event.getPointerId(event.getActionIndex()))) return false;
                 report();
-                invalidate();
+                hud.invalidate();
                 return true;
             }
             case MotionEvent.ACTION_CANCEL: {
@@ -95,25 +106,5 @@ final class DynamicStickView extends View {
         sentX = x;
         sentY = y;
         if (listener != null) listener.onStick(x, y);
-    }
-
-    @Override protected void onDraw(Canvas canvas) {
-        if (!inputEnabled) return;
-        final float width = getWidth(), height = getHeight();
-        final float stroke = Math.max(2f, Math.min(width, height) * 0.004f);
-        ring.setStrokeWidth(stroke);
-        if (stick.isActive()) {
-            final float radius = stick.radius();
-            fill.setColor(0x33FFFFFF);
-            canvas.drawCircle(stick.baseX(), stick.baseY(), radius, fill);
-            ring.setColor(0x99FFFFFF);
-            canvas.drawCircle(stick.baseX(), stick.baseY(), radius, ring);
-            fill.setColor(0x88FFFFFF);
-            canvas.drawCircle(stick.knobX(), stick.knobY(), radius * 0.42f, fill);
-        } else if (width > 0f && height > 0f) {
-            // Where a thumb can land: a faint ring where the fixed stick used to be.
-            ring.setColor(0x38FFFFFF);
-            canvas.drawCircle(DynamicStick.HINT_X * width, DynamicStick.HINT_Y * height, DynamicStick.radiusFor(width, height), ring);
-        }
     }
 }

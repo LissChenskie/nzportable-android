@@ -86,6 +86,25 @@ public class DynamicStickTest {
         p.move(1, 100 + 0.5f * p.radius(), 1500);
         check(near(p.x(), 0.5f), "portrait radius");
 
+        // The touch view is exactly the zone: its rectangle and inZone agree on every screen size, so a finger outside the view
+        // (the camera finger, a button finger) can never be handed to the stick, whatever else is held.
+        final int[][] screens = {{2400, 1080}, {1920, 1080}, {2340, 1080}, {2560, 1440}, {1280, 720}, {1080, 2400}, {800, 480}};
+        for (int[] screen : screens) {
+            final int sw = screen[0], sh = screen[1];
+            final int zoneW = DynamicStick.zoneWidthPx(sw), zoneH = DynamicStick.zoneHeightPx(sh), top = DynamicStick.zoneTopPx(sh);
+            check(zoneW > 0 && zoneH > 0 && top + zoneH == sh, "zone rectangle ends at the bottom edge " + sw + "x" + sh);
+            check(zoneW <= 0.30f * sw + 1e-3f, "the view is never wider than the zone " + sw + "x" + sh);
+            check(top >= 0.20f * sh - 1e-3f, "the view never reaches into the top strip " + sw + "x" + sh);
+            for (int x = 0; x < sw; x += 7) for (int y = 0; y < sh; y += 7) {
+                final boolean insideView = x < zoneW && y >= top;
+                if (insideView) check(DynamicStick.inZone(x, y, sw, sh), "every point of the view is in the zone " + x + "," + y);
+                else if (x > zoneW || y < top - 1) // (one pixel of rounding at the very edge is allowed)
+                    check(!DynamicStick.inZone(x, y, sw, sh), "a point outside the view is not a touch for the stick " + x + "," + y);
+            }
+            // The camera zone and RUN lie outside: the far side of the screen and 31% of the width.
+            check(!(0.46f * sw < zoneW) && !(0.31f * sw < zoneW), "RUN and the look zone are outside the view " + sw);
+        }
+
         System.out.println("Floating left stick: zone, radius, dead zone, clamping, sign, finger ownership passed");
     }
 }
