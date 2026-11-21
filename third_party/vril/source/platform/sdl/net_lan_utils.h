@@ -7,6 +7,25 @@
 #include <stddef.h>
 #include <string.h>
 #include <errno.h>
+#include <stdio.h>
+
+/* Single diagnostic channel for LAN play: logcat tag "NZP_LAN" (adb logcat -s NZP_LAN).
+ * Only for state changes, handshake steps and errors; never per frame. */
+#ifndef NZP_LAN_LOG /* also defined in net.h for the rest of the engine */
+#ifdef PLATFORM_ANDROID
+void NZP_LanLog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+#define NZP_LAN_LOG(...) NZP_LanLog(__VA_ARGS__)
+#else
+#define NZP_LAN_LOG(...) ((void)0)
+#endif
+#endif
+
+/* Host byte order IPv4 -> "a.b.c.d" (buffer of at least 16 bytes). */
+static inline const char *LAN_FormatIPv4(uint32_t ip,char *out)
+{
+    snprintf(out,16,"%u.%u.%u.%u",(unsigned)(ip>>24)&255u,(unsigned)(ip>>16)&255u,(unsigned)(ip>>8)&255u,(unsigned)ip&255u);
+    return out;
+}
 
 /* Reject ambiguous octets, suffixes and commands before creating any
  * "connect" command text. Works without libc sscanf or a network interface. */
@@ -63,7 +82,7 @@ static inline int LAN_NameHasPrefix(const char *name,const char *prefix)
  * address", which advertised an unreachable carrier-NAT address. */
 static inline int LAN_IsNonLocalInterface(const char *name)
 {
-    static const char *const prefixes[]={"rmnet","v4-rmnet","ccmni","v4-ccmni","pdp","ppp","clat",
+    static const char *const prefixes[]={"rmnet","v4-" /* CLAT: v4-wlan0, v4-rmnet_data0... */,"ccmni","pdp","ppp","clat",
         "dummy","tun","ipsec","wwan","seth","r_rmnet","rev_rmnet","ifb","sit","ip6tnl",NULL};
     for(int i=0;prefixes[i];i++)if(LAN_NameHasPrefix(name,prefixes[i]))return 1;
     return 0;
@@ -78,6 +97,7 @@ static inline int LAN_InterfaceScore(const lan_iface_t *i)
     int score=1;
     if(!i->up||i->loopback||i->ip==0)return -1;
     if(LAN_IsNonLocalInterface(i->name))return -1;
+    if(i->mask==0xFFFFFFFFu)return -1; /* /32: point-to-point/CLAT, no peers on it */
     if(LAN_IsPrivateIPv4(i->ip))score+=10;
     else if((i->ip>>16)==0xA9FE)score+=2; /* 169.254/16 link-local */
     if(LAN_NameHasPrefix(i->name,"wlan")||LAN_NameHasPrefix(i->name,"p2p"))score+=5;

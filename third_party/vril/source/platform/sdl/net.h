@@ -209,6 +209,16 @@ extern net_driver_t	net_drivers[MAX_NET_DRIVERS];
 extern int			DEFAULTnet_hostport;
 extern int			net_hostport;
 
+/* LAN diagnostics: logcat tag NZP_LAN on Android, compiled out elsewhere. */
+#ifndef NZP_LAN_LOG
+#ifdef PLATFORM_ANDROID
+void NZP_LanLog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+#define NZP_LAN_LOG(...) NZP_LanLog(__VA_ARGS__)
+#else
+#define NZP_LAN_LOG(...) ((void)0)
+#endif
+#endif
+
 extern int net_driverlevel;
 extern cvar_t		hostname;
 /* 1 = original networking behaviour (no Wi-Fi binding, first-interface address, fixed 1 s retransmit,

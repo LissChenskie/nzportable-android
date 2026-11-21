@@ -398,6 +398,9 @@ void SV_DropClient (qboolean crash)
 	}
 
 // break the net connection
+	NZP_LAN_LOG("player slot %d '%s' leaving: %s, spawned=%d, crash=%d", (int)(host_client - svs.clients) + 1,
+		host_client->name, host_client->netconnection ? host_client->netconnection->address : "?",
+		host_client->spawned ? 1 : 0, crash ? 1 : 0);
 	NET_Close (host_client->netconnection);
 	host_client->netconnection = NULL;
 

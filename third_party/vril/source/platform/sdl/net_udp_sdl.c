@@ -100,6 +100,61 @@ static unsigned long UDP_LocalAddress(uint32_t peer_ip)
     }
     return best >= 0 ? (unsigned long)htonl(ifaces[best].ip) : 0;
 }
+/* ---- NZP_LAN diagnostics ------------------------------------------------- */
+static void UDP_FmtAddr(const struct qsockaddr *a, char out[24])
+{
+    const struct sockaddr_in *in = (const struct sockaddr_in *)a;
+    char ip[16];
+    snprintf(out, 24, "%s:%u", LAN_FormatIPv4(ntohl(in->sin_addr.s_addr), ip), (unsigned)ntohs(in->sin_port));
+}
+/* Dump every IPv4 interface with the verdict of the shared selection logic. */
+static void UDP_LogInterfaces(const char *why)
+{
+    lan_iface_t ifaces[UDP_MAX_IFACES];
+    struct sockaddr_in bc[UDP_MAX_IFACES];
+    int n = UDP_ListInterfaces(ifaces, bc), best = LAN_PickInterface(ifaces, n, 0);
+    NZP_LAN_LOG("interfaces (%s): %d IPv4 entries, advertised=%s", why, n, best >= 0 ? ifaces[best].name : "NONE");
+    for (int i = 0; i < n; i++) {
+        char ip[16], mk[16], bs[16];
+        NZP_LAN_LOG("  %-14s ip=%s mask=%s bcast=%s up=%d lo=%d score=%d%s", ifaces[i].name,
+                    LAN_FormatIPv4(ifaces[i].ip, ip), LAN_FormatIPv4(ifaces[i].mask, mk),
+                    LAN_FormatIPv4(ntohl(bc[i].sin_addr.s_addr), bs), ifaces[i].up, ifaces[i].loopback,
+                    LAN_InterfaceScore(&ifaces[i]), i == best ? "  <== advertised" : "");
+    }
+}
+/* Re-dump only when the interface set actually changed (hotspot/Wi-Fi toggled). */
+static void UDP_LogInterfacesIfChanged(const char *why)
+{
+    static uint32_t last_sig;
+    lan_iface_t ifaces[UDP_MAX_IFACES];
+    int n = UDP_ListInterfaces(ifaces, NULL);
+    uint32_t sig = 2166136261u;
+    for (int i = 0; i < n; i++) {
+        for (const char *c = ifaces[i].name; *c; c++) sig = (sig ^ (unsigned char)*c) * 16777619u;
+        sig = (sig ^ ifaces[i].ip) * 16777619u;
+        sig = (sig ^ ifaces[i].mask) * 16777619u;
+        sig = (sig ^ (uint32_t)ifaces[i].up) * 16777619u;
+    }
+    if (sig != last_sig) { last_sig = sig; UDP_LogInterfaces(why); }
+}
+enum { UDP_OP_SEND, UDP_OP_RECV, UDP_OP_BCAST, UDP_OP_COUNT };
+/* One line per (operation, errno) change or every 3 s; suppressed repeats are counted. */
+static void UDP_LogSockError(int op, int fd, int err, const struct qsockaddr *peer)
+{
+    static const char *const names[UDP_OP_COUNT] = { "sendto", "recvfrom", "broadcast" };
+    static int last_err[UDP_OP_COUNT];
+    static Uint64 last_tick[UDP_OP_COUNT];
+    static unsigned suppressed[UDP_OP_COUNT];
+    Uint64 now = SDL_GetTicks64();
+    char where[24] = "-";
+    if (err == last_err[op] && last_tick[op] && now - last_tick[op] < 3000) { suppressed[op]++; return; }
+    if (peer) UDP_FmtAddr(peer, where);
+    NZP_LAN_LOG("UDP %s error fd=%d peer=%s errno=%d (%s)%s [+%u similar suppressed]", names[op], fd, where, err,
+                strerror(err), LAN_IsTransientSocketErrno(err) ? " treated-as-lost-packet" : " FATAL-for-connection",
+                suppressed[op]);
+    last_err[op] = err; last_tick[op] = now; suppressed[op] = 0;
+}
+
 /* Discovery broadcast on every real local network. Cellular and tunnel
  * interfaces are skipped: they only waste airtime and can leak packets. */
 static int UDP_SendInterfaceBroadcasts(int socket, byte *buf, int len)
@@ -109,23 +164,93 @@ static int UDP_SendInterfaceBroadcasts(int socket, byte *buf, int len)
     int n = UDP_ListInterfaces(ifaces, broadcast), sent = 0;
     for (int i = 0; i < n; i++) {
         struct sockaddr_in dest = broadcast[i];
+        char bs[16];
         if (LAN_LEGACY_MODE ? (!ifaces[i].up || ifaces[i].loopback || !ifaces[i].ip) : (LAN_InterfaceScore(&ifaces[i]) < 0)) continue;
         if (dest.sin_addr.s_addr == 0 || dest.sin_addr.s_addr == INADDR_BROADCAST) continue;
         dest.sin_port = htons(net_hostport);
-        if (sendto(socket, (const char *)buf, len, 0, (struct sockaddr *)&dest, sizeof(dest)) == len) sent++;
+        if (sendto(socket, (const char *)buf, len, 0, (struct sockaddr *)&dest, sizeof(dest)) == len) {
+            sent++;
+            NZP_LAN_LOG("broadcast sent: %s -> %s:%d (%d bytes)", ifaces[i].name,
+                        LAN_FormatIPv4(ntohl(dest.sin_addr.s_addr), bs), net_hostport, len);
+        } else {
+            int err = errno;
+            NZP_LAN_LOG("broadcast FAILED: %s -> %s:%d errno=%d (%s)", ifaces[i].name,
+                        LAN_FormatIPv4(ntohl(dest.sin_addr.s_addr), bs), net_hostport, err, strerror(err));
+        }
     }
     return sent;
 }
-/* Client sockets follow the Wi-Fi network chosen by Java. Listening (hosting)
- * sockets are never bound: a hotspot host has no Wi-Fi "Network" to bind to. */
+
+/* ---- Wi-Fi Network binding for CLIENT sockets ---------------------------- */
+/* A hotspot host has no Wi-Fi "Network" object, and its per-client game sockets must keep
+ * default routing (binding them to some unrelated STA network would send replies the wrong
+ * way). That is why binding is skipped while this process is actually serving.
+ * NOTE: the previous test was only "accept socket open"; a client that hosted earlier and
+ * left through a path that did not run "listen 0" kept the accept socket open and then never
+ * bound any outgoing socket, so joining a hotspot without internet went out over mobile data. */
+static int UDP_IsServing(void)
+{
+    return net_acceptsocket != -1 && sv.active;
+}
+enum { UDP_MAX_TRACKED = 8 };
+static struct { int used, fd; unsigned generation; int bound; } udp_tracked[UDP_MAX_TRACKED];
+
+static void UDP_ApplyBinding(int idx)
+{
+    int fd = udp_tracked[idx].fd, rc = 0;
+    unsigned gen = NZP_LanNetwork_Generation();
+    uint64_t handle = NZP_LanNetwork_Get();
+    if (handle) {
+        rc = NZP_LanNetwork_BindSocket(fd);
+        udp_tracked[idx].bound = (rc == 0);
+    } else if (udp_tracked[idx].bound) {
+        rc = NZP_LanNetwork_ClearSocket(fd); /* network is gone: drop the stale binding */
+        udp_tracked[idx].bound = 0;
+    }
+    udp_tracked[idx].generation = gen;
+    NZP_LAN_LOG("socket fd=%d binding: wifi_handle=%llu gen=%u -> %s", fd, (unsigned long long)handle, gen,
+                handle ? (rc == 0 ? "bound to Wi-Fi network" : "BIND FAILED, default routing") : "no Wi-Fi network, default routing");
+}
+/* Register an outgoing/discovery socket and bind it to the current Wi-Fi network. */
 static void UDP_BindClientSocket(int fd)
 {
-    int rc;
-    static int logged;
-    if (LAN_LEGACY_MODE || net_acceptsocket != -1) return;
-    rc = NZP_LanNetwork_BindSocket(fd);
-    if (logged < 6) { logged++; SDL_Log("NZP_NET bind fd=%d wifi_handle=%llu rc=%d", fd, (unsigned long long)NZP_LanNetwork_Get(), rc); }
+    int i, free_slot = -1;
+    if (LAN_LEGACY_MODE || UDP_IsServing()) return;
+    for (i = 0; i < UDP_MAX_TRACKED; i++) {
+        if (udp_tracked[i].used && udp_tracked[i].fd == fd) { UDP_ApplyBinding(i); return; }
+        if (free_slot < 0 && !udp_tracked[i].used) free_slot = i;
+    }
+    if (free_slot < 0) { NZP_LAN_LOG("socket fd=%d NOT tracked: table full", fd); NZP_LanNetwork_BindSocket(fd); return; }
+    udp_tracked[free_slot].used = 1;
+    udp_tracked[free_slot].fd = fd;
+    UDP_ApplyBinding(free_slot);
 }
+static void UDP_UntrackSocket(int fd)
+{
+    for (int i = 0; i < UDP_MAX_TRACKED; i++)
+        if (udp_tracked[i].used && udp_tracked[i].fd == fd) memset(&udp_tracked[i], 0, sizeof(udp_tracked[i]));
+}
+/* Cheap per-packet check: re-bind when the Wi-Fi Network changed after the socket was
+ * bound (Wi-Fi reconnect, hotspot toggled, handle published late). */
+static void UDP_RefreshBinding(int fd)
+{
+    unsigned gen = NZP_LanNetwork_Generation();
+    for (int i = 0; i < UDP_MAX_TRACKED; i++)
+        if (udp_tracked[i].used && udp_tracked[i].fd == fd) {
+            if (udp_tracked[i].generation != gen) UDP_ApplyBinding(i);
+            return;
+        }
+}
+/* Used by the LAN menu: same selection logic as the address advertised to peers. */
+const char *UDP_BestLocalAddress(void)
+{
+    static char text[16];
+    unsigned long a = UDP_LocalAddress(0);
+    text[0] = 0;
+    if (a) LAN_FormatIPv4(ntohl((uint32_t)a), text);
+    return text;
+}
+int UDP_IsListening(void) { return net_acceptsocket != -1; }
 #endif
 
 
@@ -147,6 +272,10 @@ int UDP_Init (void)
 
 	if (COM_CheckParm ("-noudp"))
 		return -1;
+	#ifdef PLATFORM_ANDROID
+	NZP_LAN_LOG("LAN subsystem start: UDP port %d legacy=%d wifi_handle=%llu", net_hostport,
+			LAN_LEGACY_MODE ? 1 : 0, (unsigned long long)NZP_LanNetwork_Get());
+	#endif
 
 	#if defined(_WIN32)
 		{
@@ -193,6 +322,9 @@ int UDP_Init (void)
 		*colon = 0;
 
 	Con_Printf("UDP Initialized\n");
+	#ifdef PLATFORM_ANDROID
+	UDP_LogInterfacesIfChanged("init");
+	#endif
 	tcpipAvailable = true;
 
 	return net_controlsocket;
@@ -215,14 +347,40 @@ void UDP_Listen (qboolean state)
 	{
 		if (net_acceptsocket != -1)
 			return;
+		#ifdef PLATFORM_ANDROID
+		UDP_LogInterfaces("listen");
+		#endif
 		if ((net_acceptsocket = UDP_OpenSocket (net_hostport)) == -1)
+		{
+		#ifdef PLATFORM_ANDROID
+			/* Port busy / socket error: report to the LAN menu (UDP_IsListening) instead of
+			 * killing the app. The reason with errno was logged by UDP_OpenSocket. */
+			NZP_LAN_LOG("LISTEN FAILED on UDP port %d: this phone cannot host", net_hostport);
+			Con_Printf ("Unable to open accept socket (UDP %d)\n", net_hostport);
+			return;
+		#else
 			Sys_Error ("Unable to open accept socket\n");
+		#endif
+		}
+		#ifdef PLATFORM_ANDROID
+		{
+			struct qsockaddr bound; int blen = sizeof(bound);
+			char txt[24];
+			memset(&bound, 0, sizeof(bound));
+			getsockname(net_acceptsocket, (struct sockaddr *)&bound, (socklen_t *)&blen);
+			UDP_FmtAddr(&bound, txt);
+			NZP_LAN_LOG("LISTEN OK fd=%d bound=%s (all interfaces, not pinned to a Wi-Fi Network)", net_acceptsocket, txt);
+		}
+		#endif
 		return;
 	}
 
 	// disable listening
 	if (net_acceptsocket == -1)
 		return;
+	#ifdef PLATFORM_ANDROID
+	NZP_LAN_LOG("LISTEN CLOSED fd=%d", net_acceptsocket);
+	#endif
 	UDP_CloseSocket (net_acceptsocket);
 	net_acceptsocket = -1;
 }
@@ -233,9 +391,17 @@ int UDP_OpenSocket (int port)
 {
 	int newsocket;
 	struct sockaddr_in address;
+	#ifdef PLATFORM_ANDROID
+	const char *failed_step = "socket";
+	#endif
 
 	if ((newsocket = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
+	{
+		#ifdef PLATFORM_ANDROID
+		NZP_LAN_LOG("UDP_OpenSocket port=%d: socket() failed errno=%d (%s)", port, errno, strerror(errno));
+		#endif
 		return -1;
+	}
 
 	#if defined(_WIN32)
 	u_long mode = 1;
@@ -244,11 +410,23 @@ int UDP_OpenSocket (int port)
 	#else
 	int flags = fcntl(newsocket, F_GETFL, 0);
 	if ( fcntl(newsocket, F_SETFL, flags | O_NONBLOCK) == -1)
+	{
+		#ifdef PLATFORM_ANDROID
+		failed_step = "fcntl(O_NONBLOCK)";
+		#endif
 		goto ErrorReturn;
+	}
 	#endif
 
 #ifdef PLATFORM_ANDROID
-	if (port == 0) UDP_BindClientSocket(newsocket);
+	failed_step = "bind";
+	if (port == 0)
+	{
+		if (UDP_IsServing())
+			NZP_LAN_LOG("socket fd=%d: server-side peer socket, default routing (not bound to a Wi-Fi Network)", newsocket);
+		else
+			UDP_BindClientSocket(newsocket);
+	}
 #endif
 	address.sin_family = AF_INET;
 	address.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -261,6 +439,14 @@ int UDP_OpenSocket (int port)
 	return newsocket;
 
 ErrorReturn:
+	#ifdef PLATFORM_ANDROID
+	{
+		int err = errno;
+		NZP_LAN_LOG("UDP_OpenSocket port=%d: %s failed errno=%d (%s)", port, failed_step, err, strerror(err));
+		UDP_UntrackSocket(newsocket);
+		errno = err;
+	}
+	#endif
 	#if defined(_WIN32)
 	closesocket(newsocket);
 	#else
@@ -275,6 +461,9 @@ int UDP_CloseSocket (int socket)
 {
 	if (socket == net_broadcastsocket)
 		net_broadcastsocket = 0;
+	#ifdef PLATFORM_ANDROID
+	UDP_UntrackSocket(socket);
+	#endif
 
 	return close (socket);
 }
@@ -366,14 +555,17 @@ int UDP_Read (int socket, byte *buf, int len, struct qsockaddr *addr)
 	int addrlen = sizeof (struct qsockaddr);
 	int ret;
 
+	#ifdef PLATFORM_ANDROID
+	UDP_RefreshBinding(socket);
+	#endif
 	ret = recvfrom(socket, (char *)buf, len, 0, (struct sockaddr *)addr, (socklen_t*)&addrlen);
 	if (ret == -1) {
 #ifdef PLATFORM_ANDROID
 		// Wi-Fi power save, roaming and hotspot toggling produce transient errors
 		// (ENETUNREACH, ECONNREFUSED...). They mean one lost packet, not a dead
 		// connection; returning -1 made Datagram_GetMessage drop the player.
+		if (errno != EAGAIN && errno != EWOULDBLOCK) UDP_LogSockError(UDP_OP_RECV, socket, errno, NULL);
 		if (LAN_LEGACY_MODE ? (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) : LAN_IsTransientSocketErrno(errno)) return 0;
-		SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "UDP recvfrom error: %d", errno);
 		return -1;
 #else
 		return 0;
@@ -418,7 +610,10 @@ int UDP_Broadcast (int socket, byte *buf, int len)
 	}
 
 #ifdef PLATFORM_ANDROID
-	UDP_BindClientSocket(socket); // Wi-Fi may have (re)connected since the socket was opened
+	UDP_RefreshBinding(socket); // Wi-Fi may have (re)connected since the socket was opened
+	UDP_LogInterfacesIfChanged("search");
+	NZP_LAN_LOG("discovery broadcast: limited 255.255.255.255:%d (%d bytes) wifi_handle=%llu", net_hostport, len,
+			(unsigned long long)NZP_LanNetwork_Get());
 #endif
 	ret = UDP_Write (socket, buf, len, &broadcastaddr);
 #ifdef PLATFORM_ANDROID
@@ -434,11 +629,14 @@ int UDP_Write (int socket, byte *buf, int len, struct qsockaddr *addr)
 {
 	int ret;
 
+	#ifdef PLATFORM_ANDROID
+	UDP_RefreshBinding(socket);
+	#endif
 	ret = sendto (socket, (const char *)buf, len, 0, (struct sockaddr *)addr, sizeof(struct qsockaddr));
 	if (ret == -1) {
 #ifdef PLATFORM_ANDROID
+		if (errno != EAGAIN && errno != EWOULDBLOCK) UDP_LogSockError(UDP_OP_SEND, socket, errno, addr);
 		if (LAN_LEGACY_MODE ? (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) : LAN_IsTransientSocketErrno(errno)) return 0;
-		SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "UDP sendto error: %d", errno);
 		return -1;
 #else
 		return 0;

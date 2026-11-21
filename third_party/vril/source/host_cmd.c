@@ -967,6 +967,7 @@ void Host_Spawn_f (void)
 		Con_Printf ("spawn is not valid from the console\n");
 		return;
 	}
+	NZP_LAN_LOG("player slot %d: spawn requested (signon stage 2)", (int)(host_client - svs.clients) + 1);
 
 	if (host_client->spawned)
 	{
@@ -1094,6 +1095,7 @@ void Host_Begin_f (void)
 		return;
 	}
 
+	NZP_LAN_LOG("player slot %d '%s': signon complete (begin), now in the game", (int)(host_client - svs.clients) + 1, host_client->name);
 	host_client->spawned = true;
 }
 

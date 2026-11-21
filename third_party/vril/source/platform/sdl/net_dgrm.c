@@ -43,7 +43,20 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define sfunc	net_landrivers[sock->landriver]
 #define dfunc	net_landrivers[net_landriverlevel]
 
+
 static int net_landriverlevel;
+
+#ifdef PLATFORM_ANDROID
+/* UDP_AddrToString uses one static buffer: copy before formatting two addresses. */
+static const char *Dgrm_Addr(struct qsockaddr *addr, char *buf)
+{
+	Q_strncpyz(buf, dfunc.AddrToString(addr), 24);
+	return buf;
+}
+#define DGRM_ADDR(name, addr) char name[24]; Dgrm_Addr(addr, name)
+#else
+#define DGRM_ADDR(name, addr) ((void)0)
+#endif
 
 /* statistic counters */
 int	packetsSent = 0;
@@ -871,7 +884,17 @@ static qsocket_t *_Datagram_CheckNewConnections (void)
 		MSG_WriteByte(&net_message, svs.maxclients);
 		MSG_WriteByte(&net_message, NET_PROTOCOL_VERSION);
 		*((int *)net_message.data) = BigLong(NETFLAG_CTL | (net_message.cursize & NETFLAG_LENGTH_MASK));
-		dfunc.Write (acceptsock, net_message.data, net_message.cursize, &clientaddr);
+		{
+			int wr = dfunc.Write (acceptsock, net_message.data, net_message.cursize, &clientaddr);
+			#ifdef PLATFORM_ANDROID
+			DGRM_ADDR(who, &clientaddr);
+			DGRM_ADDR(adv, &newaddr);
+			NZP_LAN_LOG("server: rx CCREQ_SERVER_INFO from %s -> tx CCREP_SERVER_INFO ret=%d map=%s users=%d/%d advertised=%s",
+				who, wr, sv.name, net_activeconnections, svs.maxclients, adv);
+			#else
+			(void)wr;
+			#endif
+		}
 		SZ_Clear(&net_message);
 		return NULL;
 	}
@@ -946,8 +969,13 @@ static qsocket_t *_Datagram_CheckNewConnections (void)
 	if (strcmp(MSG_ReadString(), "QUAKE") != 0)
 		return NULL;
 
+	{
+		DGRM_ADDR(who, &clientaddr);
+		NZP_LAN_LOG("server: rx CCREQ_CONNECT from %s (active=%d/%d)", who, net_activeconnections, svs.maxclients);
+	}
 	if (MSG_ReadByte() != NET_PROTOCOL_VERSION)
 	{
+		NZP_LAN_LOG("server: CONNECT rejected: protocol version mismatch (server=%d)", NET_PROTOCOL_VERSION);
 		SZ_Clear(&net_message);
 		// save space for the header, filled in later
 		MSG_WriteLong(&net_message, 0);
@@ -994,6 +1022,7 @@ static qsocket_t *_Datagram_CheckNewConnections (void)
 			if (ret == 0 && net_time - s->connecttime < 2.0)
 			{
 				// yes, so send a duplicate reply
+				NZP_LAN_LOG("server: duplicate CCREQ_CONNECT (retry) -> repeating CCREP_ACCEPT");
 				SZ_Clear(&net_message);
 				// save space for the header, filled in later
 				MSG_WriteLong(&net_message, 0);
@@ -1007,6 +1036,7 @@ static qsocket_t *_Datagram_CheckNewConnections (void)
 			}
 			// it's somebody coming back in from a crash/disconnect
 			// so close the old qsocket and let their retry get them back in
+			NZP_LAN_LOG("server: CONNECT from known peer (%s, same IP): closing stale connection, the client's retry will be accepted", s->address);
 			NET_Close(s);
 			return NULL;
 		}
@@ -1017,6 +1047,7 @@ static qsocket_t *_Datagram_CheckNewConnections (void)
 	if (sock == NULL)
 	{
 		// no room; try to let him know
+		NZP_LAN_LOG("server: CONNECT rejected: server is full (%d/%d)", net_activeconnections, svs.maxclients);
 		SZ_Clear(&net_message);
 		// save space for the header, filled in later
 		MSG_WriteLong(&net_message, 0);
@@ -1032,6 +1063,7 @@ static qsocket_t *_Datagram_CheckNewConnections (void)
 	newsock = dfunc.OpenSocket(0);
 	if (newsock == -1)
 	{
+		NZP_LAN_LOG("server: CONNECT failed: cannot open game socket errno=%d (%s)", errno, strerror(errno));
 		NET_FreeQSocket(sock);
 		return NULL;
 	}
@@ -1059,7 +1091,16 @@ static qsocket_t *_Datagram_CheckNewConnections (void)
 	MSG_WriteLong(&net_message, dfunc.GetSocketPort(&newaddr));
 //	MSG_WriteString(&net_message, dfunc.AddrToString(&newaddr));
 	*((int *)net_message.data) = BigLong(NETFLAG_CTL | (net_message.cursize & NETFLAG_LENGTH_MASK));
-	dfunc.Write (acceptsock, net_message.data, net_message.cursize, &clientaddr);
+	{
+		int wr = dfunc.Write (acceptsock, net_message.data, net_message.cursize, &clientaddr);
+		#ifdef PLATFORM_ANDROID
+		DGRM_ADDR(who, &clientaddr);
+		NZP_LAN_LOG("server: tx CCREP_ACCEPT to %s ret=%d game_port=%d (new player connection, active=%d/%d)",
+			who, wr, dfunc.GetSocketPort(&newaddr), net_activeconnections, svs.maxclients);
+		#else
+		(void)wr;
+		#endif
+	}
 	SZ_Clear(&net_message);
 
 	return sock;
@@ -1108,7 +1149,13 @@ static void _Datagram_SearchForHosts (qboolean xmit)
 
 		// don't answer our own query
 		if (dfunc.AddrCompare(&readaddr, &myaddr) >= 0)
+		{
+			#ifdef PLATFORM_ANDROID
+			{ DGRM_ADDR(who, &readaddr); DGRM_ADDR(me, &myaddr);
+			  NZP_LAN_LOG("search: ignoring packet from own address %s (this phone is %s)", who, me); }
+			#endif
 			continue;
+		}
 
 		// is the cache full?
 		if (hostCacheCount == HOSTCACHESIZE)
@@ -1161,6 +1208,8 @@ static void _Datagram_SearchForHosts (qboolean xmit)
 		hostcache[n].driver = net_driverlevel;
 		hostcache[n].ldriver = net_landriverlevel;
 		Q_strcpy(hostcache[n].cname, dfunc.AddrToString(&readaddr));
+		NZP_LAN_LOG("search: rx CCREP_SERVER_INFO from %s name=%s map=%s users=%d/%d", hostcache[n].cname,
+			hostcache[n].name, hostcache[n].map, hostcache[n].users, hostcache[n].maxusers);
 
 		// check for a name conflict
 		for (i = 0; i < hostCacheCount; i++)
@@ -1209,11 +1258,21 @@ static qsocket_t *_Datagram_Connect (char *host)
 
 	// see if we can resolve the host name
 	if (dfunc.GetAddrFromName(host, &sendaddr) == -1)
+	{
+		NZP_LAN_LOG("client: connect target '%s' could not be parsed/resolved", host ? host : "(null)");
 		return NULL;
+	}
 
+	{
+		DGRM_ADDR(target, &sendaddr);
+		NZP_LAN_LOG("client: connecting to %s", target);
+	}
 	newsock = dfunc.OpenSocket (0);
 	if (newsock == -1)
+	{
+		NZP_LAN_LOG("client: connect aborted, cannot open UDP socket errno=%d (%s)", errno, strerror(errno));
 		return NULL;
+	}
 
 	sock = NET_NewQSocket ();
 	if (sock == NULL)
@@ -1240,7 +1299,10 @@ static qsocket_t *_Datagram_Connect (char *host)
 		MSG_WriteString(&net_message, "QUAKE");
 		MSG_WriteByte(&net_message, NET_PROTOCOL_VERSION);
 		*((int *)net_message.data) = BigLong(NETFLAG_CTL | (net_message.cursize & NETFLAG_LENGTH_MASK));
-		dfunc.Write (newsock, net_message.data, net_message.cursize, &sendaddr);
+		{
+			int wr = dfunc.Write (newsock, net_message.data, net_message.cursize, &sendaddr);
+			NZP_LAN_LOG("client: tx CCREQ_CONNECT attempt %d/%d write_ret=%d", reps + 1, LAN_LEGACY_MODE ? 3 : 5, wr);
+		}
 		SZ_Clear(&net_message);
 		do
 		{
@@ -1251,6 +1313,14 @@ static qsocket_t *_Datagram_Connect (char *host)
 				// is it from the right place?
 				if (sfunc.AddrCompare(&readaddr, &sendaddr) != 0)
 				{
+#ifdef PLATFORM_ANDROID
+					{
+						/* Always visible: a reply from another IP/port (multi-homed host,
+						 * NAT, wrong interface) looks exactly like "No Response". */
+						DGRM_ADDR(got, &readaddr); DGRM_ADDR(want, &sendaddr);
+						NZP_LAN_LOG("client: reply from unexpected address %s (expected %s) - ignored", got, want);
+					}
+#endif
 #ifdef DEBUG
 					Con_Printf("wrong reply address\n");
 					Con_Printf("Expected: %s\n", StrAddr (&sendaddr));
@@ -1302,6 +1372,7 @@ static qsocket_t *_Datagram_Connect (char *host)
 	if (ret == 0)
 	{
 		reason = "No Response";
+		NZP_LAN_LOG("client: NO RESPONSE to CCREQ_CONNECT (%d attempts): UDP path to the server is broken (wrong Wi-Fi/route, AP client isolation, firewall, or server not listening)", LAN_LEGACY_MODE ? 3 : 5);
 		Con_Printf("%s\n", reason);
 		Q_strcpy(m_return_reason, reason);
 		goto ErrorReturn;
@@ -1319,6 +1390,7 @@ static qsocket_t *_Datagram_Connect (char *host)
 	if (ret == CCREP_REJECT)
 	{
 		reason = MSG_ReadString();
+		NZP_LAN_LOG("client: server REJECTED connection: %s", reason);
 		Con_Printf("%s\\n",reason);
 		Q_strncpy(m_return_reason, reason, 31);
 		goto ErrorReturn;
@@ -1328,10 +1400,15 @@ static qsocket_t *_Datagram_Connect (char *host)
 	{
 		Q_memcpy(&sock->addr, &sendaddr, sizeof(struct qsockaddr));
 		dfunc.SetSocketPort (&sock->addr, MSG_ReadLong());
+		{
+			DGRM_ADDR(game, &sock->addr);
+			NZP_LAN_LOG("client: rx CCREP_ACCEPT, game connection -> %s", game);
+		}
 	}
 	else
 	{
 		reason = "Bad Response";
+		NZP_LAN_LOG("client: unexpected control reply type %d", ret);
 		Con_Printf("%s\n", reason);
 		Q_strcpy(m_return_reason, reason);
 		goto ErrorReturn;

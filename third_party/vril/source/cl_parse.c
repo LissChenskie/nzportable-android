@@ -1335,6 +1335,8 @@ void CL_ParseServerMessage (void)
 				Host_Error ("Received signon %i when at %i", i, cls.signon);
 			cls.signon = i;
 			Con_DPrintf("Signon: %i \n",i);
+			if (cls.netcon && cls.netcon->driver)
+				NZP_LAN_LOG("client: signon %d/4%s", i, i == 4 ? " - joined the game" : "");
 			CL_SignonReply ();
 			break;
 

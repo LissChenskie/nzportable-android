@@ -2,6 +2,7 @@
 #include "../third_party/vril/source/platform/sdl/net_lan_utils.h"
 #include "../android/native/lan_network.c" /* host build: no android_setsocknetwork */
 #include <assert.h>
+#include <string.h>
 #include <stdio.h>
 #define IP(a,b,c,d) (((uint32_t)(a)<<24)|((b)<<16)|((c)<<8)|(d))
 static lan_iface_t mk(const char *n,uint32_t ip,uint32_t mask,int up,int lo){
@@ -46,6 +47,26 @@ int main(void){
     assert(NZP_LanNetwork_BindSocket(5)==0&&NZP_LanNetwork_BindCount()==1);
     assert(NZP_LanNetwork_BindSocket(-1)==0&&NZP_LanNetwork_BindCount()==1);
     NZP_LanNetwork_Set(0);assert(NZP_LanNetwork_BindSocket(5)==0&&NZP_LanNetwork_BindCount()==1);
+    /* CLAT (v4-wlan0 = 192.0.0.4/32 on IPv6-only Wi-Fi) and any /32 are never LAN candidates. */
+    lan_iface_t clat[]={mk("v4-wlan0",IP(192,0,0,4),IP(255,255,255,255),1,0),mk("wlan0",IP(192,168,43,23),m24,1,0)};
+    assert(LAN_PickInterface(clat,2,0)==1);
+    lan_iface_t only32[]={mk("v4-rmnet_data2",IP(192,0,0,4),IP(255,255,255,255),1,0)};
+    assert(LAN_PickInterface(only32,1,0)==-1);
+    /* Hotspot subnets other than 192.168.43.x: broadcast follows the real mask. */
+    assert(LAN_SubnetBroadcast(IP(172,20,10,1),IP(255,255,255,240))==IP(172,20,10,15));
+    assert(LAN_SubnetBroadcast(IP(10,63,155,1),IP(255,255,255,0))==IP(10,63,155,255));
+    assert(LAN_SubnetBroadcast(IP(192,168,49,1),IP(255,255,255,0))==IP(192,168,49,255)); /* Wi-Fi Direct GO */
+    lan_iface_t p2p[]={mk("rmnet0",IP(10,1,1,1),m24,1,0),mk("p2p-wlan0-0",IP(192,168,49,1),m24,1,0)};
+    assert(LAN_PickInterface(p2p,2,0)==1);
+    char ipbuf[16];assert(!strcmp(LAN_FormatIPv4(IP(192,168,43,1),ipbuf),"192.168.43.1"));
+    /* Handle generation: bumps only on real change, so sockets re-bind exactly when needed. */
+    unsigned g0=NZP_LanNetwork_Generation();
+    NZP_LanNetwork_Set(0);assert(NZP_LanNetwork_Generation()==g0);          /* already 0 */
+    NZP_LanNetwork_Set(77);assert(NZP_LanNetwork_Generation()==g0+1);
+    NZP_LanNetwork_Set(77);assert(NZP_LanNetwork_Generation()==g0+1);       /* same handle */
+    NZP_LanNetwork_Set(88);assert(NZP_LanNetwork_Generation()==g0+2);       /* Wi-Fi reconnected */
+    NZP_LanNetwork_Set(0);assert(NZP_LanNetwork_Generation()==g0+3);        /* Wi-Fi lost */
+    assert(NZP_LanNetwork_ClearSocket(5)==0&&NZP_LanNetwork_ClearSocket(-1)==0);
     puts("mobile LAN interface selection, transient errors and adaptive RTO tests passed");
     return 0;
 }

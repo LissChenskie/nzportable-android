@@ -298,6 +298,8 @@ void SV_ConnectClient (int clientnum)
 
 	//Con_DPrintf ("Client %s connected\n", client->netconnection->address);
 	Con_Printf ("Client %s connected\n", client->netconnection->address);
+	NZP_LAN_LOG("player slot %d: connected from %s, signon begins (maxclients=%d)", clientnum + 1,
+		client->netconnection->address, svs.maxclients);
 
 	edictnum = clientnum+1;
 

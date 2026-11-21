@@ -52,5 +52,45 @@ class LanUdpSocketSmoke(unittest.TestCase):
                     host.sendto(b"ok",addr)
                     self.assertEqual(client.recv(64),b"ok")
 
+class LanListenerSemantics(unittest.TestCase):
+    """Mirrors the engine: accept socket on INADDR_ANY, per-client reply sockets."""
+    def test_wildcard_listener_serves_four_clients_and_replies_from_listener(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as accept:
+            accept.bind(("0.0.0.0", 0)); accept.settimeout(1.0)
+            port = accept.getsockname()[1]
+            clients = [socket.socket(socket.AF_INET, socket.SOCK_DGRAM) for _ in range(4)]
+            try:
+                for i, c in enumerate(clients):
+                    c.settimeout(1.0); c.sendto(b"CONNECT%d" % i, ("127.0.0.1", port))
+                for _ in clients:
+                    data, addr = accept.recvfrom(64)
+                    accept.sendto(b"ACCEPT" + data[-1:], addr)
+                for i, c in enumerate(clients):
+                    reply, src = c.recvfrom(64)
+                    self.assertEqual(reply, b"ACCEPT%d" % i)
+                    self.assertEqual(src[1], port)  # client validates the reply source ip:port
+            finally:
+                for c in clients: c.close()
+
+    def test_directed_broadcast_reaches_wildcard_listener(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as accept, \
+             socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as seeker:
+            accept.bind(("0.0.0.0", 0)); accept.settimeout(1.0)
+            seeker.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            try:
+                seeker.sendto(b"SERVER_INFO", ("127.255.255.255", accept.getsockname()[1]))
+                self.assertEqual(accept.recvfrom(64)[0], b"SERVER_INFO")
+            except (PermissionError, OSError) as e:
+                self.skipTest("broadcast not permitted in this sandbox: %s" % e)
+
+    def test_busy_port_is_reported_not_silent(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as first, \
+             socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as second:
+            first.bind(("0.0.0.0", 0))
+            with self.assertRaises(OSError) as ctx:
+                second.bind(("0.0.0.0", first.getsockname()[1]))
+            self.assertEqual(ctx.exception.errno, 98)  # EADDRINUSE: engine must log it, not Sys_Error
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -382,6 +382,7 @@ qsocket_t *NET_Connect (char *host)
 
 	if (host && *host == 0)
 		host = NULL;
+	NZP_LAN_LOG("NET_Connect: host=%s", host ? host : "(search)");
 
 	if (host)
 	{
@@ -518,6 +519,9 @@ void NET_Close (qsocket_t *sock)
 	if (sock->disconnected)
 		return;
 
+	if (sock->driver)
+		NZP_LAN_LOG("connection closed: %s (active before close=%d)", sock->address, net_activeconnections);
+
 	SetNetTime();
 
 	// call the driver_Close function
@@ -572,6 +576,8 @@ int	NET_GetMessage (qsocket_t *sock)
 	{
 		if (net_time - sock->lastMessageTime > (double)net_messagetimeout.value)
 		{
+			NZP_LAN_LOG("connection TIMED OUT: %s silent for %.0f s (net_messagetimeout=%.0f)", sock->address,
+				net_time - sock->lastMessageTime, (double)net_messagetimeout.value);
 			NET_Close(sock);
 			return -1;
 		}

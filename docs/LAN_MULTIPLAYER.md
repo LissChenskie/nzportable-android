@@ -160,3 +160,15 @@ The QuakeC repository includes server-player logic, zombies and rounds
 using shared player entities and server messages, but the imported compiled
 `progs.dat` remains an independent prerequisite. We cannot confirm its
 version from this repository alone.
+
+## Diagnostics (`NZP_LAN` log tag)
+
+`adb logcat -s NZP_LAN` shows, in order: LAN start, Wi-Fi Network handle set/lost, every IPv4 interface
+(ip/mask/broadcast/score, `<== advertised`), socket binding (`bound to Wi-Fi network` / `default routing` /
+`BIND FAILED` with errno), `LISTEN OK/FAILED` on UDP 26000, discovery broadcasts, server-side
+`CCREQ_SERVER_INFO` / `CCREQ_CONNECT` / `CCREP_ACCEPT`, client connect attempts and the final result
+(`NO RESPONSE`, reject reason, reply from unexpected address), signon stages 1-4, player join/leave,
+and socket errors with errno (rate limited). The stage where the log stops tells where the failure is:
+discovery, routing, UDP, handshake, signon, or game sync.
+
+Hotspot host without a Wi-Fi client network logs `no Wi-Fi client network ... default routing`; that is expected.

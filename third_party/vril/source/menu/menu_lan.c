@@ -20,31 +20,13 @@ static int lan_last_host_count=-1;
 static char lan_status[96] = "Create a game or search your local Wi-Fi.";
 static char lan_endpoint[64];
 #ifdef PLATFORM_ANDROID
+/* Same interface scoring as the address advertised in discovery replies (net_udp_sdl.c),
+ * so the IP shown for manual "Connect by IP" is the one other hotspot members can reach. */
+extern const char *UDP_BestLocalAddress(void);
+extern int UDP_IsListening(void);
 static const char *LAN_CurrentAddress(void) {
-    static char address[INET_ADDRSTRLEN],fallback[INET_ADDRSTRLEN];
-    static Uint64 last_refresh;
-    Uint64 now=SDL_GetTicks64();
-    if(now-last_refresh<2000 && last_refresh) return address[0]?address:my_tcpip_address;
-    last_refresh=now;address[0]=fallback[0]=0;
-    struct ifaddrs *list=NULL,*it;
-    if(getifaddrs(&list)==0) {
-        for(it=list;it;it=it->ifa_next) {
-            if(!it->ifa_addr||it->ifa_addr->sa_family!=AF_INET||
-                !(it->ifa_flags & IFF_UP)||(it->ifa_flags & IFF_LOOPBACK))continue;
-            const struct sockaddr_in *ip=(const struct sockaddr_in*)it->ifa_addr;
-            char candidate[INET_ADDRSTRLEN];
-            if(!inet_ntop(AF_INET,&ip->sin_addr,candidate,sizeof(candidate)))continue;
-            if(!fallback[0])strncpy(fallback,candidate,sizeof(fallback)-1);
-            // Prefer Wi-Fi tethering interfaces over mobile rmnet/rmnet_data.
-            if(!strncmp(it->ifa_name,"wlan",4)||!strncmp(it->ifa_name,"ap",2)||
-               !strncmp(it->ifa_name,"swlan",5)||!strncmp(it->ifa_name,"eth",3)) {
-                strncpy(address,candidate,sizeof(address)-1);break;
-            }
-        }
-        freeifaddrs(list);
-    }
-    if(!address[0]&&fallback[0])strncpy(address,fallback,sizeof(address)-1);
-    return address[0]?address:my_tcpip_address;
+    const char *best=UDP_BestLocalAddress();
+    return best&&best[0]?best:"no local network";
 }
 #else
 static const char *LAN_CurrentAddress(void) { return my_tcpip_address; }
@@ -77,6 +59,16 @@ void Menu_LANHost_Set(void) {
         Menu_LAN_Set();
         return;
     }
+#ifdef PLATFORM_ANDROID
+    if (!UDP_IsListening()) {
+        NZP_LAN_LOG("lobby refused: UDP port %d is not listening", net_hostport);
+        snprintf(lan_status, sizeof(lan_status), "Cannot open UDP port %d (in use?).", net_hostport);
+        Cbuf_AddText("disconnect\nlisten 0\nmaxplayers 1\ncoop 0\ndeathmatch 0\n");
+        Menu_LAN_Set();
+        return;
+    }
+    NZP_LAN_LOG("lobby open: map=%s maxplayers=%d address=%s:%d", sv.name, svs.maxclients, LAN_CurrentAddress(), net_hostport);
+#endif
     // Keep server networking live while the host waits in the lobby.
     sv.paused = true;
     key_dest = key_menu;
@@ -256,6 +248,7 @@ void Menu_LAN_ConnectAddress(const char *value) {
     }
     snprintf(cmd, sizeof(cmd), "connect %s\n", value);
     lan_join_pending=1;
+    menu_is_solo=false; /* a stale solo flag would gate the remote signon behind the solo loading prompt */
     // Client-side local cvars should reflect the server's cooperative rules.
     Cbuf_AddText("coop 1\ndeathmatch 0\n");
     Cbuf_AddText(cmd);
@@ -331,7 +324,13 @@ static void Menu_LAN_Find_Draw(void) {
     Menu_DrawButton(-1,count+1,"BACK","Return to cooperative menu.",Menu_LAN_Set);
     UI_SetAlignment(UI_ANCHOR_LEFT,UI_ANCHOR_TOP);
     if(count==0)Menu_DrawString(153,65,
-        slistInProgress?"Searching LAN...":"No compatible servers found.",255,255,255,255,vid.scale,0);
+        slistInProgress?"Searching LAN...":
+#ifdef PLATFORM_ANDROID
+        (UDP_BestLocalAddress()[0]?"No compatible servers found.":"Join the host's Wi-Fi hotspot first."),
+#else
+        "No compatible servers found.",
+#endif
+        255,255,255,255,vid.scale,0);
     else if(current_menu.cursor<count) {
         hostcache_t *h=&hostcache[current_menu.cursor];
         snprintf(lan_line,sizeof(lan_line),"Map: %.23s",h->map);
