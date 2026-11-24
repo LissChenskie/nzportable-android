@@ -1,4 +1,4 @@
-name: DeckCraft 0.18.1 Russian Windows x64 (retry)
+name: DeckCraft 0.19.0 Russian Windows x64 (retry)
 
 on:
   workflow_dispatch:
@@ -49,7 +49,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Could not complete the upstream merge commit." }
           }
           $cargoManifest = Get-Content "deckcraft/Cargo.toml" -Raw
-          if (-not $cargoManifest.Contains('version = "0.18.1"')) { throw "Expected DeckCraft 0.18.1, refusing to build an outdated version." }
+          if (-not $cargoManifest.Contains('version = "0.19.0"')) { throw "Expected DeckCraft 0.19.0, refusing to build an outdated version." }
           $sourceSha = git -C deckcraft rev-parse HEAD
           "DECKCRAFT_SOURCE_SHA=$sourceSha" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -194,7 +194,7 @@ jobs:
             "DeckCraft Russian UI build"
             "Source repository: https://github.com/storytold/deckcraft"
             "Russian translation source: https://github.com/storytold/deckcraft/pull/1672"
-            "DeckCraft version: 0.18.1"
+            "DeckCraft version: 0.19.0"
             "Integrated source commit: $env:DECKCRAFT_SOURCE_SHA"
             "Build platform: Windows x86_64"
             "Formatting: cargo fmt --all -- --check (passed)"
