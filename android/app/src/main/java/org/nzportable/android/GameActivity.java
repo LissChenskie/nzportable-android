@@ -40,6 +40,7 @@ public final class GameActivity extends SDLActivity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if(Build.VERSION.SDK_INT>=28){WindowManager.LayoutParams p=getWindow().getAttributes();
             p.layoutInDisplayCutoutMode=WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER;getWindow().setAttributes(p);}
+        LanLog.init(this);
         lanNetwork = new LanNetwork(this);
         touch = new RetroTouchBridge(this);
         touch.setPlaying(false, 0);

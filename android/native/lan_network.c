@@ -15,10 +15,21 @@ static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static uint64_t handle_value;
 static unsigned bind_count,generation;
 
+#ifdef __ANDROID__
+void NZP_FileLog(const char *line); /* crash_report.c */
+#endif
 void NZP_LanLog(const char *fmt,...){
     va_list ap;
     va_start(ap,fmt);
 #ifdef __ANDROID__
+    {
+        char line[480];
+        va_list copy;
+        va_copy(copy,ap);
+        vsnprintf(line,sizeof(line),fmt,copy);
+        va_end(copy);
+        NZP_FileLog(line);
+    }
     __android_log_vprint(ANDROID_LOG_INFO,"NZP_LAN",fmt,ap);
 #else
     if(getenv("NZP_LAN_LOG")){fputs("NZP_LAN: ",stderr);vfprintf(stderr,fmt,ap);fputc('\n',stderr);}
