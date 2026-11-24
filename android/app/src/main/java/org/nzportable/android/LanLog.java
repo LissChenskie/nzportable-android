@@ -1,6 +1,8 @@
 package org.nzportable.android;
 
 import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.ApplicationExitInfo;
 import android.content.Intent;
 import android.os.Build;
 import android.util.Log;
@@ -13,6 +15,7 @@ import java.io.PrintWriter;
 import java.io.RandomAccessFile;
 import java.io.StringWriter;
 import java.util.ArrayDeque;
+import java.util.List;
 
 /**
  * Crash/LAN log for players without a PC. Native code appends the NZP_LAN log and native crashes to
@@ -32,9 +35,11 @@ final class LanLog {
         final File log = new File(dir, "nzp_lan_log.txt"), marker = new File(dir, "nzp_crash_pending");
         try {
             if (log.length() > MAX_FILE) { File old = new File(dir, "nzp_lan_log.old.txt"); old.delete(); log.renameTo(old); }
-            final boolean crashed = marker.exists();
+            final String exitInfo = previousExit(activity, new File(dir, "nzp_last_exit_ts"));
+            final boolean crashed = marker.exists() || exitInfo != null;
             // Previous-run state is captured before this run writes anything new.
-            final String previous = crashed ? tail(log, REPORT_TAIL) : null;
+            final String previous = crashed ? (exitInfo != null ? "SYSTEM EXIT REASON: " + exitInfo + "\n\n" : "")
+                + tail(log, REPORT_TAIL) : null;
             appendJava(log, "==== app start " + new java.util.Date() + " | " + Build.MANUFACTURER + " " + Build.MODEL
                 + " | Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ") ====");
             try { nativeInit(log.getAbsolutePath(), marker.getAbsolutePath()); }
@@ -54,6 +59,42 @@ final class LanLog {
                 new Thread(() -> offerReport(activity, previous)).start();
             }
         } catch (Throwable t) { Log.w(TAG, "LanLog init failed: " + t); }
+    }
+
+    /** Why Android ended the previous process (API 30+). Null when it exited normally or was already reported. */
+    private static String previousExit(Activity activity, File stamp) {
+        if (Build.VERSION.SDK_INT < 30) return null;
+        try {
+            ActivityManager am = (ActivityManager) activity.getSystemService(Activity.ACTIVITY_SERVICE);
+            List<ApplicationExitInfo> list = am.getHistoricalProcessExitReasons(null, 0, 1);
+            if (list == null || list.isEmpty()) return null;
+            ApplicationExitInfo info = list.get(0);
+            long seen = 0;
+            try { seen = Long.parseLong(tail(stamp, 64).trim()); } catch (NumberFormatException ignored) { }
+            if (info.getTimestamp() <= seen) return null;
+            try (FileOutputStream out = new FileOutputStream(stamp)) { out.write(Long.toString(info.getTimestamp()).getBytes()); }
+            int r = info.getReason();
+            boolean abnormal = r == ApplicationExitInfo.REASON_CRASH || r == ApplicationExitInfo.REASON_CRASH_NATIVE
+                || r == ApplicationExitInfo.REASON_ANR || r == ApplicationExitInfo.REASON_LOW_MEMORY
+                || r == ApplicationExitInfo.REASON_SIGNALED || r == ApplicationExitInfo.REASON_INITIALIZATION_FAILURE
+                || r == ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE || r == ApplicationExitInfo.REASON_OTHER;
+            if (!abnormal) return null;
+            return "reason=" + r + " " + reasonName(r) + " status=" + info.getStatus() + " importance=" + info.getImportance()
+                + " pss_kb=" + info.getPss() + " rss_kb=" + info.getRss() + " desc=" + info.getDescription();
+        } catch (Throwable t) { return null; }
+    }
+
+    private static String reasonName(int r) {
+        switch (r) {
+            case ApplicationExitInfo.REASON_CRASH: return "JAVA_CRASH";
+            case ApplicationExitInfo.REASON_CRASH_NATIVE: return "NATIVE_CRASH";
+            case ApplicationExitInfo.REASON_ANR: return "ANR";
+            case ApplicationExitInfo.REASON_LOW_MEMORY: return "LOW_MEMORY_KILL";
+            case ApplicationExitInfo.REASON_SIGNALED: return "SIGNALED(killed)";
+            case ApplicationExitInfo.REASON_INITIALIZATION_FAILURE: return "INIT_FAILURE";
+            case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE: return "EXCESSIVE_RESOURCES";
+            default: return "OTHER";
+        }
     }
 
     private static void offerReport(final Activity activity, String fileTail) {
