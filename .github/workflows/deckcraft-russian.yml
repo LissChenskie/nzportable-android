@@ -1,6 +1,7 @@
 name: DeckCraft 0.18.1 Russian Windows x64 (retry)
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - ci/deckcraft-russian-20261111
