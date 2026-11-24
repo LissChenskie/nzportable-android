@@ -31,7 +31,71 @@ jobs:
           git -C deckcraft fetch --filter=blob:none upstream main
           if ($LASTEXITCODE -ne 0) { throw "Failed to fetch current upstream." }
           git -C deckcraft merge --no-edit upstream/main
-          if ($LASTEXITCODE -ne 0) { throw "Russian localization does not merge cleanly with current upstream." }
+          if ($LASTEXITCODE -ne 0) {
+            $conflicts = @(git -C deckcraft diff --name-only --diff-filter=U)
+            if ($conflicts.Count -ne 1 -or $conflicts[0] -ne "crates/ui-egui/src/ribbon.rs") {
+              throw "Unexpected upstream merge conflicts: $($conflicts -join ', ')"
+            }
+            git -C deckcraft checkout --theirs -- crates/ui-egui/src/ribbon.rs
+            if ($LASTEXITCODE -ne 0) { throw "Could not select upstream ribbon implementation." }
+            @'
+from pathlib import Path
+
+path = Path("deckcraft/crates/ui-egui/src/ribbon.rs")
+source = path.read_text(encoding="utf-8")
+
+def replace_once(old, new, label):
+    global source
+    count = source.count(old)
+    if count != 1:
+        raise SystemExit(f"Expected exactly one {label} anchor, found {count}.")
+    source = source.replace(old, new, 1)
+
+replace_once(
+    "    let t = Tokens::get(ui.ctx());\n",
+    "    let t = Tokens::get(ui.ctx());\n    let language = app.ui.interface_language;\n",
+    "ribbon language context",
+)
+replace_once(
+    '            let w = ui.fonts_mut(|f| f.layout_no_wrap("File".to_string(), theme::font(13.0), t.text).size().x) + 18.0;\n',
+    '            let file = language.text("File");\n            let w = ui.fonts_mut(|f| f.layout_no_wrap(file.to_string(), theme::font(13.0), t.text).size().x) + 18.0;\n',
+    "File tab width",
+)
+replace_once(
+    '            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "File"));',
+    '            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, file));',
+    "File accessibility label",
+)
+replace_once(
+    '            ui.painter().text(r.center(), Align2::CENTER_CENTER, "File", theme::font(13.0), t.text);',
+    '            ui.painter().text(r.center(), Align2::CENTER_CENTER, file, theme::font(13.0), t.text);',
+    "File tab caption",
+)
+replace_once(
+    '            if resp.on_hover_text("File (Alt+F)").clicked() {',
+    '            if resp.on_hover_text(language.localized("File (Alt+F)")).clicked() {',
+    "File tab tooltip",
+)
+replace_once(
+    "            let label = tab_label(name);",
+    "            let label = language.text(tab_label(name));",
+    "contextual tab caption",
+)
+replace_once(
+    '    let resp = ui.interact(rect, ui.scope_id().with(glyph), Sense::click()).on_hover_text(hint);\n    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, hint));',
+    '    let hint = crate::i18n::context_text(ui.ctx(), hint);\n    let resp = ui.interact(rect, ui.scope_id().with(glyph), Sense::click()).on_hover_text(&hint);\n    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &hint));',
+    "ribbon overflow tooltip",
+)
+path.write_text(source, encoding="utf-8")
+print("Resolved ribbon.rs using upstream behavior plus Russian UI labels.")
+'@ | Set-Content -Path resolve_ribbon.py -Encoding utf8
+            python resolve_ribbon.py
+            if ($LASTEXITCODE -ne 0) { throw "Could not resolve the ribbon localization conflict." }
+            git -C deckcraft add crates/ui-egui/src/ribbon.rs
+            if ($LASTEXITCODE -ne 0) { throw "Could not stage the resolved ribbon file." }
+            git -C deckcraft -c core.editor=true commit --no-edit
+            if ($LASTEXITCODE -ne 0) { throw "Could not complete the upstream merge commit." }
+          }
           $cargoManifest = Get-Content "deckcraft/Cargo.toml" -Raw
           if (-not $cargoManifest.Contains('version = "0.18.1"')) { throw "Expected DeckCraft 0.18.1, refusing to build an outdated version." }
           $sourceSha = git -C deckcraft rev-parse HEAD
