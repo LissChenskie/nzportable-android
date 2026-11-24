@@ -15,6 +15,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 120
     steps:
+      - name: Check out the build workflow and conflict resolver
+        uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
