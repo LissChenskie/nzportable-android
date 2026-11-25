@@ -2,6 +2,8 @@
 // Compiled with pinned RetroTouch 1.0.0-beta.7 (MIT; see third_party/retrotouch-LICENSE.txt).
 package org.nzportable.android;
 
+import android.content.Context;
+import android.content.SharedPreferences;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.FrameLayout;
@@ -15,6 +17,10 @@ final class RetroTouchBridge {
     private final RetroTouchView overlay;
     private final DynamicStickView dynamicStick;   // touch surface: only the stick zone
     private final DynamicStickHud dynamicHud;       // drawing: whole screen, takes no touches
+    private final DynamicStickConfig stickConfig = new DynamicStickConfig();  // the player's zone and size
+    private final FrameLayout contentLayout;
+    private DynamicStickEditorView stickEditor;
+    private static final String STICK_PREFS = "nzp_dynamic_stick";
     private RetroTouchLayout fixedLayout, dynamicLayout;
     private int lastMode = -1;
     private boolean dynamic = true;   // floating left stick (default); false = the fixed RetroTouch stick
@@ -61,6 +67,12 @@ final class RetroTouchBridge {
         });
         overlay.setMode(RetroTouchMode.OFF);
         FrameLayout content = (FrameLayout) activity.findViewById(android.R.id.content);
+        contentLayout = content;
+        SharedPreferences prefs = activity.getSharedPreferences(STICK_PREFS, Context.MODE_PRIVATE);
+        stickConfig.set(new DynamicStickConfig(
+                prefs.getFloat("zone_right", DynamicStickConfig.DEFAULT_RIGHT),
+                prefs.getFloat("zone_top", DynamicStickConfig.DEFAULT_TOP),
+                prefs.getFloat("size", DynamicStickConfig.DEFAULT_SIZE)));
         content.addView(overlay, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         // The floating stick sits above the overlay. Separate fingers must reach separate children (stick / buttons), so
@@ -68,7 +80,7 @@ final class RetroTouchBridge {
         // further finger to a view that already holds a touch whenever it lies inside that view, without asking the views
         // below, so a full-screen layer would swallow the camera finger while the stick is held.
         content.setMotionEventSplittingEnabled(true);
-        DynamicStick stick = new DynamicStick();
+        DynamicStick stick = new DynamicStick(stickConfig);
         dynamicHud = new DynamicStickHud(activity, stick);
         dynamicStick = new DynamicStickView(activity, stick, dynamicHud);
         dynamicStick.setListener(new DynamicStickView.Listener() {
@@ -115,7 +127,7 @@ final class RetroTouchBridge {
         applyStickInput();
     }
     private void applyStickInput() {
-        final boolean useIt = showing && dynamic;
+        final boolean useIt = showing && dynamic && stickEditor == null;
         dynamicHud.setVisibility(useIt ? View.VISIBLE : View.GONE);
         dynamicStick.setVisibility(useIt ? View.VISIBLE : View.GONE);
         dynamicStick.setInputEnabled(useIt && !editing);
@@ -140,5 +152,44 @@ final class RetroTouchBridge {
         return show;
     }
     boolean controllerDetected;
+    /** Opens the full-screen editor for the stick zone and size (from the options menu). */
+    void openStickEditor() {
+        if (stickEditor != null) return;
+        dynamicStick.release();
+        stickEditor = new DynamicStickEditorView(game, stickConfig, new DynamicStickEditorView.Listener() {
+            @Override public void onFinished(final boolean accepted, final DynamicStickConfig edited) {
+                // Not inside the touch dispatch that ended it.
+                contentLayout.post(new Runnable() {
+                    @Override public void run() { closeStickEditor(accepted ? edited : null); }
+                });
+            }
+        });
+        contentLayout.addView(stickEditor, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        applyStickInput();
+    }
+    private void closeStickEditor(DynamicStickConfig accepted) {
+        if (stickEditor == null) return;
+        contentLayout.removeView(stickEditor);
+        stickEditor = null;
+        if (accepted != null) {
+            stickConfig.set(accepted);
+            SharedPreferences.Editor edit = game.getSharedPreferences(STICK_PREFS, Context.MODE_PRIVATE).edit();
+            edit.putFloat("zone_right", stickConfig.zoneRight);
+            edit.putFloat("zone_top", stickConfig.zoneTop);
+            edit.putFloat("size", stickConfig.sizeScale);
+            edit.apply();
+        }
+        dynamicStick.requestLayout();   // the touch view follows the zone
+        dynamicHud.invalidate();
+        applyStickInput();
+    }
+    boolean stickEditorOpen() { return stickEditor != null; }
+    /** Back while the editor is open leaves it without saving. */
+    boolean handleBack() {
+        if (stickEditor == null) return false;
+        stickEditor.cancel();
+        return true;
+    }
     void reset() { dynamicStick.release(); overlay.resetInputState(); }
 }

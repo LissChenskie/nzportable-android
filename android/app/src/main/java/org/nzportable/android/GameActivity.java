@@ -78,6 +78,22 @@ public final class GameActivity extends SDLActivity {
             }
         });
     }
+    // Called from the SDL thread by the options menu: opens the stick zone / size editor.
+    public void openStickEditor() {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                if (touch != null) touch.openStickEditor();
+            }
+        });
+    }
+    // Back closes the stick editor (without saving) instead of reaching the engine's menu.
+    @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (event.getKeyCode() == android.view.KeyEvent.KEYCODE_BACK && touch != null && touch.stickEditorOpen()) {
+            if (event.getAction() == android.view.KeyEvent.ACTION_UP) touch.handleBack();
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
     // Called from the SDL thread when the touch_dynamic_stick setting changes (and once at start).
     public void setDynamicStick(final boolean dynamic) {
         runOnUiThread(new Runnable() {

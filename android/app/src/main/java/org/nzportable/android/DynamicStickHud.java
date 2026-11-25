@@ -47,7 +47,8 @@ final class DynamicStickHud extends View {
         } else if (width > 0f && height > 0f) {
             // Where a thumb can land: a faint ring where the fixed stick used to be.
             ring.setColor(0x38FFFFFF);
-            canvas.drawCircle(DynamicStick.HINT_X * width, DynamicStick.HINT_Y * height, DynamicStick.radiusFor(width, height), ring);
+            final DynamicStickConfig config = stick.config();
+            canvas.drawCircle(config.hintX(width), config.hintY(height), config.radius(width, height), ring);
         }
     }
 }

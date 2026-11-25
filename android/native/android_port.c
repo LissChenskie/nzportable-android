@@ -492,6 +492,18 @@ void Android_TouchLook(void){
         cl.viewangles[PITCH]=fmaxf(-70,fminf(80,cl.viewangles[PITCH]));
     }look_x=look_y=0;
 }
+/* Options menu: open the Java editor for the floating stick's zone and size. Called directly (not from the 1 s poll below) so
+ * the button answers at once; the menu runs on the SDL thread, which owns a JNIEnv. */
+void Android_OpenStickEditor(void){
+    JNIEnv *env=SDL_AndroidGetJNIEnv();jobject activity=SDL_AndroidGetActivity();
+    if(!env||!activity)return;
+    jclass activity_class=(*env)->GetObjectClass(env,activity);
+    jmethodID method=activity_class?(*env)->GetMethodID(env,activity_class,"openStickEditor","()V"):NULL;
+    if(method)(*env)->CallVoidMethod(env,activity,method);
+    if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);
+    if(activity_class)(*env)->DeleteLocalRef(env,activity_class);
+    (*env)->DeleteLocalRef(env,activity);
+}
 void Android_Frame(void){
     static Uint64 thermal_poll,ui_poll,last_hot;Uint64 now=SDL_GetTicks64();
     /* Thermal monitoring is diagnostic only: never changes resolution/FPS.

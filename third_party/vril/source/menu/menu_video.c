@@ -58,6 +58,7 @@ int VID_UpscalerState(void);
 int VID_UpscalerSupported(int mode);
 /* Motion blur (android/native/video_android.c). */
 extern cvar_t mblur_mode,touch_dynamic_stick;
+void Android_OpenStickEditor(void);
 int VID_MotionBlurState(void);
 int VID_MotionBlurMovementSupported(void);
 void VID_MotionBlurEffective(float *intensity,float *camera,float *movement,int *samples,int *quality,int *scale);
@@ -122,6 +123,9 @@ static void Menu_Video_ToggleFSR(void) {
 static void Menu_Video_ToggleDynamicStick(void) {
     Cvar_SetValue("touch_dynamic_stick",touch_dynamic_stick.value!=0.f?0:1);
     Menu_Video_Save();
+}
+static void Menu_Video_EditStick(void) {
+    if(touch_dynamic_stick.value!=0.f)Android_OpenStickEditor(); /* the fixed stick has no zone to edit */
 }
 static void Menu_Video_ToggleTouchOverlay(void) {
     Cvar_SetValue("touch_overlay",(int)touch_overlay.value==1?2:((int)touch_overlay.value==2?0:1)); /* ALWAYS ON -> OFF -> AUTO */
@@ -320,6 +324,8 @@ static void Menu_Video_DrawAndroid(void) {
     if(android_video_page==7){
         Menu_DrawButton(1,i++,"LEFT STICK","DYNAMIC: the movement stick appears under your thumb anywhere in the left part of the screen. FIXED: the stick stays where it is drawn.",Menu_Video_ToggleDynamicStick);
         Menu_DrawOptionButton(1,touch_dynamic_stick.value!=0.f?"DYNAMIC":"FIXED");
+        Menu_DrawButton(2,i++,"STICK ZONE AND SIZE","Opens an editor: drag the handles to resize the area where the stick can start, and make the stick bigger or smaller. Only for the DYNAMIC stick.",Menu_Video_EditStick);
+        Menu_DrawOptionButton(2,touch_dynamic_stick.value!=0.f?"EDIT":"DYNAMIC ONLY");
     }
     Menu_DrawButton(-2,i++,"NEXT PAGE","More video options.",
         Menu_Video_NextPageAndroid);

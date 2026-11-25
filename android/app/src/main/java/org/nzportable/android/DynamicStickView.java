@@ -7,7 +7,7 @@ import android.view.View;
 
 /**
  * Touch surface of the floating left stick (see DynamicStick). It is only as large as the stick zone, placed at the
- * bottom left of the content layout by RetroTouchBridge, and it draws nothing (DynamicStickHud does).
+ * bottom left of the content layout by RetroTouchBridge (its size follows the player's zone setting), and it draws nothing (DynamicStickHud does).
  *
  * Why it must not cover the screen: when a view already receives a touch and another finger lands inside its bounds,
  * Android gives that finger to the same view without asking the views below. A full-screen stick layer swallowed the
@@ -51,9 +51,10 @@ final class DynamicStickView extends View {
 
     @Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         // Only the zone: the left part of the screen, below the top strip.
+        final DynamicStickConfig config = stick.config();
         setMeasuredDimension(
-                DynamicStick.zoneWidthPx(MeasureSpec.getSize(widthMeasureSpec)),
-                DynamicStick.zoneHeightPx(MeasureSpec.getSize(heightMeasureSpec)));
+                config.zoneWidthPx(MeasureSpec.getSize(widthMeasureSpec)),
+                config.zoneHeightPx(MeasureSpec.getSize(heightMeasureSpec)));
     }
 
     // The stick works in coordinates of the whole content layout (the hud's), not of this small view.

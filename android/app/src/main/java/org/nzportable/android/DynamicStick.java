@@ -7,49 +7,29 @@ package org.nzportable.android;
  * (tests/DynamicStickTest.java).
  *
  * The reported values follow the fixed RetroTouch stick exactly, because the native side (and the auto-sprint threshold)
- * expects them: x to the right, y DOWN (the engine negates it), length limited to 1, a dead zone of 0.08 per axis, and the
- * same radius as the fixed stick (half of 0.33 of the shorter side).
+ * expects them: x to the right, y DOWN (the engine negates it), length limited to 1 and a dead zone of 0.08 per axis. The
+ * zone and the radius come from DynamicStickConfig (at the default size the radius equals the fixed stick's).
  */
 final class DynamicStick {
-    /** A touch that starts left of this fraction of the screen width starts the stick (RUN begins at about 0.31). */
-    static final float ZONE_RIGHT = 0.30f;
-    /** ... and lower than this fraction of the height (the top edge stays free). */
-    static final float ZONE_TOP = 0.20f;
     static final float DEAD_ZONE = 0.08f;
-    /** Radius as a fraction of the shorter screen side: the fixed stick is 0.33 wide and RetroTouch halves it. */
-    static final float RADIUS_OF_SHORT_SIDE = 0.165f;
-    /** Where the fixed stick used to sit; the view draws a faint hint there while nothing touches the stick. */
-    static final float HINT_X = 0.17f, HINT_Y = 0.75f;
 
+    private final DynamicStickConfig config;
     private boolean active;
     private int pointer = -1;
     private float baseX, baseY, knobX, knobY, radius, outX, outY;
 
-    static boolean inZone(float x, float y, float width, float height) {
-        return width > 0f && height > 0f && x >= 0f && x <= ZONE_RIGHT * width && y >= ZONE_TOP * height && y <= height;
-    }
+    DynamicStick(DynamicStickConfig config) { this.config = config; }
 
-    /**
-     * The touch view covers exactly the zone (and nothing else). That matters: Android hands a further finger to a view that
-     * already receives touches whenever the finger lies inside its bounds, without asking the views below it. A full-screen
-     * stick view would therefore swallow the camera finger as soon as the stick is held.
-     */
-    static int zoneWidthPx(int screenWidth) { return Math.max(1, (int) Math.floor(ZONE_RIGHT * screenWidth)); }
-    static int zoneTopPx(int screenHeight) { return Math.min(screenHeight - 1, (int) Math.ceil(ZONE_TOP * screenHeight)); }
-    static int zoneHeightPx(int screenHeight) { return Math.max(1, screenHeight - zoneTopPx(screenHeight)); }
-
-    static float radiusFor(float width, float height) {
-        return Math.max(1f, Math.min(width, height) * RADIUS_OF_SHORT_SIDE);
-    }
+    DynamicStickConfig config() { return config; }
 
     /** Starts the stick under this finger. False if a finger already holds it or the touch is outside the zone. */
     boolean begin(int pointerId, float x, float y, float width, float height) {
-        if (active || !inZone(x, y, width, height)) return false;
+        if (active || !config.inZone(x, y, width, height)) return false;
         active = true;
         pointer = pointerId;
         baseX = knobX = x;
         baseY = knobY = y;
-        radius = radiusFor(width, height);
+        radius = config.radius(width, height);
         outX = outY = 0f;
         return true;
     }
