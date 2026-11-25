@@ -87,6 +87,7 @@ jobs:
               if "|" in line:
                   key, value = line.split("|", 1)
                   translations[key] = value
+          translations["Decorative Text"] = "Декоративный текст"
 
           start = catalog.index("const RUSSIAN_CATALOG")
           end = catalog.index("\n];", start)
