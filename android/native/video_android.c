@@ -90,6 +90,16 @@ int VID_StartRendererBenchmark(void){
     return 1;
 }
 static int drawable_w,drawable_h,world_w,world_h;
+/* Physical pixels per millimetre of the screen, so the touch menus size their rows in millimetres (about the same under the
+ * thumb on every phone). SDL reports the panel's real dpi on Android; anything implausible falls back to a typical phone. */
+float VID_PixelsPerMM(void){
+    float ddpi=0.f,hdpi=0.f,vdpi=0.f;
+    if(SDL_GetDisplayDPI(0,&ddpi,&hdpi,&vdpi)==0&&hdpi>50.f&&vdpi>50.f){
+        const float ppmm=(hdpi+vdpi)*0.5f/25.4f;
+        if(ppmm>=6.f&&ppmm<=25.f)return ppmm;
+    }
+    return (float)(vid.width<vid.height?vid.width:vid.height)/68.f;   /* the short side of a phone is about 68 mm */
+}
 /* The blur settings the renderers actually use: presets, or the cvars in CUSTOM mode. */
 void VID_MotionBlurParams(nzp_mblur_params *p){
     nzp_mblur_resolve(p,(int)(mblur_mode.value+0.5f),mblur_intensity.value,mblur_camera.value,mblur_movement.value,

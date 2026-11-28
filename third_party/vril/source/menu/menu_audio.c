@@ -32,6 +32,10 @@ Menu_Audio_Set
 */
 void Menu_Audio_Set (void)
 {
+#ifdef PLATFORM_ANDROID
+	Menu_TouchSettings_Open (2);
+	return;
+#endif
 	Menu_ResetMenuButtons();
 	m_previous_state = m_state;
 	m_state = m_audio;

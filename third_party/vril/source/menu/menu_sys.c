@@ -427,6 +427,11 @@ void Menu_KeyInput (int key)
 		return;
 	}
 
+#ifdef PLATFORM_ANDROID
+	if (Menu_TouchSettings_Key (key))
+		return;
+#endif
+
 	switch (key)
 	{
 	case K_DOWNARROW:

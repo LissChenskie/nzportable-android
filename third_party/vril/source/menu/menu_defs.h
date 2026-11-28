@@ -271,6 +271,12 @@ void Menu_IncrementSlider (int dir);
 qboolean Menu_IsButtonHovered (int button_index);
 void Menu_ResetMenuButtons (void);
 void Menu_KeyInput (int key);
+/* Android touch settings screen (menu_touch_settings.c) */
+void Menu_TouchSettings_Opened (void);
+void Menu_TouchSettings_Open (int category);
+void Menu_TouchSettings_Draw (void);
+int Menu_TouchSettings_Finger (int phase, float nx, float ny);
+int Menu_TouchSettings_Key (int key);
 void Menu_UnbindCommand (char *command);
 void Menu_WaitForKeybind (int key);
 

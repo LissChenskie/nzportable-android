@@ -299,7 +299,7 @@ JNIEXPORT void JNICALL Java_org_nzportable_android_GameActivity_nativeTouchNeutr
     (void)env;(void)unused;push_touch(NZP_TOUCH_NEUTRAL,0,0);
 }
 
-static cvar_t touch_sensitivity={"touch_sensitivity","1.0",true};
+cvar_t touch_sensitivity={"touch_sensitivity","1.0",true};   /* shared with the settings screen */
 cvar_t nzp_profile={"nzp_profile","0",true};
 /* Pin the game thread to the performance cores / background work to the efficiency cores (big.LITTLE). */
 static cvar_t nzp_cpu_affinity={"nzp_cpu_affinity","1",true};
@@ -370,6 +370,7 @@ static void update_move(float x,float y){
     float length=sqrtf(move_x*move_x+move_y*move_y);if(length>1){move_x/=length;move_y/=length;}
     Android_UpdateSprint();
 }
+static float menu_touch_start_x[FINGERS],menu_touch_start_y[FINGERS];
 static void touch(const SDL_TouchFingerEvent *event){
     // A loading screen is not gameplay. Do not generate movement/attack actions;
     // tap to continue only after its precache and intro have finished.
@@ -395,8 +396,13 @@ static void touch(const SDL_TouchFingerEvent *event){
                 Menu_MouseMove(event->x*vid.width,event->y*vid.height);
                 return;
             }
+            /* The settings screen is a touch screen of its own: it gets the raw finger. */
+            if(m_state==m_configuration){f->role=-6;Menu_TouchSettings_Finger(0,event->x,event->y);return;}
+            /* Every other menu: touching only highlights; the button fires when the finger is released on it, so a
+             * wrong touch can be slid away from. Sliders (consumed by MouseButton) still follow the finger. */
             f->role=-3;Menu_MouseMove(event->x*vid.width,event->y*vid.height);
-            if(!Menu_MouseButton(event->x*vid.width,event->y*vid.height,true))Menu_ButtonPress();return;
+            if(Menu_MouseButton(event->x*vid.width,event->y*vid.height,true))return;
+            f->role=-7;menu_touch_start_x[f-fingers]=event->x;menu_touch_start_y[f-fingers]=event->y;return;
         }
         /* Gameplay touch input belongs to the RetroTouch overlay. The old engine buttons/stick/look are gone;
          * raw touches in game are ignored (the overlay consumes them while it is visible). */
@@ -408,6 +414,12 @@ static void touch(const SDL_TouchFingerEvent *event){
         if(f->role>=0&&button_refs[f->role]>0&&--button_refs[f->role]==0)Android_EmitTouchAction(buttons[f->role].key,false);
         if(f->role==-1){move_x=move_y=0;Android_UpdateSprint();}
         if(f->role==-3)Menu_MouseButton(event->x*vid.width,event->y*vid.height,false);
+        if(f->role==-6)Menu_TouchSettings_Finger(2,event->x,event->y);
+        if(f->role==-7){
+            /* released near where it went down, still on the highlighted button: that is a tap */
+            const float dx=event->x-menu_touch_start_x[f-fingers],dy=event->y-menu_touch_start_y[f-fingers];
+            if(dx*dx+dy*dy<.03f*.03f){Menu_MouseMove(event->x*vid.width,event->y*vid.height);Menu_ButtonPress();}
+        }
         if(f->role==-5 && (m_state==m_stockmaps || m_state==m_custommaps)){
             float delta=event->y-map_touch_start[f-fingers];
             if(delta<-.08f)Menu_Maps_Scroll(+1);
@@ -419,7 +431,8 @@ static void touch(const SDL_TouchFingerEvent *event){
         }
         f->active=0;return;
     }
-    if(f->role==-3 || f->role==-5){Menu_MouseMove(event->x*vid.width,event->y*vid.height);}
+    if(f->role==-6){Menu_TouchSettings_Finger(1,event->x,event->y);}
+    else if(f->role==-3 || f->role==-5 || f->role==-7){Menu_MouseMove(event->x*vid.width,event->y*vid.height);}
     else if(key_dest==key_game){
         if(f->role==-1)update_move(event->x,event->y);
         if(f->role==-2){look_x+=(event->x-f->x);look_y+=(event->y-f->y);}

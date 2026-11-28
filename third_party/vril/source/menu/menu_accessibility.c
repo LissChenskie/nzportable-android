@@ -122,6 +122,10 @@ Menu_Accessibility_Set
 */
 void Menu_Accessibility_Set (void)
 {
+#ifdef PLATFORM_ANDROID
+	Menu_TouchSettings_Open (4);
+	return;
+#endif
 	Menu_ResetMenuButtons();
 
 	m_previous_state = m_state;

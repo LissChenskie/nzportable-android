@@ -58,6 +58,10 @@ Menu_Controls_Set
 */
 void Menu_Controls_Set (void)
 {
+#ifdef PLATFORM_ANDROID
+	Menu_TouchSettings_Open (3);
+	return;
+#endif
 	Menu_ResetMenuButtons();
 
     m_previous_state = m_configuration;

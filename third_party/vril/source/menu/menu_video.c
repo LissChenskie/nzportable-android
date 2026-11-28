@@ -416,6 +416,10 @@ Menu_Video_Set
 void Menu_Video_Set (void)
 {
 #ifdef PLATFORM_ANDROID
+	Menu_TouchSettings_Open (0);
+	return;
+#endif
+#ifdef PLATFORM_ANDROID
     android_video_page=0;
 #endif
 #ifdef RENDERER_SUPPORTS_DITHERING

@@ -13,6 +13,7 @@ cc -std=c99 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -Iandroid/native tests/test_
 build/host-tests/test_net_mobile
 cc -std=gnu11 -Wall -Wextra -Werror -pthread -Iandroid/native tests/test_threads.c -o build/host-tests/test_threads
 build/host-tests/test_threads
+sh tests/run_touch_menu_tests.sh
 cc -std=c99 -Wall -Wextra -Werror -Iandroid/native tests/test_motion_blur.c -o build/host-tests/test_motion_blur -lm
 build/host-tests/test_motion_blur
 cc -std=c99 -Wall -Wextra -Werror -Iandroid/native tests/test_camera_motion.c -o build/host-tests/test_camera_motion -lm

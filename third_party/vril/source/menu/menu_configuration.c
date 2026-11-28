@@ -45,6 +45,9 @@ void Menu_Configuration_Set (void)
 		m_previous_state = m_main;
 	}
 	m_state = m_configuration;
+#ifdef PLATFORM_ANDROID
+	Menu_TouchSettings_Opened();
+#endif
 }
 
 /*
@@ -54,6 +57,11 @@ Menu_Configuration_Draw
 */
 void Menu_Configuration_Draw (void)
 {
+#ifdef PLATFORM_ANDROID
+	/* The whole settings area is one touch screen: categories on the left, a scrolling list on the right. */
+	Menu_TouchSettings_Draw ();
+	return;
+#endif
 	// Background
 	Menu_DrawCustomBackground (true);
 
